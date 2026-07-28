@@ -306,6 +306,36 @@ describe('FeishuReliableTransport', () => {
     expect(inner.calls.filter((call) => call.method === 'sendText')).toHaveLength(1)
   })
 
+  it('does not emit an unhandled rejection when a detached delivery permanently fails', async () => {
+    const inner = new FakeTransport()
+    inner.sendUserCard = vi.fn(async () => {
+      throw Object.assign(new Error('Request failed with status code 400'), { status: 400 })
+    })
+    const transport = reliable(inner)
+    await transport.start(handlers)
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+
+    try {
+      const delivery = transport.sendUserCard('ou_owner', { access: 'request' })
+      await vi.waitFor(async () => {
+        expect((await listFeishuOutbox({ botId: bot.botId }))[0]).toMatchObject({
+          kind: FEISHU_OUTBOX_KINDS.sendUserCard,
+          status: 'failed',
+          attempts: 1,
+        })
+      })
+      await new Promise<void>((resolve) => { setImmediate(resolve) })
+
+      expect(unhandled).toEqual([])
+      await expect(delivery).rejects.toThrow('Permanent Feishu HTTP 400 delivery failure')
+      expect((await listFeishuOutbox({ botId: bot.botId }))[0]?.deadLetteredAtIso).not.toBeNull()
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
   it('supersedes an old failed card patch so it cannot overwrite a terminal version', async () => {
     const inner = new FakeTransport()
     inner.failNextUpdate = true

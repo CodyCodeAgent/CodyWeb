@@ -194,87 +194,94 @@
       </section>
     </aside>
 
-    <section v-if="pendingRequests.length > 0" class="thread-action-required-float" :aria-label="t('workLog.actionRequired')">
-      <header class="thread-action-required-header">
-        <div>
-          <h3 class="thread-action-required-title">{{ t('workLog.actionRequired') }}</h3>
-          <p class="thread-action-required-subtitle">
-            {{ pendingApprovalSubtitle }}
-          </p>
-        </div>
-      </header>
-
-      <div class="thread-action-required-list">
-        <article v-for="card in pendingApprovalCards" :key="card.request.id" class="activity-request-card">
-          <p class="activity-request-method">{{ formatRequestCardTitle(card) }}</p>
-          <p class="activity-request-meta">{{ serverRequestMetaLabel({ request: card.request }) }}</p>
-          <p class="activity-request-subject">{{ card.summary.subject }}</p>
-          <div class="approval-risk-line">
-            <span class="approval-risk-badge" :data-level="card.summary.level">
-              {{ formatRiskLevel(card.summary.level) }}
-            </span>
-            <span
-              v-for="label in card.summary.riskLabels"
-              :key="`${card.request.id}:${label}`"
-              class="approval-risk-label"
-            >
-              {{ label }}
-            </span>
+    <Teleport to="body">
+      <section
+        v-if="pendingRequests.length > 0"
+        class="thread-action-required-float"
+        :aria-label="t('workLog.actionRequired')"
+        data-testid="thread-action-required-float"
+      >
+        <header class="thread-action-required-header">
+          <div>
+            <h3 class="thread-action-required-title">{{ t('workLog.actionRequired') }}</h3>
+            <p class="thread-action-required-subtitle">
+              {{ pendingApprovalSubtitle }}
+            </p>
           </div>
-          <p class="activity-request-reason">{{ card.summary.description }}</p>
-          <ul class="approval-impact-list">
-            <li v-for="impact in card.summary.impacts" :key="`${card.request.id}:${impact}`">
-              {{ impact }}
-            </li>
-          </ul>
-          <div class="approval-scope-line" :aria-label="t('workLog.approvalScopes')">
-            <span
-              v-for="scope in approvalScopeOptions"
-              :key="`${card.request.id}:${scope.scope}`"
-              class="approval-scope"
-              :data-enabled="scope.enabled"
-              :title="scope.description"
-            >
-              {{ scope.label }}
-            </span>
-          </div>
-          <p class="approval-recommendation">{{ card.summary.recommendation }}</p>
+        </header>
 
-          <div class="activity-request-actions">
-            <template v-if="card.isApprovalRequest">
-              <button
+        <div class="thread-action-required-list">
+          <article v-for="card in pendingApprovalCards" :key="card.request.id" class="activity-request-card">
+            <p class="activity-request-method">{{ formatRequestCardTitle(card) }}</p>
+            <p class="activity-request-meta">{{ serverRequestMetaLabel({ request: card.request }) }}</p>
+            <p class="activity-request-subject">{{ card.summary.subject }}</p>
+            <div class="approval-risk-line">
+              <span class="approval-risk-badge" :data-level="card.summary.level">
+                {{ formatRiskLevel(card.summary.level) }}
+              </span>
+              <span
+                v-for="label in card.summary.riskLabels"
+                :key="`${card.request.id}:${label}`"
+                class="approval-risk-label"
+              >
+                {{ label }}
+              </span>
+            </div>
+            <p class="activity-request-reason">{{ card.summary.description }}</p>
+            <ul class="approval-impact-list">
+              <li v-for="impact in card.summary.impacts" :key="`${card.request.id}:${impact}`">
+                {{ impact }}
+              </li>
+            </ul>
+            <div class="approval-scope-line" :aria-label="t('workLog.approvalScopes')">
+              <span
                 v-for="scope in approvalScopeOptions"
-                :key="`${card.request.id}:${serverRequestActionKeyPrefix(card.kind)}:${scope.scope}`"
-                class="activity-request-button"
-                data-testid="thread-approval-scope"
-                :class="{ 'activity-request-button-primary': scope.scope === 'single', 'activity-request-button-danger': scope.scope === 'permanent' }"
-                type="button"
-                :data-scope="scope.scope"
-                @click="onRespondApprovalScope(card.request.id, scope.scope)"
+                :key="`${card.request.id}:${scope.scope}`"
+                class="approval-scope"
+                :data-enabled="scope.enabled"
+                :title="scope.description"
               >
                 {{ scope.label }}
-              </button>
-              <button
-                class="activity-request-button"
-                data-testid="thread-approval-decline"
-                type="button"
-                @click="onRespondApproval(card.request.id, 'decline')"
-              >
-                {{ t('workLog.decline') }}
-              </button>
-            </template>
-            <template v-else>
-              <button class="activity-request-button activity-request-button-primary" type="button" @click="onRespondEmptyResult(card.request.id)">
-                {{ t('workLog.emptyResult') }}
-              </button>
-              <button class="activity-request-button" type="button" @click="onRejectRequest(card.request.id)">
-                {{ t('workLog.reject') }}
-              </button>
-            </template>
-          </div>
-        </article>
-      </div>
-    </section>
+              </span>
+            </div>
+            <p class="approval-recommendation">{{ card.summary.recommendation }}</p>
+
+            <div class="activity-request-actions">
+              <template v-if="card.isApprovalRequest">
+                <button
+                  v-for="scope in approvalScopeOptions"
+                  :key="`${card.request.id}:${serverRequestActionKeyPrefix(card.kind)}:${scope.scope}`"
+                  class="activity-request-button"
+                  data-testid="thread-approval-scope"
+                  :class="{ 'activity-request-button-primary': scope.scope === 'single', 'activity-request-button-danger': scope.scope === 'permanent' }"
+                  type="button"
+                  :data-scope="scope.scope"
+                  @click="onRespondApprovalScope(card.request.id, scope.scope)"
+                >
+                  {{ scope.label }}
+                </button>
+                <button
+                  class="activity-request-button"
+                  data-testid="thread-approval-decline"
+                  type="button"
+                  @click="onRespondApproval(card.request.id, 'decline')"
+                >
+                  {{ t('workLog.decline') }}
+                </button>
+              </template>
+              <template v-else>
+                <button class="activity-request-button activity-request-button-primary" type="button" @click="onRespondEmptyResult(card.request.id)">
+                  {{ t('workLog.emptyResult') }}
+                </button>
+                <button class="activity-request-button" type="button" @click="onRejectRequest(card.request.id)">
+                  {{ t('workLog.reject') }}
+                </button>
+              </template>
+            </div>
+          </article>
+        </div>
+      </section>
+    </Teleport>
 
     <Teleport to="body">
       <div
@@ -791,7 +798,11 @@ watch(() => props.threadId, () => {
 }
 
 .thread-action-required-float {
-  @apply fixed bottom-4 right-4 z-50 flex max-h-[min(72vh,42rem)] w-[min(28rem,calc(100vw-2rem))] flex-col gap-2 overflow-hidden rounded-lg border theme-border-warning theme-bg-warning-soft p-3 shadow-2xl;
+  @apply fixed z-[70] flex w-[min(28rem,calc(100vw-2rem))] flex-col gap-2 overflow-hidden rounded-lg border theme-border-warning theme-bg-warning-soft p-3 shadow-2xl;
+  right: max(1rem, env(safe-area-inset-right));
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  max-height: min(72vh, 42rem, calc(100vh - 2rem));
+  max-height: min(72dvh, 42rem, calc(100dvh - 2rem));
 }
 
 .thread-action-required-header {
@@ -812,6 +823,17 @@ watch(() => props.threadId, () => {
 
 .thread-action-required-list .activity-request-card + .activity-request-card {
   @apply mt-2;
+}
+
+@media (max-width: 640px) {
+  .thread-action-required-float {
+    right: max(0.75rem, env(safe-area-inset-right));
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    left: max(0.75rem, env(safe-area-inset-left));
+    width: auto;
+    max-height: calc(100vh - 1.5rem);
+    max-height: calc(100dvh - 1.5rem);
+  }
 }
 
 .work-log-card {

@@ -146,16 +146,21 @@ describe('ThreadActivityPanel', () => {
 
   it('emits scoped approval replies from action-required cards', async () => {
     const wrapper = mountPanel([], [approvalRequest()])
+    const overlay = document.body.querySelector<HTMLElement>('[data-testid="thread-action-required-float"]')
 
-    expect(wrapper.text()).toContain('Action required')
-    expect(wrapper.text()).toContain('Command approval')
+    expect(overlay).not.toBeNull()
+    expect(wrapper.element.contains(overlay)).toBe(false)
+    expect(overlay?.textContent).toContain('Action required')
+    expect(overlay?.textContent).toContain('Command approval')
 
-    const workspaceButton = wrapper.findAll('[data-testid="thread-approval-scope"]')
-      .find((button) => button.attributes('data-scope') === 'workspace')
+    const workspaceButton = overlay?.querySelector<HTMLButtonElement>('[data-testid="thread-approval-scope"][data-scope="workspace"]')
+    const declineButton = overlay?.querySelector<HTMLButtonElement>('[data-testid="thread-approval-decline"]')
     expect(workspaceButton).toBeTruthy()
+    expect(declineButton).toBeTruthy()
 
-    await workspaceButton?.trigger('click')
-    await wrapper.get('[data-testid="thread-approval-decline"]').trigger('click')
+    workspaceButton?.click()
+    declineButton?.click()
+    await wrapper.vm.$nextTick()
 
     expect(wrapper.emitted('respondServerRequest')).toEqual([
       [

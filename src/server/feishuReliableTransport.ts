@@ -196,31 +196,49 @@ export class FeishuReliableTransport implements FeishuTransport {
   }
 
   sendText(chatId: string, text: string): Promise<string> {
-    return this.enqueueAndWait(FEISHU_OUTBOX_KINDS.sendText, chatId, { text })
-      .then((result) => result.remoteMessageId ?? '')
+    return this.observeCallerPromise(
+      this.enqueueAndWait(FEISHU_OUTBOX_KINDS.sendText, chatId, { text })
+        .then((result) => result.remoteMessageId ?? ''),
+    )
   }
 
   replyText(messageId: string, text: string, replyInThread = false): Promise<string> {
-    return this.enqueueAndWait(FEISHU_OUTBOX_KINDS.replyText, messageId, { text, replyInThread })
-      .then((result) => result.remoteMessageId ?? '')
+    return this.observeCallerPromise(
+      this.enqueueAndWait(FEISHU_OUTBOX_KINDS.replyText, messageId, { text, replyInThread })
+        .then((result) => result.remoteMessageId ?? ''),
+    )
   }
 
   sendCard(chatId: string, card: FeishuCard): Promise<string> {
-    return this.enqueueAndWait(FEISHU_OUTBOX_KINDS.sendCard, chatId, { card })
-      .then((result) => result.remoteMessageId ?? '')
+    return this.observeCallerPromise(
+      this.enqueueAndWait(FEISHU_OUTBOX_KINDS.sendCard, chatId, { card })
+        .then((result) => result.remoteMessageId ?? ''),
+    )
   }
 
   sendUserCard(openId: string, card: FeishuCard): Promise<string> {
-    return this.enqueueAndWait(FEISHU_OUTBOX_KINDS.sendUserCard, openId, { card })
-      .then((result) => result.remoteMessageId ?? '')
+    return this.observeCallerPromise(
+      this.enqueueAndWait(FEISHU_OUTBOX_KINDS.sendUserCard, openId, { card })
+        .then((result) => result.remoteMessageId ?? ''),
+    )
   }
 
   replyCard(messageId: string, card: FeishuCard, replyInThread = false): Promise<string> {
-    return this.enqueueAndWait(FEISHU_OUTBOX_KINDS.replyCard, messageId, { card, replyInThread })
-      .then((result) => result.remoteMessageId ?? '')
+    return this.observeCallerPromise(
+      this.enqueueAndWait(FEISHU_OUTBOX_KINDS.replyCard, messageId, { card, replyInThread })
+        .then((result) => result.remoteMessageId ?? ''),
+    )
   }
 
-  async updateCard(messageId: string, card: FeishuCard, delivery?: { version?: number; terminal?: boolean }): Promise<void> {
+  updateCard(messageId: string, card: FeishuCard, delivery?: { version?: number; terminal?: boolean }): Promise<void> {
+    return this.observeCallerPromise(this.enqueueCardUpdate(messageId, card, delivery))
+  }
+
+  private async enqueueCardUpdate(
+    messageId: string,
+    card: FeishuCard,
+    delivery?: { version?: number; terminal?: boolean },
+  ): Promise<void> {
     const current = this.cardVersions.get(messageId) ?? 0
     const cardVersion = Math.max(current + 1, delivery?.version ?? 0)
     this.cardVersions.set(messageId, cardVersion)
@@ -229,6 +247,17 @@ export class FeishuReliableTransport implements FeishuTransport {
       cardVersion,
       terminal: delivery?.terminal === true,
     })
+  }
+
+  /**
+   * Preserve the rejection contract for callers while ensuring a forgotten or
+   * detached delivery promise cannot become a process-fatal unhandled
+   * rejection. The returned promise is unchanged, so awaited callers still
+   * receive FeishuPermanentDeliveryError and can apply their normal fallback.
+   */
+  private observeCallerPromise<T>(operation: Promise<T>): Promise<T> {
+    void operation.catch(() => undefined)
+    return operation
   }
 
   /**
