@@ -150,6 +150,7 @@ class FakeTransport implements FeishuTransport {
   permanentReplyFailure = false
   failCardUpdates = false
   failImageUploads = false
+  sendUserCardError: Error | null = null
   failedResourceKeys = new Set<string>()
   identityOpenId = 'ou_bot'
   identityError: Error | null = null
@@ -166,7 +167,12 @@ class FakeTransport implements FeishuTransport {
   async sendText(_chatId: string, text: string) { this.texts.push(text); return 'sent-text' }
   async replyText(_messageId: string, text: string, replyInThread = false) { if (this.permanentReplyFailure) throw new FeishuPermanentDeliveryError('230011: message withdrawn', 'outbox-text'); this.texts.push(text); this.repliesInThread.push(replyInThread); return 'reply-text' }
   async sendCard(_chatId: string, card: Record<string, unknown>) { this.cards.push({ kind: 'send', id: 'card-1', card }); return 'card-1' }
-  async sendUserCard(openId: string, card: Record<string, unknown>) { const id = `user-card-${this.cards.length + 1}`; this.cards.push({ kind: `user:${openId}`, id, card }); return id }
+  async sendUserCard(openId: string, card: Record<string, unknown>) {
+    if (this.sendUserCardError) throw this.sendUserCardError
+    const id = `user-card-${this.cards.length + 1}`
+    this.cards.push({ kind: `user:${openId}`, id, card })
+    return id
+  }
   async replyCard(_messageId: string, card: Record<string, unknown>, replyInThread = false) { if (this.permanentReplyFailure) throw new FeishuPermanentDeliveryError('230011: message withdrawn', 'outbox-card'); const id = `card-${this.cards.length + 1}`; this.cards.push({ kind: 'reply', id, card }); this.repliesInThread.push(replyInThread); return id }
   async updateCard(messageId: string, card: Record<string, unknown>) {
     if (this.failCardUpdates) throw new Error('patch unavailable')
@@ -211,6 +217,7 @@ function harness(binding?: FeishuSessionBinding, options: {
   const approvalResolve = vi.fn(async () => undefined)
   const grantUser = vi.fn(options.grantUser ?? (async () => undefined))
   const respondServerRequest = vi.fn(async () => undefined)
+  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
   const service = new FeishuBotService({
     store,
     catalog: {
@@ -239,10 +246,11 @@ function harness(binding?: FeishuSessionBinding, options: {
     transportFactory: () => transport,
     schedule: (work) => work(),
     ...(options.now ? { now: options.now } : {}),
+    logger,
     reconnectCheckMs: 1_000_000,
     streamPatchMs: 1_000_000,
   })
-  return { service, store, transport, startTurn, stopTurn, renameSession, archiveSession, approvalResolve, grantUser, respondServerRequest }
+  return { service, store, transport, startTurn, stopTurn, renameSession, archiveSession, approvalResolve, grantUser, respondServerRequest, logger }
 }
 
 function binding(): FeishuSessionBinding {
@@ -1018,6 +1026,38 @@ describe('FeishuBotService', () => {
       result: { answers: { size: { answers: ['Large'] } } },
     }))
     expect(JSON.stringify(transport.cards.find((row) => row.kind === 'patch' && row.id === 'input-card')?.card)).toContain('已提交答案')
+    await service.stop()
+  })
+
+  it('contains a failed private approval-card delivery at the notification boundary', async () => {
+    const { service, transport, startTurn, logger } = harness(binding())
+    await service.start()
+    transport.handlers?.onMessage(inbound())
+    await vi.waitFor(() => expect(startTurn).toHaveBeenCalledOnce())
+    transport.sendUserCardError = Object.assign(
+      new Error('Request failed with status code 400'),
+      { status: 400 },
+    )
+
+    service.handleAppServerNotification({
+      method: 'server/request',
+      params: {
+        id: 80,
+        method: 'item/commandExecution/requestApproval',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          command: 'git status',
+        },
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(
+        'failed to present Codex server request 80',
+      ))
+    })
+    expect(service.getRuntimeSnapshots()[0]?.connectionState).toBe('connected')
     await service.stop()
   })
 

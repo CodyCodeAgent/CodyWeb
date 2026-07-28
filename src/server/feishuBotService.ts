@@ -968,7 +968,9 @@ export class FeishuBotService {
       const id = row?.id
       const method = readString(row?.method)
       if ((typeof id === 'number' || typeof id === 'string') && method) {
-        void this.handleServerRequest({ id, method, params: row?.params })
+        void this.handleServerRequest({ id, method, params: row?.params }).catch((error) => {
+          this.log('error', `[feishu] failed to present Codex server request ${String(id)} (${method}): ${String(error)}`)
+        })
       }
       return
     }
@@ -976,7 +978,9 @@ export class FeishuBotService {
       const params = asRecord(notification.params)
       const rawId = params?.id ?? params?.requestId ?? params?.request_id
       if (typeof rawId === 'number' || typeof rawId === 'string') {
-        void this.freezeExternallyResolvedRequest(String(rawId))
+        void this.freezeExternallyResolvedRequest(String(rawId)).catch((error) => {
+          this.log('error', `[feishu] failed to freeze resolved Codex server request ${String(rawId)}: ${String(error)}`)
+        })
       }
       return
     }

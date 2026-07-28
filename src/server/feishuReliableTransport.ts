@@ -33,7 +33,10 @@ export const FEISHU_OUTBOX_KINDS = {
 
 type FeishuOutboxKind = typeof FEISHU_OUTBOX_KINDS[keyof typeof FEISHU_OUTBOX_KINDS]
 
-type DeliveryResult = { remoteMessageId: string | null }
+type DeliveryResult = {
+  remoteMessageId: string | null
+  error?: Error
+}
 
 export class FeishuPermanentDeliveryError extends Error {
   readonly code = 'FEISHU_PERMANENT_DELIVERY'
@@ -82,7 +85,6 @@ const sqliteStore: FeishuReliableTransportStore = {
 
 type Waiter = {
   resolve: (value: DeliveryResult) => void
-  reject: (error: Error) => void
 }
 
 type DeliveryScope = {
@@ -185,7 +187,12 @@ export class FeishuReliableTransport implements FeishuTransport {
     if (this.pumpTimer) clearInterval(this.pumpTimer)
     this.pumpTimer = null
     for (const waiters of this.waiters.values()) {
-      for (const waiter of waiters) waiter.reject(new Error('Feishu transport closed'))
+      for (const waiter of waiters) {
+        waiter.resolve({
+          remoteMessageId: null,
+          error: new Error('Feishu transport closed'),
+        })
+      }
     }
     this.waiters.clear()
     this.inner.close()
@@ -308,13 +315,18 @@ export class FeishuReliableTransport implements FeishuTransport {
       }
     }
     if (item.status === 'sent') return { remoteMessageId: item.remoteMessageId }
-    const outcome = new Promise<DeliveryResult>((resolve, reject) => {
+    // The pump owns this internal waiter. It must always resolve: rejecting it
+    // from a detached delivery can race ahead of the public caller promise and
+    // become a process-fatal unhandled rejection under Node's strict default.
+    const outcome = new Promise<DeliveryResult>((resolve) => {
       const waiters = this.waiters.get(item.id) ?? []
-      waiters.push({ resolve, reject })
+      waiters.push({ resolve })
       this.waiters.set(item.id, waiters)
     })
     this.schedulePump()
-    return outcome
+    const result = await outcome
+    if (result.error) throw result.error
+    return result
   }
 
   private nextDedupeKey(kind: FeishuOutboxKind, targetId: string): string | null {
@@ -384,7 +396,10 @@ export class FeishuReliableTransport implements FeishuTransport {
           this.logger.error(`[feishu:${this.bot.botId}] could not dead-letter outbox item: ${String(storeError)}`)
         })
         for (const waiter of this.waiters.get(item.id) ?? []) {
-          waiter.reject(new FeishuPermanentDeliveryError(terminalReason, item.id))
+          waiter.resolve({
+            remoteMessageId: null,
+            error: new FeishuPermanentDeliveryError(terminalReason, item.id),
+          })
         }
         this.waiters.delete(item.id)
         await this.audit(item, false, null, terminalReason, true).catch(() => undefined)
