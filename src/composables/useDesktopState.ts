@@ -1306,11 +1306,6 @@ export function useDesktopState() {
       modelId,
       reasoningEffort,
     )
-    if (collaborationMode) {
-      const existingInstructions = collaborationMode.settings.developer_instructions?.trim() ?? ''
-      const planSyncInstructions = 'When you use a plan, update its structured step statuses before moving to the next step and immediately after completing a step. Keep exactly one step in progress at a time.'
-      collaborationMode.settings.developer_instructions = [existingInstructions, planSyncInstructions].filter(Boolean).join('\n\n')
-    }
     const permissionOverride = buildTurnPermissionOverride(selectedPermissionMode.value)
 
     try {

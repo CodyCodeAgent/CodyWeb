@@ -1,5 +1,5 @@
 <template>
-  <section class="workspace-theme-panel" :aria-label="t('theme.aria')">
+  <section class="workspace-theme-panel" data-cody-component="panel" :aria-label="t('theme.aria')">
     <header class="workspace-theme-panel-header">
       <div>
         <h3 class="workspace-theme-panel-title">{{ t('theme.title') }}</h3>
@@ -93,6 +93,37 @@
       <span>{{ t('theme.followSystem') }}</span>
     </label>
 
+    <div class="workspace-theme-panel-package" data-testid="theme-package-actions">
+      <div>
+        <strong>{{ t('theme.package.title') }}</strong>
+        <span>{{ t('theme.package.description') }}</span>
+      </div>
+      <div class="workspace-theme-panel-package-actions">
+        <button type="button" data-testid="theme-package-download" @click="downloadSkinPackage">
+          {{ t('theme.package.download') }}
+        </button>
+        <button type="button" data-testid="theme-package-import" @click="openSkinPackagePicker">
+          {{ t('theme.package.import') }}
+        </button>
+        <button
+          v-if="isImportedActiveSkin"
+          type="button"
+          data-testid="theme-package-remove"
+          data-tone="danger"
+          @click="removeActiveImportedSkin"
+        >
+          {{ t('theme.package.remove') }}
+        </button>
+        <input
+          ref="skinPackageInputRef"
+          class="workspace-theme-panel-package-input"
+          type="file"
+          accept=".cody-skin,application/json"
+          @change="onSkinPackageChange"
+        />
+      </div>
+    </div>
+
     <details class="workspace-theme-panel-advanced">
       <summary>{{ t('theme.skinJson') }}</summary>
       <div class="workspace-theme-panel-json-actions">
@@ -123,6 +154,7 @@ const {
   effectivePreferences,
   availableSkins,
   activeSkin,
+  isActiveSkinImported,
   activeLayoutPreset,
   workspacePreferences,
   themePersistenceError,
@@ -136,15 +168,18 @@ const {
   resetTheme,
   exportActiveSkin,
   importSkin,
+  removeImportedSkin,
 } = useTheme()
 const { t } = useLocale()
 
 const layoutPresets = LAYOUT_PRESETS
 const skinJsonDraft = ref('')
+const skinPackageInputRef = ref<HTMLInputElement | null>(null)
 const skinJsonMessage = ref('')
 const skinJsonMessageTone = ref<'success' | 'danger'>('success')
 const accentDraft = computed(() => effectivePreferences.value.accentColor || activeSkin.value.tokens.color.accent)
 const hasWorkspaceThemeBinding = computed(() => workspacePreferences.value !== null)
+const isImportedActiveSkin = isActiveSkinImported
 const selectedSkinName = computed(() =>
   availableSkins.value.find((skin) => skin.id === effectivePreferences.value.skinId)?.name ?? activeSkin.value.name,
 )
@@ -205,6 +240,64 @@ function importSkinDraft(): void {
   try {
     const skin = importSkin(skinJsonDraft.value)
     skinJsonMessage.value = t('theme.imported', { name: skin.name })
+    skinJsonMessageTone.value = 'success'
+  } catch (error) {
+    skinJsonMessage.value = error instanceof Error ? error.message : t('theme.importFailed')
+    skinJsonMessageTone.value = 'danger'
+  }
+}
+
+function skinPackageFilename(): string {
+  const safeId = activeSkin.value.id.replace(/[^a-z0-9-]/gu, '-').replace(/-+/gu, '-')
+  return `${safeId || 'cody-skin'}.cody-skin`
+}
+
+function downloadSkinPackage(): void {
+  const packageText = exportActiveSkin()
+  const url = URL.createObjectURL(new Blob([packageText], { type: 'application/json;charset=utf-8' }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = skinPackageFilename()
+  anchor.hidden = true
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  skinJsonMessage.value = t('theme.package.downloaded')
+  skinJsonMessageTone.value = 'success'
+}
+
+function openSkinPackagePicker(): void {
+  skinPackageInputRef.value?.click()
+}
+
+async function onSkinPackageChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  if (file.size > 1_500_000) {
+    skinJsonMessage.value = t('theme.package.tooLarge')
+    skinJsonMessageTone.value = 'danger'
+    return
+  }
+  try {
+    const skin = importSkin(await file.text())
+    skinJsonDraft.value = exportActiveSkin()
+    skinJsonMessage.value = t('theme.imported', { name: skin.name })
+    skinJsonMessageTone.value = 'success'
+  } catch (error) {
+    skinJsonMessage.value = error instanceof Error ? error.message : t('theme.importFailed')
+    skinJsonMessageTone.value = 'danger'
+  }
+}
+
+function removeActiveImportedSkin(): void {
+  const name = activeSkin.value.name
+  try {
+    removeImportedSkin(activeSkin.value.id)
+    skinJsonDraft.value = ''
+    skinJsonMessage.value = t('theme.package.removed', { name })
     skinJsonMessageTone.value = 'success'
   } catch (error) {
     skinJsonMessage.value = error instanceof Error ? error.message : t('theme.importFailed')
@@ -313,6 +406,51 @@ watch(() => props.workspaceTheme, (theme) => {
   accent-color: var(--color-accent);
 }
 
+.workspace-theme-panel-package {
+  @apply mt-3 flex items-center justify-between gap-3 rounded-md border px-3 py-2;
+  border-color: var(--color-border);
+  background: color-mix(in srgb, var(--color-elevated) 64%, transparent);
+}
+
+.workspace-theme-panel-package > div:first-child {
+  @apply grid min-w-0 gap-0.5;
+}
+
+.workspace-theme-panel-package strong {
+  @apply text-xs font-semibold;
+  color: var(--color-text);
+}
+
+.workspace-theme-panel-package span {
+  @apply text-[0.68rem] leading-4;
+  color: var(--color-text-muted);
+}
+
+.workspace-theme-panel-package-actions {
+  @apply flex shrink-0 gap-2;
+}
+
+.workspace-theme-panel-package-actions button {
+  @apply inline-flex min-h-8 items-center rounded-md border px-2.5 text-xs font-medium transition;
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.workspace-theme-panel-package-actions button:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 44%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-elevated));
+}
+
+.workspace-theme-panel-package-actions button[data-tone='danger'] {
+  border-color: color-mix(in srgb, var(--color-danger) 40%, var(--color-border));
+  color: var(--color-danger);
+}
+
+.workspace-theme-panel-package-input {
+  display: none;
+}
+
 .workspace-theme-panel-advanced {
   @apply mt-3 border-t theme-border pt-2;
   border-color: var(--color-border);
@@ -354,6 +492,14 @@ watch(() => props.workspaceTheme, (theme) => {
 @media (max-width: 560px) {
   .workspace-theme-panel-grid {
     @apply grid-cols-1;
+  }
+
+  .workspace-theme-panel-package {
+    @apply items-stretch flex-col;
+  }
+
+  .workspace-theme-panel-package-actions button {
+    @apply min-h-11 flex-1 justify-center;
   }
 }
 </style>

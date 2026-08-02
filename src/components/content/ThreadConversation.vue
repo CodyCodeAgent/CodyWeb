@@ -1,5 +1,5 @@
 <template>
-  <section class="conversation-root">
+  <section class="conversation-root" data-cody-region="conversation">
     <section
       v-if="showBlockingLoading"
       class="conversation-loading-page"
@@ -207,7 +207,7 @@
       >
         <div class="message-row" :data-role="message.role" :data-message-type="message.messageType || ''">
           <div class="message-stack" :data-role="message.role">
-            <article class="message-body" :data-role="message.role">
+            <article class="message-body" data-cody-component="message" :data-role="message.role">
               <ul
                 v-if="message.skills && message.skills.length > 0"
                 class="message-skill-list"

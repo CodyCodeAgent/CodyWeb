@@ -20,10 +20,12 @@ describe('theme registry', () => {
       'control-tower',
       'cyber-ops',
       'light-pro',
+      'qq-2007',
       'terminal',
       'mobile-focus',
     ])
     expect(getBuiltInSkin('control-tower')?.isDark).toBe(true)
+    expect(getBuiltInSkin('qq-2007')).toMatchObject({ isDark: false, syntaxTheme: 'light' })
   })
 
   it('normalizes stored preferences to safe defaults', () => {
@@ -156,7 +158,47 @@ describe('theme registry', () => {
       id: 'terminal',
       name: 'Terminal',
     })
-    expect(() => parseSkinPack('{}')).toThrow('Skin JSON must include id, name, and tokens.')
+    expect(() => parseSkinPack('{}')).toThrow('id is invalid.')
+  })
+
+  it('upgrades legacy color-only skins to Skin API v1 defaults', () => {
+    const legacy = JSON.parse(serializeSkinPack(getBuiltInSkin('light-pro')!)) as Record<string, unknown>
+    delete legacy.manifest
+    delete legacy.recipes
+    const parsed = parseSkinPack(JSON.stringify(legacy))
+    expect(parsed.manifest).toMatchObject({ schemaVersion: 1, version: '1.0.0', author: 'Imported' })
+    expect(parsed.recipes).toMatchObject({
+      chrome: 'native',
+      navigation: 'native',
+      panel: 'native',
+      control: 'native',
+      message: 'native',
+      composer: 'native',
+      backdrop: 'solid',
+    })
+  })
+
+  it('rejects executable, remote, oversized, and unsupported skin capabilities', () => {
+    const base = JSON.parse(serializeSkinPack(getBuiltInSkin('qq-2007')!)) as Record<string, unknown>
+    expect(() => parseSkinPack(JSON.stringify({ ...base, recipes: { ...(base.recipes as object), chrome: 'javascript' } })))
+      .toThrow('recipes.chrome is not supported.')
+    expect(() => parseSkinPack(JSON.stringify({ ...base, assets: { background: 'https://example.com/skin.png' } })))
+      .toThrow('must be an embedded PNG, JPEG, or WebP data URL.')
+    expect(() => parseSkinPack(JSON.stringify({ ...base, assets: { brandMark: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' } })))
+      .toThrow('must be an embedded PNG, JPEG, or WebP data URL.')
+    expect(() => parseSkinPack(JSON.stringify({ ...base, manifest: { ...(base.manifest as object), schemaVersion: 2 } })))
+      .toThrow('Unsupported skin schema version: 2.')
+    expect(() => parseSkinPack(' '.repeat(1_500_001))).toThrow('Skin package exceeds 1.5 MB.')
+  })
+
+  it('accepts a bounded embedded raster asset and selects the image backdrop recipe', () => {
+    const base = JSON.parse(serializeSkinPack(getBuiltInSkin('light-pro')!)) as Record<string, unknown>
+    const parsed = parseSkinPack(JSON.stringify({
+      ...base,
+      assets: { background: 'data:image/png;base64,iVBORw0KGgo=' },
+    }))
+    expect(parsed.assets?.background).toMatch(/^data:image\/png;base64,/u)
+    expect(parsed.recipes.backdrop).toBe('image')
   })
 
   it('returns ops dashboard for unknown layout presets', () => {

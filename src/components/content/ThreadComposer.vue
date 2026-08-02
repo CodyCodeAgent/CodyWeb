@@ -1,7 +1,8 @@
 <template>
-  <form class="thread-composer" data-testid="thread-composer" @submit.prevent="onSubmit">
+  <form class="thread-composer" data-cody-region="composer" data-testid="thread-composer" @submit.prevent="onSubmit">
     <div
       class="thread-composer-shell"
+      data-cody-component="composer-surface"
       :data-drag-active="isDraggingImages"
       @dragenter="onDragEnter"
       @dragover="onDragOver"

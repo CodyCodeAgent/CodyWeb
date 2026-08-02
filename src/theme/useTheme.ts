@@ -99,7 +99,8 @@ const themePersistenceError = ref('')
 let preferenceChangeVersion = 0
 
 function allSkins(): SkinPack[] {
-  const importedById = new Map(importedSkins.value.map((skin) => [skin.id, skin]))
+  const builtInIds = new Set(BUILT_IN_SKINS.map((skin) => skin.id))
+  const importedById = new Map(importedSkins.value.filter((skin) => !builtInIds.has(skin.id)).map((skin) => [skin.id, skin]))
   return [
     ...BUILT_IN_SKINS.filter((skin) => !importedById.has(skin.id)),
     ...importedSkins.value,
@@ -134,9 +135,21 @@ const resolvedSkin = computed(() => findSkin(
 const resolvedTokens = computed(() => resolveThemeTokens(resolvedSkin.value, effectivePreferences.value))
 const activeLayoutPreset = computed(() => getLayoutPreset(effectivePreferences.value.layoutPresetId))
 const isDarkTheme = computed(() => resolvedSkin.value.isDark)
+const isActiveSkinImported = computed(() => importedSkins.value.some((skin) => skin.id === resolvedSkin.value.id))
 const themeRootClass = computed(() => (isDarkTheme.value ? 'app-dark' : ''))
 const themeAttributes = computed(() => ({
   'data-theme-skin': resolvedSkin.value.id,
+  'data-skin-api': String(resolvedSkin.value.manifest.schemaVersion),
+  'data-skin-recipe-chrome': resolvedSkin.value.recipes.chrome,
+  'data-skin-recipe-navigation': resolvedSkin.value.recipes.navigation,
+  'data-skin-recipe-panel': resolvedSkin.value.recipes.panel,
+  'data-skin-recipe-control': resolvedSkin.value.recipes.control,
+  'data-skin-recipe-message': resolvedSkin.value.recipes.message,
+  'data-skin-recipe-composer': resolvedSkin.value.recipes.composer,
+  'data-skin-recipe-backdrop': resolvedSkin.value.recipes.backdrop,
+  'data-skin-chrome-label': resolvedSkin.value.manifest.chromeLabel ?? '',
+  'data-skin-has-background': resolvedSkin.value.assets?.background ? 'true' : 'false',
+  'data-skin-has-brand': resolvedSkin.value.assets?.brandMark ? 'true' : 'false',
   'data-theme-density': effectivePreferences.value.density,
   'data-layout-preset': effectivePreferences.value.layoutPresetId,
 }))
@@ -148,9 +161,26 @@ function applyCurrentTheme(): void {
     root.style.setProperty(name, value)
   }
   root.dataset.themeSkin = resolvedSkin.value.id
+  root.dataset.skinApi = String(resolvedSkin.value.manifest.schemaVersion)
+  root.dataset.skinRecipeChrome = resolvedSkin.value.recipes.chrome
+  root.dataset.skinRecipeNavigation = resolvedSkin.value.recipes.navigation
+  root.dataset.skinRecipePanel = resolvedSkin.value.recipes.panel
+  root.dataset.skinRecipeControl = resolvedSkin.value.recipes.control
+  root.dataset.skinRecipeMessage = resolvedSkin.value.recipes.message
+  root.dataset.skinRecipeComposer = resolvedSkin.value.recipes.composer
+  root.dataset.skinRecipeBackdrop = resolvedSkin.value.recipes.backdrop
+  root.dataset.skinChromeLabel = resolvedSkin.value.manifest.chromeLabel ?? ''
+  root.dataset.skinHasBackground = resolvedSkin.value.assets?.background ? 'true' : 'false'
+  root.dataset.skinHasBrand = resolvedSkin.value.assets?.brandMark ? 'true' : 'false'
   root.dataset.themeDensity = effectivePreferences.value.density
   root.dataset.layoutPreset = effectivePreferences.value.layoutPresetId
   root.style.colorScheme = resolvedSkin.value.isDark ? 'dark' : 'light'
+  const backgroundAsset = resolvedSkin.value.assets?.background
+  const brandAsset = resolvedSkin.value.assets?.brandMark
+  root.style.setProperty('--skin-background-image', backgroundAsset ? `url("${backgroundAsset}")` : 'none')
+  root.style.setProperty('--skin-background-fit', resolvedSkin.value.background?.fit ?? 'cover')
+  root.style.setProperty('--skin-background-position', resolvedSkin.value.background?.position ?? 'center')
+  root.style.setProperty('--skin-brand-image', brandAsset ? `url("${brandAsset}")` : 'none')
 }
 
 function normalizeKnownPreferences(nextPreferences: ThemePreferences): ThemePreferences {
@@ -240,6 +270,9 @@ function exportActiveSkin(): string {
 
 function importSkin(value: string): SkinPack {
   const skin = parseSkinPack(value)
+  if (BUILT_IN_SKINS.some((candidate) => candidate.id === skin.id)) {
+    throw new Error(`Skin id "${skin.id}" is reserved by a built-in skin.`)
+  }
   importedSkins.value = [
     ...importedSkins.value.filter((candidate) => candidate.id !== skin.id),
     skin,
@@ -248,6 +281,15 @@ function importSkin(value: string): SkinPack {
   void saveRemoteSetting(DESKTOP_SETTING_KEYS.themeImportedSkins, importedSkins.value.slice(0, 20), 'imported skins')
   setSkin(skin.id)
   return skin
+}
+
+function removeImportedSkin(skinId: string): void {
+  if (BUILT_IN_SKINS.some((skin) => skin.id === skinId)) throw new Error('Built-in skins cannot be removed.')
+  if (!importedSkins.value.some((skin) => skin.id === skinId)) return
+  importedSkins.value = importedSkins.value.filter((skin) => skin.id !== skinId)
+  saveImportedSkins(importedSkins.value)
+  void saveRemoteSetting(DESKTOP_SETTING_KEYS.themeImportedSkins, importedSkins.value.slice(0, 20), 'imported skins')
+  if (preferences.value.skinId === skinId) setSkin(DEFAULT_THEME_PREFERENCES.skinId)
 }
 
 async function hydrateThemeFromSettingsStore(): Promise<void> {
@@ -311,6 +353,7 @@ export function useTheme() {
     activeTokens: resolvedTokens,
     activeLayoutPreset,
     isDarkTheme,
+    isActiveSkinImported,
     themeRootClass,
     themeAttributes,
     applyCurrentTheme,
@@ -326,5 +369,6 @@ export function useTheme() {
     resetTheme,
     exportActiveSkin,
     importSkin,
+    removeImportedSkin,
   }
 }

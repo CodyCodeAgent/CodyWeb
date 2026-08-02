@@ -53,13 +53,18 @@ describe('desktopTurnPreferences', () => {
   })
 
   it('selects and reconciles collaboration mode names', () => {
-    const options = mergeCollaborationModeOptions([planMode({ name: 'planner' })])
+    const options = mergeCollaborationModeOptions([
+      planMode({ name: 'planner' }),
+      planMode({ name: 'Plan', label: 'Plan' }),
+    ])
 
     expect(selectCollaborationModeName(' planner ', options)).toBe('planner')
+    expect(selectCollaborationModeName('PLAN', options)).toBe('Plan')
     expect(selectCollaborationModeName('', options)).toBe(DEFAULT_COLLABORATION_MODE.name)
     expect(selectCollaborationModeName('missing', options)).toBe('')
     expect(reconcileSelectedCollaborationModeName('missing', options)).toBe(DEFAULT_COLLABORATION_MODE.name)
     expect(reconcileSelectedCollaborationModeName('planner', options)).toBe('planner')
+    expect(reconcileSelectedCollaborationModeName('plan', options)).toBe('Plan')
   })
 
   it('builds pending turn details with optional mode labeling', () => {

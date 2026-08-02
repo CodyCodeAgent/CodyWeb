@@ -1,5 +1,5 @@
 <template>
-  <header class="content-header">
+  <header class="content-header" data-cody-region="titlebar" data-cody-component="panel">
     <span class="content-telemetry" aria-hidden="true" />
     <div class="content-leading">
       <slot name="leading" />

@@ -1,5 +1,30 @@
 export type ThemeDensity = 'compact' | 'comfortable' | 'spacious'
 
+export const SKIN_API_VERSION = 1 as const
+
+export type SkinRecipes = {
+  chrome: 'native' | 'glossy' | 'terminal'
+  navigation: 'native' | 'classic' | 'pill'
+  panel: 'native' | 'beveled' | 'glass'
+  control: 'native' | 'beveled' | 'outline'
+  message: 'native' | 'bubble' | 'rail'
+  composer: 'native' | 'beveled' | 'glass'
+  backdrop: 'solid' | 'aero-grid' | 'grid' | 'image'
+}
+
+export type SkinAssets = {
+  background?: string
+  brandMark?: string
+}
+
+export type SkinManifest = {
+  schemaVersion: typeof SKIN_API_VERSION
+  version: string
+  author: string
+  homepage?: string
+  chromeLabel?: string
+}
+
 export type ThemeTokens = {
   color: {
     background: string
@@ -46,6 +71,7 @@ export type ThemeTokens = {
 }
 
 export type SkinPack = {
+  manifest: SkinManifest
   id: string
   name: string
   description: string
@@ -54,9 +80,23 @@ export type SkinPack = {
   syntaxTheme: 'light' | 'dark' | string
   terminalTheme: Record<string, string>
   chartPalette: string[]
+  recipes: SkinRecipes
+  assets?: SkinAssets
   background?: {
     type: 'solid' | 'grid' | 'noise' | 'image' | 'animated'
+    fit?: 'cover' | 'contain'
+    position?: string
   }
+}
+
+export const DEFAULT_SKIN_RECIPES: SkinRecipes = {
+  chrome: 'native',
+  navigation: 'native',
+  panel: 'native',
+  control: 'native',
+  message: 'native',
+  composer: 'native',
+  backdrop: 'solid',
 }
 
 export type LayoutPresetId = 'chat-focus' | 'review-focus' | 'ops-dashboard' | 'ide-mode' | 'mobile-review'

@@ -1,6 +1,6 @@
 <template>
-  <div class="desktop-layout" :style="layoutStyle">
-    <aside v-if="!isSidebarCollapsed" class="desktop-sidebar">
+  <div class="desktop-layout" data-cody-region="app-shell" :style="layoutStyle">
+    <aside v-if="!isSidebarCollapsed" class="desktop-sidebar" data-cody-region="sidebar">
       <slot name="sidebar" />
     </aside>
     <button
@@ -16,7 +16,7 @@
       @mousedown="onResizeHandleMouseDown"
       @keydown="onResizeHandleKeyDown"
     />
-    <section class="desktop-main">
+    <section class="desktop-main" data-cody-region="workspace">
       <slot name="content" />
     </section>
   </div>

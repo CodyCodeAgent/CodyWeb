@@ -44,6 +44,9 @@ protocol.
   interval, daily, weekly, monthly, workday, exclusion-date, or Cron plans.
 - Apply persistent light/dark skins, accent colors, global density, and five
   workspace layout presets across Settings, conversations, and dashboards.
+- Import, export, and share validated `.cody-skin` packages through the
+  versioned [Skin API v1](docs/SKIN_API.md), including semantic component
+  recipes and bounded local raster assets without executable skin code.
 - View account rate limits and token usage.
 - Use a configurable token flame widget for daily usage intensity.
 - Protect remote browser access with a password by default.

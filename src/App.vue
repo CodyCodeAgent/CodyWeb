@@ -5,9 +5,9 @@
     v-bind="themeAttributes"
   >
     <template #sidebar>
-      <section class="sidebar-root">
-        <div class="sidebar-brand">
-          <span>CODY / CONTROL</span>
+      <section class="sidebar-root" data-cody-region="sidebar-content">
+          <div class="sidebar-brand">
+            <span :data-skin-label="activeSkin.manifest.chromeLabel ?? ''">CODY / CONTROL</span>
         </div>
         <SidebarThreadControls
           v-if="!isEffectiveSidebarCollapsed"
@@ -112,7 +112,7 @@
     </template>
 
     <template #content>
-      <section class="content-root">
+      <section class="content-root" data-cody-region="content">
         <ContentHeader :title="contentTitle">
           <template #leading>
             <SidebarThreadControls
@@ -213,7 +213,7 @@
           </button>
         </div>
 
-        <div v-if="!isSettingsRoute" class="workspace-context-bar" :aria-label="t('app.workspaceContext')">
+        <div v-if="!isSettingsRoute" class="workspace-context-bar" data-cody-region="contextbar" :aria-label="t('app.workspaceContext')">
           <span class="workspace-context-live" aria-hidden="true" />
           <span><small>{{ t('app.workspace') }}</small>{{ newThreadProjectLabel || t('app.notSelected') }}</span>
           <span><small>{{ t('app.path') }}</small>{{ tokenFlameCwd || '—' }}</span>
@@ -422,6 +422,7 @@ const {
 const browserNotifications = useBrowserNotifications()
 const {
   isDarkTheme: isDarkMode,
+  activeSkin,
   themeRootClass,
   themeAttributes,
   applyCurrentTheme,

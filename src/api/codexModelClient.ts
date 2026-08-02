@@ -15,6 +15,15 @@ export type CurrentModelConfig = {
   autoCompactTokenLimit: number | null
 }
 
+type CollaborationModeRow = Omit<
+  CollaborationModeListResponse['data'][number],
+  'developer_instructions'
+> & {
+  // Codex 0.144 no longer returns this field from collaborationMode/list.
+  // Keep accepting it for compatibility with older app-server versions.
+  developer_instructions?: string | null
+}
+
 async function callRpc<T>(method: string, params?: unknown): Promise<T> {
   try {
     return await rpcCall<T>(method, params)
@@ -53,7 +62,7 @@ function normalizeCollaborationModeLabel(name: string, mode: UiCollaborationMode
 }
 
 export function normalizeCollaborationModeOption(
-  row: CollaborationModeListResponse['data'][number],
+  row: CollaborationModeRow,
 ): UiCollaborationModeOption | null {
   const mode = row.mode === 'plan' || row.mode === 'default' ? row.mode : null
   if (!mode) return null
@@ -64,7 +73,9 @@ export function normalizeCollaborationModeOption(
     label: normalizeCollaborationModeLabel(name, mode),
     model: row.model?.trim() ?? '',
     reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
-    developerInstructions: row.developer_instructions,
+    developerInstructions: typeof row.developer_instructions === 'string'
+      ? row.developer_instructions
+      : null,
   }
 }
 

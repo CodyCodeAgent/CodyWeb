@@ -8,7 +8,20 @@ import type {
   ThemeTokens,
   WorkspaceThemePreferences,
 } from './tokens'
-import { DEFAULT_THEME_PREFERENCES } from './tokens'
+import { DEFAULT_SKIN_RECIPES, DEFAULT_THEME_PREFERENCES, SKIN_API_VERSION } from './tokens'
+
+const MAX_SKIN_PACKAGE_BYTES = 1_500_000
+const MAX_SKIN_ASSET_BYTES = 512_000
+const DATA_IMAGE_PATTERN = /^data:image\/(?:png|jpeg|webp);base64,([a-z0-9+/]+={0,2})$/iu
+const RECIPE_VALUES = {
+  chrome: ['native', 'glossy', 'terminal'],
+  navigation: ['native', 'classic', 'pill'],
+  panel: ['native', 'beveled', 'glass'],
+  control: ['native', 'beveled', 'outline'],
+  message: ['native', 'bubble', 'rail'],
+  composer: ['native', 'beveled', 'glass'],
+  backdrop: ['solid', 'aero-grid', 'grid', 'image'],
+} as const
 
 export const LAYOUT_PRESETS: LayoutPreset[] = [
   {
@@ -193,16 +206,160 @@ export function themeTokensToCssVariables(tokens: ThemeTokens): Record<string, s
 }
 
 export function serializeSkinPack(skin: SkinPack): string {
-  return JSON.stringify(skin, null, 2)
+  return `${JSON.stringify(parseSkinPack(JSON.stringify(skin)), null, 2)}\n`
+}
+
+function objectRow(value: unknown, label: string): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} must be an object.`)
+  }
+  return value as Record<string, unknown>
+}
+
+function safeString(value: unknown, label: string, maxLength: number, allowEmpty = false): string {
+  if (typeof value !== 'string' || (!allowEmpty && !value.trim()) || value.length > maxLength || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new Error(`${label} is invalid.`)
+  }
+  return value.trim()
+}
+
+function enumValue<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
+  if (typeof value !== 'string' || !allowed.includes(value as T)) throw new Error(`${label} is not supported.`)
+  return value as T
+}
+
+function colorValue(value: unknown, label: string): string {
+  const color = safeString(value, label, 9)
+  if (!isColor(color)) throw new Error(`${label} must be a hex color.`)
+  return color
+}
+
+function cssValue(value: unknown, label: string, maxLength = 240): string {
+  const result = safeString(value, label, maxLength)
+  if (/[{};]|url\s*\(|@import|expression\s*\(/iu.test(result)) throw new Error(`${label} contains unsupported CSS.`)
+  return result
+}
+
+function imageAsset(value: unknown, label: string): string {
+  const asset = safeString(value, label, MAX_SKIN_ASSET_BYTES * 2)
+  const match = DATA_IMAGE_PATTERN.exec(asset)
+  if (!match) throw new Error(`${label} must be an embedded PNG, JPEG, or WebP data URL.`)
+  const decodedBytes = Math.floor(match[1].length * 3 / 4) - (match[1].endsWith('==') ? 2 : match[1].endsWith('=') ? 1 : 0)
+  if (decodedBytes > MAX_SKIN_ASSET_BYTES) throw new Error(`${label} exceeds 500 KB.`)
+  return asset
+}
+
+function normalizedTokens(value: unknown): ThemeTokens {
+  const row = objectRow(value, 'tokens')
+  const color = objectRow(row.color, 'tokens.color')
+  const font = objectRow(row.font, 'tokens.font')
+  const spacing = objectRow(row.spacing, 'tokens.spacing')
+  const radius = objectRow(row.radius, 'tokens.radius')
+  const shadow = objectRow(row.shadow, 'tokens.shadow')
+  const motion = objectRow(row.motion, 'tokens.motion')
+  return {
+    color: {
+      background: colorValue(color.background, 'tokens.color.background'),
+      surface: colorValue(color.surface, 'tokens.color.surface'),
+      panel: colorValue(color.panel, 'tokens.color.panel'),
+      elevated: colorValue(color.elevated, 'tokens.color.elevated'),
+      text: colorValue(color.text, 'tokens.color.text'),
+      textMuted: colorValue(color.textMuted, 'tokens.color.textMuted'),
+      border: colorValue(color.border, 'tokens.color.border'),
+      accent: colorValue(color.accent, 'tokens.color.accent'),
+      danger: colorValue(color.danger, 'tokens.color.danger'),
+      warning: colorValue(color.warning, 'tokens.color.warning'),
+      success: colorValue(color.success, 'tokens.color.success'),
+      info: colorValue(color.info, 'tokens.color.info'),
+      codeBackground: colorValue(color.codeBackground, 'tokens.color.codeBackground'),
+      terminalBackground: colorValue(color.terminalBackground, 'tokens.color.terminalBackground'),
+    },
+    font: {
+      sans: cssValue(font.sans, 'tokens.font.sans'),
+      mono: cssValue(font.mono, 'tokens.font.mono'),
+    },
+    spacing: {
+      xs: cssValue(spacing.xs, 'tokens.spacing.xs', 32),
+      sm: cssValue(spacing.sm, 'tokens.spacing.sm', 32),
+      md: cssValue(spacing.md, 'tokens.spacing.md', 32),
+      lg: cssValue(spacing.lg, 'tokens.spacing.lg', 32),
+    },
+    radius: {
+      sm: cssValue(radius.sm, 'tokens.radius.sm', 32),
+      md: cssValue(radius.md, 'tokens.radius.md', 32),
+      lg: cssValue(radius.lg, 'tokens.radius.lg', 32),
+    },
+    shadow: {
+      panel: cssValue(shadow.panel, 'tokens.shadow.panel'),
+      floating: cssValue(shadow.floating, 'tokens.shadow.floating'),
+      focus: cssValue(shadow.focus, 'tokens.shadow.focus'),
+    },
+    motion: {
+      fast: cssValue(motion.fast, 'tokens.motion.fast', 32),
+      normal: cssValue(motion.normal, 'tokens.motion.normal', 32),
+      slow: cssValue(motion.slow, 'tokens.motion.slow', 32),
+    },
+    density: normalizeThemeDensity(row.density),
+  }
 }
 
 export function parseSkinPack(value: string): SkinPack {
-  const parsed = JSON.parse(value) as unknown
-  const row = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-    ? parsed as Record<string, unknown>
-    : null
-  if (!row || typeof row.id !== 'string' || typeof row.name !== 'string' || typeof row.tokens !== 'object') {
-    throw new Error('Skin JSON must include id, name, and tokens.')
+  if (new TextEncoder().encode(value).byteLength > MAX_SKIN_PACKAGE_BYTES) throw new Error('Skin package exceeds 1.5 MB.')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value) as unknown
+  } catch {
+    throw new Error('Skin package is not valid JSON.')
   }
-  return parsed as SkinPack
+  const row = objectRow(parsed, 'Skin package')
+  const id = safeString(row.id, 'id', 64)
+  if (!/^[a-z0-9][a-z0-9-]{1,63}$/u.test(id)) throw new Error('id must use 2–64 lowercase letters, numbers, or hyphens.')
+  const manifestRow = row.manifest === undefined ? {} : objectRow(row.manifest, 'manifest')
+  const schemaVersion = manifestRow.schemaVersion ?? SKIN_API_VERSION
+  if (schemaVersion !== SKIN_API_VERSION) throw new Error(`Unsupported skin schema version: ${String(schemaVersion)}.`)
+  const recipesRow = row.recipes === undefined ? {} : objectRow(row.recipes, 'recipes')
+  const assetsRow = row.assets === undefined ? null : objectRow(row.assets, 'assets')
+  const backgroundRow = row.background === undefined ? null : objectRow(row.background, 'background')
+  const terminalThemeRow = objectRow(row.terminalTheme, 'terminalTheme')
+  const chartPalette = Array.isArray(row.chartPalette) ? row.chartPalette : []
+  if (chartPalette.length < 1 || chartPalette.length > 12) throw new Error('chartPalette must contain 1–12 colors.')
+  const homepage = manifestRow.homepage === undefined ? '' : safeString(manifestRow.homepage, 'manifest.homepage', 300)
+  if (homepage && !/^https?:\/\//u.test(homepage)) throw new Error('manifest.homepage must use http or https.')
+  const pack: SkinPack = {
+    manifest: {
+      schemaVersion: SKIN_API_VERSION,
+      version: manifestRow.version === undefined ? '1.0.0' : safeString(manifestRow.version, 'manifest.version', 40),
+      author: manifestRow.author === undefined ? 'Imported' : safeString(manifestRow.author, 'manifest.author', 100),
+      ...(homepage ? { homepage } : {}),
+      ...(manifestRow.chromeLabel === undefined ? {} : { chromeLabel: safeString(manifestRow.chromeLabel, 'manifest.chromeLabel', 24) }),
+    },
+    id,
+    name: safeString(row.name, 'name', 80),
+    description: safeString(row.description ?? '', 'description', 240, true),
+    isDark: row.isDark === true,
+    tokens: normalizedTokens(row.tokens),
+    syntaxTheme: safeString(row.syntaxTheme, 'syntaxTheme', 40),
+    terminalTheme: Object.fromEntries(Object.entries(terminalThemeRow).map(([key, entry]) => [
+      safeString(key, 'terminalTheme key', 40),
+      colorValue(entry, `terminalTheme.${key}`),
+    ])),
+    chartPalette: chartPalette.map((entry, index) => colorValue(entry, `chartPalette[${index}]`)),
+    recipes: Object.fromEntries(Object.entries(RECIPE_VALUES).map(([key, allowed]) => [
+      key,
+      enumValue(recipesRow[key] ?? DEFAULT_SKIN_RECIPES[key as keyof typeof DEFAULT_SKIN_RECIPES], allowed, `recipes.${key}`),
+    ])) as SkinPack['recipes'],
+    ...(assetsRow ? { assets: {
+      ...(assetsRow.background === undefined ? {} : { background: imageAsset(assetsRow.background, 'assets.background') }),
+      ...(assetsRow.brandMark === undefined ? {} : { brandMark: imageAsset(assetsRow.brandMark, 'assets.brandMark') }),
+    } } : {}),
+    ...(backgroundRow ? { background: {
+      type: enumValue(backgroundRow.type ?? 'solid', ['solid', 'grid', 'noise', 'image', 'animated'] as const, 'background.type'),
+      ...(backgroundRow.fit === undefined ? {} : { fit: enumValue(backgroundRow.fit, ['cover', 'contain'] as const, 'background.fit') }),
+      ...(backgroundRow.position === undefined ? {} : { position: safeString(backgroundRow.position, 'background.position', 40) }),
+    } } : {}),
+  }
+  if (pack.assets?.background && pack.recipes.backdrop !== 'image') {
+    pack.recipes.backdrop = 'image'
+  }
+  return pack
 }

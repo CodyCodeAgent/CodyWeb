@@ -46,6 +46,20 @@ describe('codex model client', () => {
       reasoning_effort: null,
       developer_instructions: null,
     })).toBeNull()
+
+    expect(normalizeCollaborationModeOption({
+      name: 'Plan',
+      mode: 'plan',
+      model: null,
+      reasoning_effort: 'medium',
+    })).toEqual({
+      name: 'Plan',
+      mode: 'plan',
+      label: 'Plan',
+      model: '',
+      reasoningEffort: 'medium',
+      developerInstructions: null,
+    })
   })
 
   it('normalizes numeric token limits from app-server payloads', () => {

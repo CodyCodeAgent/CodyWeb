@@ -71,18 +71,30 @@ export function selectCollaborationModeName(
 ): string {
   const normalizedName = requestedName.trim()
   if (!normalizedName) return DEFAULT_COLLABORATION_MODE.name
-  return options.some((option) => option.name === normalizedName)
-    ? normalizedName
-    : ''
+  const option = options.find((candidate) =>
+    candidate.name === normalizedName ||
+    candidate.name.toLocaleLowerCase() === normalizedName.toLocaleLowerCase()
+  )
+  return option?.name ?? ''
 }
 
 export function reconcileSelectedCollaborationModeName(
   selectedName: string,
   options: UiCollaborationModeOption[],
 ): string {
-  return options.some((option) => option.name === selectedName)
-    ? selectedName
-    : DEFAULT_COLLABORATION_MODE.name
+  const normalizedName = selectedName.trim()
+  const option = options.find((candidate) =>
+    candidate.name === normalizedName ||
+    candidate.name.toLocaleLowerCase() === normalizedName.toLocaleLowerCase()
+  )
+  if (option) return option.name
+
+  const modeAlias = normalizedName.toLocaleLowerCase()
+  if (modeAlias === 'plan' || modeAlias === 'default') {
+    return options.find((candidate) => candidate.mode === modeAlias)?.name
+      ?? DEFAULT_COLLABORATION_MODE.name
+  }
+  return DEFAULT_COLLABORATION_MODE.name
 }
 
 export function buildPendingTurnDetails(

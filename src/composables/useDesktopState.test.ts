@@ -1026,38 +1026,39 @@ describe('useDesktopState realtime messages', () => {
         settings: {
           model: '',
           reasoning_effort: 'medium',
-          developer_instructions: 'When you use a plan, update its structured step statuses before moving to the next step and immediately after completing a step. Keep exactly one step in progress at a time.',
+          developer_instructions: null,
         },
       },
     )
   })
 
-  it('passes YOLO permission overrides when selected for the composer', async () => {
+  it('preserves built-in Plan instructions while applying YOLO permission overrides', async () => {
     installBrowserGlobals('thread-a')
     codexApiMock.startThreadTurn.mockResolvedValue('turn-1')
 
     const state = useDesktopState()
+    state.setSelectedCollaborationModeName('plan')
     state.setSelectedPermissionMode('yolo')
 
     await state.sendMessageToSelectedThread({
-      text: '这次用 yolo',
+      text: '先规划并允许无审批探索',
       images: [],
       skills: [],
     })
 
     expect(codexApiMock.startThreadTurn).toHaveBeenCalledWith(
       'thread-a',
-      '这次用 yolo',
+      '先规划并允许无审批探索',
       [],
       [],
       undefined,
       'medium',
       {
-        mode: 'default',
+        mode: 'plan',
         settings: {
           model: '',
           reasoning_effort: 'medium',
-          developer_instructions: 'When you use a plan, update its structured step statuses before moving to the next step and immediately after completing a step. Keep exactly one step in progress at a time.',
+          developer_instructions: null,
         },
       },
       {
@@ -1096,7 +1097,7 @@ describe('useDesktopState realtime messages', () => {
         settings: {
           model: '',
           reasoning_effort: 'medium',
-          developer_instructions: 'When you use a plan, update its structured step statuses before moving to the next step and immediately after completing a step. Keep exactly one step in progress at a time.',
+          developer_instructions: null,
         },
       },
     )
