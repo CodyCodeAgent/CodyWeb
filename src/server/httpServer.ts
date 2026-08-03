@@ -11,6 +11,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const distDir = join(__dirname, '..', 'dist')
 
 export type ServerOptions = {
+  authDatabasePath?: string
   password?: string
   host?: string
   port?: number | null
@@ -49,7 +50,9 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
 
   // 1. Auth middleware (if password is set)
   if (options.password) {
-    authMiddleware = createAuthMiddleware(options.password)
+    authMiddleware = createAuthMiddleware(options.password, {
+      databasePath: options.authDatabasePath,
+    })
     app.use(authMiddleware)
   }
 
@@ -80,6 +83,9 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
     attachWebSocketServer: (server) => attachCodexBridgeWebSocketServer(server, {
       authorizeUpgrade: authMiddleware?.authorizeUpgrade,
     }),
-    dispose: () => bridge.dispose(),
+    dispose: () => {
+      authMiddleware?.dispose()
+      bridge.dispose()
+    },
   }
 }

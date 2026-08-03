@@ -566,6 +566,13 @@ You can override that path with:
 CODY_WEB_UI_SETTINGS_DB=/path/to/settings.sqlite3 cody-web-ui
 ```
 
+Password-protected deployments also persist hashed authentication sessions and
+trusted-device records in this database. Sessions use an absolute eight-hour
+expiry and survive ordinary service restarts and deployments. Changing the
+configured password invalidates sessions issued for the previous password;
+logging out deletes the current session immediately. Raw session tokens are
+kept only in the browser cookie and are never written to SQLite.
+
 ## Documentation
 
 - [Final product vision](docs/FINAL_PRODUCT_VISION.md)

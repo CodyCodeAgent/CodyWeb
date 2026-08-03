@@ -1,6 +1,11 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
 import type { RequestHandler, Request, Response, NextFunction } from 'express'
+import {
+  createAuthSessionStore,
+  type StoredAuthSession as AuthSession,
+  type StoredTrustedDevice as TrustedDevice,
+} from './authSessionStore.js'
 
 const TOKEN_COOKIE = 'cody_web_ui_token'
 const DEVICE_COOKIE = 'cody_web_ui_device'
@@ -9,28 +14,13 @@ const DEFAULT_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000
 const DEFAULT_RATE_LIMIT_BLOCK_MS = 15 * 60 * 1000
 const DEFAULT_MAX_FAILED_ATTEMPTS = 5
 
-type AuthSession = {
-  token: string
-  deviceId: string
-  createdAtMs: number
-  expiresAtMs: number
-  lastSeenAtMs: number
-  ip: string
-}
-
-type TrustedDevice = {
-  deviceId: string
-  trustedAtMs: number
-  lastSeenAtMs: number
-  ip: string
-}
-
 type LoginRateLimitState = {
   failedAtMs: number[]
   blockedUntilMs: number
 }
 
 export type AuthMiddlewareOptions = {
+  databasePath?: string
   sessionTtlMs?: number
   rateLimitWindowMs?: number
   rateLimitBlockMs?: number
@@ -40,6 +30,7 @@ export type AuthMiddlewareOptions = {
 
 export type AuthMiddleware = RequestHandler & {
   authorizeUpgrade: (req: IncomingMessage) => boolean
+  dispose: () => void
 }
 
 function constantTimeCompare(a: string, b: string): boolean {
@@ -125,35 +116,19 @@ form.addEventListener('submit',async e=>{
 </html>`
 
 export function createAuthMiddleware(password: string, options: AuthMiddlewareOptions = {}): AuthMiddleware {
-  const sessions = new Map<string, AuthSession>()
-  const trustedDevices = new Map<string, TrustedDevice>()
   const rateLimits = new Map<string, LoginRateLimitState>()
   const sessionTtlMs = Math.max(60_000, options.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS)
   const rateLimitWindowMs = Math.max(1_000, options.rateLimitWindowMs ?? DEFAULT_RATE_LIMIT_WINDOW_MS)
   const rateLimitBlockMs = Math.max(1_000, options.rateLimitBlockMs ?? DEFAULT_RATE_LIMIT_BLOCK_MS)
   const maxFailedAttempts = Math.max(1, options.maxFailedAttempts ?? DEFAULT_MAX_FAILED_ATTEMPTS)
   const now = options.now ?? (() => Date.now())
-
-  function deleteExpiredSessions(nowMs: number): void {
-    for (const [token, session] of sessions) {
-      if (session.expiresAtMs <= nowMs) {
-        sessions.delete(token)
-      }
-    }
-  }
+  const sessionStore = createAuthSessionStore(password, options.databasePath, now())
 
   function readSessionFromCookie(cookieHeader: string | undefined, nowMs: number): AuthSession | null {
-    deleteExpiredSessions(nowMs)
     const cookies = parseCookies(cookieHeader)
     const token = cookies[TOKEN_COOKIE]
     if (!token) return null
-    const session = sessions.get(token)
-    if (!session || session.expiresAtMs <= nowMs) {
-      sessions.delete(token)
-      return null
-    }
-    session.lastSeenAtMs = nowMs
-    return session
+    return sessionStore.readSession(token, nowMs)
   }
 
   function readSession(req: Request, nowMs: number): AuthSession | null {
@@ -194,8 +169,11 @@ export function createAuthMiddleware(password: string, options: AuthMiddlewareOp
         res.status(401).json({ authenticated: false })
         return
       }
-      const trustedDevice = trustedDevices.get(session.deviceId) ?? null
-      if (trustedDevice) trustedDevice.lastSeenAtMs = nowMs
+      const trustedDevice = sessionStore.readTrustedDevice(session.deviceId)
+      if (trustedDevice) {
+        trustedDevice.lastSeenAtMs = nowMs
+        sessionStore.writeTrustedDevice(trustedDevice)
+      }
       res.json({
         authenticated: true,
         deviceId: session.deviceId,
@@ -215,8 +193,7 @@ export function createAuthMiddleware(password: string, options: AuthMiddlewareOp
         return
       }
       res.json({
-        devices: Array.from(trustedDevices.values())
-          .sort((a, b) => b.trustedAtMs - a.trustedAtMs)
+        devices: sessionStore.listTrustedDevices()
           .map((device) => ({
             deviceId: device.deviceId,
             trustedAtIso: new Date(device.trustedAtMs).toISOString(),
@@ -239,7 +216,7 @@ export function createAuthMiddleware(password: string, options: AuthMiddlewareOp
         lastSeenAtMs: nowMs,
         ip,
       }
-      trustedDevices.set(session.deviceId, trustedDevice)
+      sessionStore.writeTrustedDevice(trustedDevice)
       res.json({
         ok: true,
         deviceId: session.deviceId,
@@ -255,7 +232,7 @@ export function createAuthMiddleware(password: string, options: AuthMiddlewareOp
         res.status(401).json({ authenticated: false })
         return
       }
-      trustedDevices.delete(session.deviceId)
+      sessionStore.deleteTrustedDevice(session.deviceId)
       res.json({
         ok: true,
         deviceId: session.deviceId,
@@ -267,7 +244,7 @@ export function createAuthMiddleware(password: string, options: AuthMiddlewareOp
     if (req.method === 'POST' && req.path === '/auth/logout') {
       const cookies = parseCookies(req.headers.cookie)
       const token = cookies[TOKEN_COOKIE]
-      if (token) sessions.delete(token)
+      if (token) sessionStore.deleteSession(token)
       res.setHeader('Set-Cookie', [
         clearCookie(TOKEN_COOKIE),
       ])
@@ -316,10 +293,13 @@ export function createAuthMiddleware(password: string, options: AuthMiddlewareOp
             lastSeenAtMs: nowMs,
             ip,
           }
-          sessions.set(token, session)
+          sessionStore.writeSession(session)
           resetRateLimit(ip)
-          const trustedDevice = trustedDevices.get(deviceId) ?? null
-          if (trustedDevice) trustedDevice.lastSeenAtMs = nowMs
+          const trustedDevice = sessionStore.readTrustedDevice(deviceId)
+          if (trustedDevice) {
+            trustedDevice.lastSeenAtMs = nowMs
+            sessionStore.writeTrustedDevice(trustedDevice)
+          }
 
           res.setHeader('Set-Cookie', [
             `${TOKEN_COOKIE}=${token}; ${cookieAttributes(sessionTtlMs / 1000)}`,
@@ -352,6 +332,7 @@ export function createAuthMiddleware(password: string, options: AuthMiddlewareOp
 
   middleware.authorizeUpgrade = (req: IncomingMessage): boolean =>
     Boolean(readSessionFromCookie(req.headers.cookie, now()))
+  middleware.dispose = () => sessionStore.close()
 
   return middleware
 }

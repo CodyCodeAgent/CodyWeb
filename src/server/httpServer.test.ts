@@ -132,7 +132,13 @@ describe('httpServer', () => {
   it('keeps Feishu management behind the normal CodyWeb login on plain HTTP', async () => {
     const { createServer } = await import('./httpServer.js')
     const distDir = await createDistFixture()
-    const instance = createServer({ distDir, host: '0.0.0.0', port: null, password: 'test-password' })
+    const instance = createServer({
+      distDir,
+      host: '0.0.0.0',
+      port: null,
+      password: 'test-password',
+      authDatabasePath: join(distDir, 'settings.sqlite3'),
+    })
     const server = createHttpServer(instance.app)
 
     try {

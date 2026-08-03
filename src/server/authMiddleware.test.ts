@@ -1,7 +1,11 @@
 import http, { type Server } from 'node:http'
 import express from 'express'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createAuthMiddleware } from './authMiddleware'
+import { openLocalDatabase } from './localDatabase'
 
 type TestServer = {
   baseUrl: string
@@ -9,6 +13,7 @@ type TestServer = {
 }
 
 async function startAuthServer(options: {
+  databasePath?: string
   password?: string
   sessionTtlMs?: number
   rateLimitWindowMs?: number
@@ -16,14 +21,21 @@ async function startAuthServer(options: {
   maxFailedAttempts?: number
   now?: () => number
 } = {}): Promise<TestServer> {
+  const databasePath = options.databasePath ?? join(
+    await mkdtemp(join(tmpdir(), 'cody-auth-middleware-')),
+    'settings.sqlite3',
+  )
+  if (!options.databasePath) temporaryDirectories.push(dirname(databasePath))
   const app = express()
-  app.use(createAuthMiddleware(options.password ?? 'correct-password', {
+  const authMiddleware = createAuthMiddleware(options.password ?? 'correct-password', {
+    databasePath,
     sessionTtlMs: options.sessionTtlMs,
     rateLimitWindowMs: options.rateLimitWindowMs,
     rateLimitBlockMs: options.rateLimitBlockMs,
     maxFailedAttempts: options.maxFailedAttempts,
     now: options.now,
-  }))
+  })
+  app.use(authMiddleware)
   app.get('/protected', (_req, res) => {
     res.json({ ok: true })
   })
@@ -33,14 +45,20 @@ async function startAuthServer(options: {
   })
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('test server did not bind a TCP port')
+  let closed = false
   return {
     baseUrl: `http://127.0.0.1:${String(address.port)}`,
-    close: () => new Promise((resolve, reject) => {
-      server.close((error?: Error) => {
-        if (error) reject(error)
-        else resolve()
+    close: () => {
+      if (closed) return Promise.resolve()
+      closed = true
+      return new Promise((resolve, reject) => {
+        server.close((error?: Error) => {
+          authMiddleware.dispose()
+          if (error) reject(error)
+          else resolve()
+        })
       })
-    }),
+    },
   }
 }
 
@@ -57,9 +75,11 @@ function cookiesFrom(response: Response): string {
 }
 
 const servers: TestServer[] = []
+const temporaryDirectories: string[] = []
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()))
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
 
 describe('authMiddleware', () => {
@@ -231,6 +251,61 @@ describe('authMiddleware', () => {
       trustedDevice: false,
       trustedAtIso: null,
     })
+  })
+
+  it('persists hashed sessions and trusted devices across server restarts', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cody-auth-restart-'))
+    temporaryDirectories.push(directory)
+    const databasePath = join(directory, 'settings.sqlite3')
+    const nowMs = Date.parse('2026-08-03T13:00:00.000Z')
+    const firstServer = await startAuthServer({ databasePath, now: () => nowMs })
+    servers.push(firstServer)
+
+    const login = await fetch(`${firstServer.baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'correct-password' }),
+    })
+    const cookie = cookiesFrom(login)
+    const rawToken = cookie.match(/(?:^|;\s*)cody_web_ui_token=([^;]+)/u)?.[1] ?? ''
+    expect(rawToken).toHaveLength(64)
+
+    const trust = await fetch(`${firstServer.baseUrl}/auth/device/trust`, {
+      method: 'POST',
+      headers: { cookie },
+    })
+    expect(trust.status).toBe(200)
+
+    const db = openLocalDatabase(databasePath)
+    const persisted = db.prepare('SELECT token_hash AS tokenHash FROM auth_sessions LIMIT 1').get() as { tokenHash: string }
+    db.close()
+    expect(persisted.tokenHash).toHaveLength(64)
+    expect(persisted.tokenHash).not.toBe(rawToken)
+
+    await firstServer.close()
+    const restartedServer = await startAuthServer({ databasePath, now: () => nowMs + 30_000 })
+    servers.push(restartedServer)
+
+    const restored = await fetch(`${restartedServer.baseUrl}/auth/session`, {
+      headers: { cookie },
+    })
+    expect(restored.status).toBe(200)
+    await expect(restored.json()).resolves.toMatchObject({
+      authenticated: true,
+      trustedDevice: true,
+    })
+
+    await restartedServer.close()
+    const changedPasswordServer = await startAuthServer({
+      databasePath,
+      password: 'new-password',
+      now: () => nowMs + 45_000,
+    })
+    servers.push(changedPasswordServer)
+    const invalidated = await fetch(`${changedPasswordServer.baseUrl}/auth/session`, {
+      headers: { cookie },
+    })
+    expect(invalidated.status).toBe(401)
   })
 
   it('rate limits repeated failed logins and resets after success', async () => {

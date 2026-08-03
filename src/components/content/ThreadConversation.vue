@@ -256,16 +256,16 @@
 
               <div
                 v-if="message.tool?.kind === 'context'"
-                class="context-compaction-divider"
+                class="system-event-divider context-compaction-divider"
                 data-testid="context-compaction-divider"
                 role="status"
               >
-                <span class="context-compaction-divider-line" aria-hidden="true" />
-                <span class="context-compaction-divider-copy">
+                <span class="system-event-divider-heading">
+                  <span class="system-event-divider-line" aria-hidden="true" />
                   <strong>{{ t('conversation.contextCompacted') }}</strong>
-                  <small>{{ t('conversation.contextCompactedHint') }}</small>
+                  <span class="system-event-divider-line" aria-hidden="true" />
                 </span>
-                <span class="context-compaction-divider-line" aria-hidden="true" />
+                <small>{{ t('conversation.contextCompactedHint') }}</small>
               </div>
 
               <FileChangeTimelineGroup
@@ -320,17 +320,18 @@
                 :data-role="message.role"
                 :data-message-type="message.messageType || ''"
               >
-                <details v-if="message.messageType === 'worked'" class="turn-receipt" aria-live="polite">
-                  <summary>
-                    <span class="turn-receipt-rail" aria-hidden="true" />
-                    <span class="turn-receipt-status">{{ turnReceiptHeadline(message) }}</span>
-                    <span class="turn-receipt-evidence">{{ turnReceiptEvidence(message) }}</span>
-                    <span class="turn-receipt-chevron" aria-hidden="true">›</span>
-                  </summary>
-                  <dl v-if="turnReceiptDetails(message).length > 0">
-                    <div v-for="detail in turnReceiptDetails(message)" :key="detail.label"><dt>{{ detail.label }}</dt><dd>{{ detail.value }}</dd></div>
-                  </dl>
-                </details>
+                <div
+                  v-if="message.messageType === 'worked'"
+                  class="system-event-divider turn-receipt"
+                  data-testid="turn-receipt"
+                  role="status"
+                >
+                  <span class="system-event-divider-heading">
+                    <span class="system-event-divider-line" aria-hidden="true" />
+                    <strong>{{ turnReceiptHeadline(message) }}</strong>
+                    <span class="system-event-divider-line" aria-hidden="true" />
+                  </span>
+                </div>
                 <div v-else-if="message.messageType === 'plan' || message.messageType === 'plan.live'" class="plan-message">
                   <p class="plan-message-title">Plan</p>
                   <MessageMarkdown :text="message.text" :cwd="cwd" />
@@ -1085,8 +1086,6 @@ onBeforeUnmount(() => {
     window.clearTimeout(copiedMessageTimer)
   }
 })
-type TurnReceiptDetail = { label: string; value: string }
-
 function turnReceiptPayload(message: UiMessage): Record<string, unknown> | null {
   if (!message.rawPayload) return null
   try {
@@ -1102,20 +1101,6 @@ function turnReceiptHeadline(message: UiMessage): string {
   return headline || message.text
 }
 
-function turnReceiptEvidence(message: UiMessage): string {
-  const parts = message.text.split(' · ')
-  return parts.slice(1).join(' · ') || (message.text.startsWith('Worked for ') ? message.text.replace('Worked for ', '') : '')
-}
-
-function turnReceiptDetails(message: UiMessage): TurnReceiptDetail[] {
-  const payload = turnReceiptPayload(message)
-  if (!payload) return []
-  return [
-    typeof payload.fileCount === 'number' && payload.fileCount > 0 ? { label: 'Files changed', value: String(payload.fileCount) } : null,
-    typeof payload.commandCount === 'number' && payload.commandCount > 0 ? { label: 'Commands', value: String(payload.commandCount) } : null,
-    typeof payload.validationCount === 'number' && payload.validationCount > 0 ? { label: 'Validations', value: `${String(payload.validationCount)} passed` } : null,
-  ].filter((detail): detail is TurnReceiptDetail => detail !== null)
-}
 </script>
 
 <style scoped>
@@ -1588,24 +1573,26 @@ function turnReceiptDetails(message: UiMessage): TurnReceiptDetail[] {
   @apply block w-16 h-16 object-cover;
 }
 
-.context-compaction-divider {
-  @apply grid w-full max-w-[min(760px,100%)] grid-cols-[minmax(1rem,1fr)_auto_minmax(1rem,1fr)] items-center gap-3 py-2;
+.system-event-divider {
+  @apply grid w-full max-w-[min(760px,100%)] gap-1.5 py-2 text-center;
 }
 
-.context-compaction-divider-line {
-  @apply h-px theme-bg-success opacity-45;
+.system-event-divider-heading {
+  @apply grid w-full grid-cols-[minmax(2.5rem,1fr)_auto_minmax(2.5rem,1fr)] items-center gap-4;
 }
 
-.context-compaction-divider-copy {
-  @apply grid gap-0.5 text-center;
+.system-event-divider-line {
+  height: 1px;
+  background: color-mix(in srgb, var(--color-success) 62%, var(--color-border));
+  opacity: .72;
 }
 
-.context-compaction-divider-copy strong {
+.system-event-divider strong {
   @apply text-[0.7rem] font-semibold uppercase tracking-[0.12em] theme-text-success;
 }
 
-.context-compaction-divider-copy small {
-  @apply max-w-100 text-[0.68rem] leading-4 theme-muted;
+.context-compaction-divider small {
+  @apply mx-auto max-w-100 text-[0.68rem] leading-4 theme-muted;
 }
 
 .tool-timeline-card {
@@ -1781,39 +1768,13 @@ function turnReceiptDetails(message: UiMessage): TurnReceiptDetail[] {
 }
 
 .turn-receipt {
-  width: min(100%, 42rem);
   margin: .35rem auto .2rem;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--color-panel) 74%, transparent);
-  color: var(--color-text-muted);
 }
-
-.turn-receipt summary {
-  display: grid;
-  grid-template-columns: 2.75rem auto minmax(0,1fr) auto;
-  align-items: center;
-  gap: .65rem;
-  min-height: 2.35rem;
-  cursor: pointer;
-  list-style: none;
-  padding: .35rem .65rem;
-}
-
-.turn-receipt summary::-webkit-details-marker { display: none; }
-.turn-receipt-rail { height: 2px; background: var(--color-success); box-shadow: 0 0 10px color-mix(in srgb, var(--color-success) 46%, transparent); }
-.turn-receipt-status { color: var(--color-text); font-size: .75rem; font-weight: 680; }
-.turn-receipt-evidence { overflow: hidden; font-family: var(--font-mono); font-size: .64rem; text-overflow: ellipsis; white-space: nowrap; }
-.turn-receipt-chevron { font-size: 1rem; transition: transform var(--motion-fast); }
-.turn-receipt[open] .turn-receipt-chevron { transform: rotate(90deg); }
-.turn-receipt dl { display: grid; gap: .35rem; margin: 0; border-top: 1px solid var(--color-border); padding: .65rem; }
-.turn-receipt dl div { display: flex; justify-content: space-between; gap: 1rem; }
-.turn-receipt dt { color: var(--color-text-muted); font-size: .7rem; }
-.turn-receipt dd { margin: 0; color: var(--color-text); font-family: var(--font-mono); font-size: .68rem; }
 
 @media (max-width: 720px) {
-  .turn-receipt { width: 100%; }
-  .turn-receipt summary { grid-template-columns: 2rem auto minmax(0,1fr) auto; gap: .45rem; }
+  .system-event-divider-heading {
+    @apply grid-cols-[minmax(1.5rem,1fr)_auto_minmax(1.5rem,1fr)] gap-2.5;
+  }
 }
 
 .image-modal-backdrop {

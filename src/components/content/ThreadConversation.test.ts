@@ -176,7 +176,28 @@ describe('ThreadConversation', () => {
     expect(divider.attributes('role')).toBe('status')
     expect(divider.text()).toContain('Context compacted')
     expect(divider.text()).toContain('Older context was summarized')
+    expect(divider.findAll('.system-event-divider-line')).toHaveLength(2)
     expect(wrapper.find('.tool-timeline-card').exists()).toBe(false)
+  })
+
+  it('renders worked receipts as a non-interactive two-line status divider', () => {
+    const wrapper = mountConversation({
+      messages: [
+        message(1, {
+          role: 'system',
+          text: 'Answered · 12s',
+          messageType: 'worked',
+          rawPayload: JSON.stringify({ label: 'Answered', commandCount: 3 }),
+        }),
+      ],
+    })
+
+    const receipt = wrapper.get('[data-testid="turn-receipt"]')
+    expect(receipt.attributes('role')).toBe('status')
+    expect(receipt.text()).toBe('Answered')
+    expect(receipt.findAll('.system-event-divider-line')).toHaveLength(2)
+    expect(receipt.find('details').exists()).toBe(false)
+    expect(receipt.find('summary').exists()).toBe(false)
   })
 
   it('renders long threads in a recent-message window and expands earlier rows on demand', async () => {
