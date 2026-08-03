@@ -61,4 +61,17 @@ describe('Skin API v2 public contract', () => {
     expect(style).toContain("[data-skin-recipe-chrome='glossy']")
     expect(style).toContain("[data-skin-recipe-chrome='terminal']")
   })
+
+  it('keeps avatar identity in a dedicated lane and applies one message surface only', async () => {
+    const [conversation, style] = await Promise.all([
+      readFile(files.conversation, 'utf8'),
+      readFile(files.style, 'utf8'),
+    ])
+    expect(conversation).toContain('class="message-identity-slot"')
+    expect(conversation).toContain('data-identity-layout')
+    expect(style).toContain("[data-skin-recipe-message='rail'] .message-card[data-role='user']")
+    expect(style).toContain("[data-skin-recipe-message='bubble'] .message-card")
+    expect(style).not.toContain("[data-skin-recipe-message='rail'] [data-cody-component='message'][data-role='user']")
+    expect(style).not.toContain("[data-skin-recipe-message='bubble'] [data-cody-component='message']")
+  })
 })

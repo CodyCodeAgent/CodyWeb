@@ -205,14 +205,26 @@
         :data-message-type="message.messageType || ''"
         :data-message-id="message.id"
       >
-        <div class="message-row" :data-role="message.role" :data-message-type="message.messageType || ''">
-          <MessageIdentityAvatar
-            v-if="shouldShowMessageIdentity(message, renderedMessageIndex) && message.role === 'assistant'"
-            role="assistant"
-            :growth="codyGrowth"
-            :is-loading="isCodyGrowthLoading"
-            :error="codyGrowthError"
-          />
+        <div
+          class="message-row"
+          :data-role="message.role"
+          :data-message-type="message.messageType || ''"
+          :data-identity-layout="identityAvatarsEnabled && isIdentityMessage(message) ? 'avatars' : undefined"
+        >
+          <div
+            v-if="identityAvatarsEnabled && isIdentityMessage(message) && message.role === 'assistant'"
+            class="message-identity-slot"
+            data-role="assistant"
+            :data-visible="shouldShowMessageIdentity(message, renderedMessageIndex)"
+          >
+            <MessageIdentityAvatar
+              v-if="shouldShowMessageIdentity(message, renderedMessageIndex)"
+              role="assistant"
+              :growth="codyGrowth"
+              :is-loading="isCodyGrowthLoading"
+              :error="codyGrowthError"
+            />
+          </div>
           <div class="message-stack" :data-role="message.role">
             <article class="message-body" data-cody-component="message" :data-role="message.role">
               <ul
@@ -330,13 +342,20 @@
               </button>
             </article>
           </div>
-          <MessageIdentityAvatar
-            v-if="shouldShowMessageIdentity(message, renderedMessageIndex) && message.role === 'user'"
-            role="user"
-            :growth="codyGrowth"
-            :is-loading="isCodyGrowthLoading"
-            :error="codyGrowthError"
-          />
+          <div
+            v-if="identityAvatarsEnabled && isIdentityMessage(message) && message.role === 'user'"
+            class="message-identity-slot"
+            data-role="user"
+            :data-visible="shouldShowMessageIdentity(message, renderedMessageIndex)"
+          >
+            <MessageIdentityAvatar
+              v-if="shouldShowMessageIdentity(message, renderedMessageIndex)"
+              role="user"
+              :growth="codyGrowth"
+              :is-loading="isCodyGrowthLoading"
+              :error="codyGrowthError"
+            />
+          </div>
         </div>
       </li>
       <li v-if="liveOverlay" class="conversation-item conversation-item-overlay">

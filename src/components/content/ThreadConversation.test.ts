@@ -73,12 +73,25 @@ describe('ThreadConversation', () => {
           message(3, { role: 'assistant', text: 'Reply one' }),
           message(4, { role: 'system', text: 'Recorded', messageType: 'worked' }),
           message(5, { role: 'assistant', text: 'Reply two' }),
+          message(6, {
+            role: 'assistant',
+            text: '',
+            tool: { kind: 'command', title: 'Command', status: 'completed', summary: 'Done', details: [] },
+          }),
         ],
       })
 
       expect(wrapper.findAll('.message-identity-user')).toHaveLength(1)
       expect(wrapper.findAll('.message-identity-assistant')).toHaveLength(1)
       expect(wrapper.get('.message-identity-assistant summary').attributes('aria-label')).toContain('Cody')
+
+      const identityRows = wrapper.findAll('.message-row[data-identity-layout="avatars"]')
+      expect(identityRows).toHaveLength(4)
+      expect(wrapper.findAll('.message-identity-slot')).toHaveLength(4)
+      expect(identityRows[0].element.children[0]?.classList.contains('message-stack')).toBe(true)
+      expect(identityRows[0].element.children[1]?.classList.contains('message-identity-slot')).toBe(true)
+      expect(identityRows[2].element.children[0]?.classList.contains('message-identity-slot')).toBe(true)
+      expect(identityRows[2].element.children[1]?.classList.contains('message-stack')).toBe(true)
     } finally {
       theme.setSkin('control-tower')
     }

@@ -2524,7 +2524,7 @@ button,
   box-shadow: inset 0 1px 0 #fff, 0 5px 18px rgb(43 91 132 / 0.18);
 }
 
-#app .desktop-layout[data-skin-recipe-message='rail'] [data-cody-component='message'][data-role='user'] {
+#app .desktop-layout[data-skin-recipe-message='rail'] .message-card[data-role='user'] {
   border: 1px solid color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
   border-radius: 0.4rem;
   background: linear-gradient(180deg, color-mix(in srgb, var(--color-elevated) 62%, white), var(--color-elevated));
@@ -2536,7 +2536,7 @@ button,
   padding-left: 0.9rem;
 }
 
-#app .desktop-layout[data-skin-recipe-message='bubble'] [data-cody-component='message'] {
+#app .desktop-layout[data-skin-recipe-message='bubble'] .message-card {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   background: var(--color-panel);
@@ -2544,7 +2544,7 @@ button,
   padding: var(--space-md);
 }
 
-#app .desktop-layout[data-skin-recipe-message='bubble'] [data-cody-component='message'][data-role='user'] {
+#app .desktop-layout[data-skin-recipe-message='bubble'] .message-card[data-role='user'] {
   border-color: color-mix(in srgb, var(--color-accent) 44%, var(--color-border));
   background: color-mix(in srgb, var(--color-accent) 10%, var(--color-panel));
 }
@@ -2553,8 +2553,47 @@ button,
   max-width: min(58rem, calc(100% - 1rem));
 }
 
-#app .desktop-layout[data-skin-recipe-identity='avatars'] .message-stack {
+#app .desktop-layout[data-skin-recipe-identity='avatars'] .message-row[data-identity-layout='avatars'] {
+  --message-identity-lane: 3.25rem;
+  --message-identity-gap: 0.75rem;
+  display: grid;
+  align-items: start;
+  column-gap: var(--message-identity-gap);
+}
+
+#app .desktop-layout[data-skin-recipe-identity='avatars'] .message-row[data-identity-layout='avatars'][data-role='assistant'] {
+  grid-template-columns: var(--message-identity-lane) minmax(0, 1fr);
+}
+
+#app .desktop-layout[data-skin-recipe-identity='avatars'] .message-row[data-identity-layout='avatars'][data-role='user'] {
+  grid-template-columns: minmax(0, 1fr) var(--message-identity-lane);
+}
+
+#app .desktop-layout[data-skin-recipe-identity='avatars'] .message-row[data-identity-layout='avatars'] .message-stack {
   min-width: 0;
+}
+
+#app .desktop-layout[data-skin-recipe-identity='avatars'] .message-identity-slot {
+  width: var(--message-identity-lane);
+  min-height: 2.75rem;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+#app .desktop-layout[data-skin-recipe-identity='avatars'] .message-identity-slot[data-visible='false'] {
+  pointer-events: none;
+}
+
+#app .desktop-layout[data-skin-recipe-identity='avatars'] .message-row[data-role='user'] .message-stack {
+  justify-self: end;
+}
+
+@media (max-width: 700px) {
+  #app .desktop-layout[data-skin-recipe-identity='avatars'] .message-row[data-identity-layout='avatars'] {
+    --message-identity-lane: 2.75rem;
+    --message-identity-gap: 0.5rem;
+  }
 }
 
 #app .desktop-layout[data-skin-api] :is(button, select, input, textarea):focus-visible {
