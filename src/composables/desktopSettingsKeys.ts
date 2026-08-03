@@ -19,6 +19,7 @@ export const DESKTOP_SETTING_KEYS = {
   theme: 'theme.preferences.v1',
   themeImportedSkins: 'theme.imported-skins.v1',
   tokenFlameWidget: 'token-flame.widget.v1',
+  codyGrowth: 'cody-growth.v1',
   promptLibrary: 'prompt-library.templates.v1',
   turnPreferences: 'desktop.turn-preferences.v1',
 } as const

@@ -1,5 +1,5 @@
 import { DEFAULT_SKIN_RECIPES, SKIN_API_VERSION } from './tokens'
-import type { SkinPack, SkinRecipes, ThemeTokens } from './tokens'
+import type { SkinPack, SkinRecipes, SkinVariant, ThemeTokens } from './tokens'
 
 const systemSans = 'Inter, "IBM Plex Sans", "Avenir Next", "Segoe UI", ui-sans-serif, system-ui, sans-serif'
 const systemMono = '"IBM Plex Mono", "Cascadia Code", "SFMono-Regular", ui-monospace, monospace'
@@ -36,12 +36,26 @@ function tokens(overrides: Partial<ThemeTokens> & { color: ThemeTokens['color'] 
   }
 }
 
-function skin(input: Omit<SkinPack, 'manifest' | 'recipes'> & {
+function skin(input: Omit<SkinPack, 'manifest' | 'recipes' | 'defaultColorMode' | 'variants'> & SkinVariant & {
+  isDark: boolean
+  alternate: SkinVariant
   manifest?: Partial<SkinPack['manifest']>
   recipes?: Partial<SkinRecipes>
 }): SkinPack {
+  const {
+    isDark,
+    tokens: defaultTokens,
+    syntaxTheme: defaultSyntaxTheme,
+    terminalTheme: defaultTerminalTheme,
+    chartPalette: defaultChartPalette,
+    background: defaultBackground,
+    alternate,
+    ...definition
+  } = input
+  const defaultColorMode = isDark ? 'dark' : 'light'
+  const alternateColorMode = isDark ? 'light' : 'dark'
   return {
-    ...input,
+    ...definition,
     manifest: {
       schemaVersion: SKIN_API_VERSION,
       version: input.manifest?.version ?? '1.0.0',
@@ -52,6 +66,17 @@ function skin(input: Omit<SkinPack, 'manifest' | 'recipes'> & {
     recipes: {
       ...DEFAULT_SKIN_RECIPES,
       ...input.recipes,
+    },
+    defaultColorMode,
+    variants: {
+      [defaultColorMode]: {
+        tokens: defaultTokens,
+        syntaxTheme: defaultSyntaxTheme,
+        terminalTheme: defaultTerminalTheme,
+        chartPalette: defaultChartPalette,
+        ...(defaultBackground ? { background: defaultBackground } : {}),
+      },
+      [alternateColorMode]: alternate,
     },
   }
 }
@@ -84,6 +109,30 @@ export const BUILT_IN_SKINS: SkinPack[] = [
         terminalBackground: '#101216',
       },
     }),
+    alternate: {
+      syntaxTheme: 'dark',
+      terminalTheme: { background: '#09090b', foreground: '#f4f4f5' },
+      chartPalette: ['#60a5fa', '#4ade80', '#fbbf24', '#fb7185', '#a78bfa'],
+      background: { type: 'solid' },
+      tokens: tokens({
+        color: {
+          background: '#18181b',
+          surface: '#202024',
+          panel: '#27272a',
+          elevated: '#303036',
+          text: '#fafafa',
+          textMuted: '#a1a1aa',
+          border: '#3f3f46',
+          accent: '#60a5fa',
+          danger: '#fb7185',
+          warning: '#fbbf24',
+          success: '#4ade80',
+          info: '#38bdf8',
+          codeBackground: '#09090b',
+          terminalBackground: '#09090b',
+        },
+      }),
+    },
   }),
   skin({
     id: 'control-tower',
@@ -118,6 +167,36 @@ export const BUILT_IN_SKINS: SkinPack[] = [
       },
       density: 'compact',
     }),
+    alternate: {
+      syntaxTheme: 'light',
+      terminalTheme: { background: '#102018', foreground: '#ecfdf5' },
+      chartPalette: ['#15803d', '#0369a1', '#b45309', '#be123c', '#6d28d9'],
+      background: { type: 'grid' },
+      tokens: tokens({
+        color: {
+          background: '#eef4f0',
+          surface: '#ffffff',
+          panel: '#f7faf8',
+          elevated: '#e6efe9',
+          text: '#14251b',
+          textMuted: '#5f7267',
+          border: '#c8d8ce',
+          accent: '#15803d',
+          danger: '#be123c',
+          warning: '#b45309',
+          success: '#15803d',
+          info: '#0369a1',
+          codeBackground: '#102018',
+          terminalBackground: '#102018',
+        },
+        shadow: {
+          panel: '0 1px 0 rgb(255 255 255 / 0.75), 0 14px 36px rgb(20 37 27 / 0.1)',
+          floating: '0 28px 72px rgb(20 37 27 / 0.18)',
+          focus: '0 0 0 3px rgb(21 128 61 / 0.2)',
+        },
+        density: 'compact',
+      }),
+    },
   }),
   skin({
     id: 'cyber-ops',
@@ -147,6 +226,31 @@ export const BUILT_IN_SKINS: SkinPack[] = [
       },
       density: 'compact',
     }),
+    alternate: {
+      syntaxTheme: 'light',
+      terminalTheme: { background: '#062632', foreground: '#ecfeff' },
+      chartPalette: ['#0e7490', '#4d7c0f', '#c2410c', '#be123c', '#a21caf'],
+      background: { type: 'grid' },
+      tokens: tokens({
+        color: {
+          background: '#ecfeff',
+          surface: '#ffffff',
+          panel: '#f0fdfa',
+          elevated: '#cffafe',
+          text: '#12333b',
+          textMuted: '#476b73',
+          border: '#a5d8df',
+          accent: '#0e7490',
+          danger: '#be123c',
+          warning: '#c2410c',
+          success: '#4d7c0f',
+          info: '#0369a1',
+          codeBackground: '#062632',
+          terminalBackground: '#062632',
+        },
+        density: 'compact',
+      }),
+    },
   }),
   skin({
     id: 'light-pro',
@@ -176,6 +280,31 @@ export const BUILT_IN_SKINS: SkinPack[] = [
       },
       density: 'comfortable',
     }),
+    alternate: {
+      syntaxTheme: 'dark',
+      terminalTheme: { background: '#0b1120', foreground: '#f8fafc' },
+      chartPalette: ['#60a5fa', '#4ade80', '#fbbf24', '#fb7185', '#a78bfa'],
+      background: { type: 'solid' },
+      tokens: tokens({
+        color: {
+          background: '#111827',
+          surface: '#172033',
+          panel: '#1f2937',
+          elevated: '#273449',
+          text: '#f8fafc',
+          textMuted: '#aebdd0',
+          border: '#3b4a60',
+          accent: '#60a5fa',
+          danger: '#fb7185',
+          warning: '#fbbf24',
+          success: '#4ade80',
+          info: '#38bdf8',
+          codeBackground: '#0b1120',
+          terminalBackground: '#0b1120',
+        },
+        density: 'comfortable',
+      }),
+    },
   }),
   skin({
     id: 'qq-2007',
@@ -197,6 +326,7 @@ export const BUILT_IN_SKINS: SkinPack[] = [
       panel: 'beveled',
       control: 'beveled',
       message: 'rail',
+      identity: 'avatars',
       composer: 'beveled',
       backdrop: 'aero-grid',
     },
@@ -244,6 +374,56 @@ export const BUILT_IN_SKINS: SkinPack[] = [
       },
       density: 'compact',
     }),
+    alternate: {
+      syntaxTheme: 'dark',
+      terminalTheme: { background: '#071521', foreground: '#dff3ff' },
+      chartPalette: ['#5eb7ff', '#55d58b', '#ffb44c', '#ff7972', '#b79bff'],
+      background: { type: 'solid' },
+      tokens: tokens({
+        color: {
+          background: '#0d2234',
+          surface: '#132f46',
+          panel: '#193a55',
+          elevated: '#244c69',
+          text: '#edf8ff',
+          textMuted: '#a8c5d8',
+          border: '#426d8c',
+          accent: '#5eb7ff',
+          danger: '#ff7972',
+          warning: '#ffb44c',
+          success: '#55d58b',
+          info: '#5eb7ff',
+          codeBackground: '#071521',
+          terminalBackground: '#071521',
+        },
+        font: {
+          sans: 'Tahoma, "Microsoft YaHei", "Segoe UI", ui-sans-serif, system-ui, sans-serif',
+          mono: systemMono,
+        },
+        spacing: {
+          xs: '0.25rem',
+          sm: '0.5rem',
+          md: '0.75rem',
+          lg: '1rem',
+        },
+        radius: {
+          sm: '0.2rem',
+          md: '0.3rem',
+          lg: '0.45rem',
+        },
+        shadow: {
+          panel: 'inset 0 1px 0 rgb(255 255 255 / 0.12), 0 2px 5px rgb(0 0 0 / 0.35)',
+          floating: '0 16px 38px rgb(0 0 0 / 0.5), inset 0 1px 0 rgb(255 255 255 / 0.14)',
+          focus: '0 0 0 3px rgb(94 183 255 / 0.28)',
+        },
+        motion: {
+          fast: '120ms',
+          normal: '180ms',
+          slow: '240ms',
+        },
+        density: 'compact',
+      }),
+    },
   }),
   skin({
     id: 'terminal',
@@ -273,6 +453,31 @@ export const BUILT_IN_SKINS: SkinPack[] = [
       },
       density: 'compact',
     }),
+    alternate: {
+      syntaxTheme: 'light',
+      terminalTheme: { background: '#102317', foreground: '#dcfce7' },
+      chartPalette: ['#15803d', '#0e7490', '#a16207', '#be123c', '#7e22ce'],
+      background: { type: 'solid' },
+      tokens: tokens({
+        color: {
+          background: '#eef5ef',
+          surface: '#f8fcf8',
+          panel: '#ffffff',
+          elevated: '#e2eee4',
+          text: '#15241a',
+          textMuted: '#5c6f62',
+          border: '#bfd0c2',
+          accent: '#15803d',
+          danger: '#be123c',
+          warning: '#a16207',
+          success: '#15803d',
+          info: '#0e7490',
+          codeBackground: '#102317',
+          terminalBackground: '#102317',
+        },
+        density: 'compact',
+      }),
+    },
   }),
   skin({
     id: 'mobile-focus',
@@ -307,5 +512,35 @@ export const BUILT_IN_SKINS: SkinPack[] = [
         lg: '1rem',
       },
     }),
+    alternate: {
+      syntaxTheme: 'dark',
+      terminalTheme: { background: '#0b1120', foreground: '#f8fafc' },
+      chartPalette: ['#38bdf8', '#4ade80', '#fbbf24', '#fb7185', '#a78bfa'],
+      background: { type: 'solid' },
+      tokens: tokens({
+        color: {
+          background: '#101827',
+          surface: '#172235',
+          panel: '#1e2b40',
+          elevated: '#29384f',
+          text: '#f8fafc',
+          textMuted: '#adbad0',
+          border: '#3e506b',
+          accent: '#38bdf8',
+          danger: '#fb7185',
+          warning: '#fbbf24',
+          success: '#4ade80',
+          info: '#38bdf8',
+          codeBackground: '#0b1120',
+          terminalBackground: '#0b1120',
+        },
+        density: 'spacious',
+        radius: {
+          sm: '0.5rem',
+          md: '0.75rem',
+          lg: '1rem',
+        },
+      }),
+    },
   }),
 ]

@@ -8,8 +8,10 @@ import {
   normalizeThemePreferences,
   normalizeWorkspaceThemePreferences,
   parseSkinPack,
+  resolveSkinPack,
   resolveThemeTokens,
   serializeSkinPack,
+  supportedSkinColorModes,
   themeTokensToCssVariables,
 } from './themeRegistry'
 
@@ -24,8 +26,13 @@ describe('theme registry', () => {
       'terminal',
       'mobile-focus',
     ])
-    expect(getBuiltInSkin('control-tower')?.isDark).toBe(true)
-    expect(getBuiltInSkin('qq-2007')).toMatchObject({ isDark: false, syntaxTheme: 'light' })
+    for (const skin of BUILT_IN_SKINS) {
+      expect(supportedSkinColorModes(skin), skin.id).toEqual(['light', 'dark'])
+    }
+    const qq = getBuiltInSkin('qq-2007')!
+    expect(resolveSkinPack(qq, 'light')).toMatchObject({ id: 'qq-2007', isDark: false, syntaxTheme: 'light' })
+    expect(resolveSkinPack(qq, 'dark')).toMatchObject({ id: 'qq-2007', isDark: true, syntaxTheme: 'dark' })
+    expect(resolveSkinPack(qq, 'dark').recipes).toEqual(resolveSkinPack(qq, 'light').recipes)
   })
 
   it('normalizes stored preferences to safe defaults', () => {
@@ -40,7 +47,7 @@ describe('theme registry', () => {
       accentColor: '',
       density: 'comfortable',
       layoutPresetId: 'ops-dashboard',
-      followSystem: true,
+      colorMode: 'system',
     })
   })
 
@@ -50,7 +57,7 @@ describe('theme registry', () => {
       accentColor: '#abcdef',
       density: 'compact',
       layoutPresetId: 'mobile-review',
-      followSystem: false,
+      colorMode: 'dark',
     }, { skinIds: ['custom-ops'] })).toMatchObject({
       skinId: 'custom-ops',
       accentColor: '#abcdef',
@@ -65,13 +72,13 @@ describe('theme registry', () => {
       accentColor: '#22d3ee',
       density: 'compact',
       layoutPresetId: 'review-focus',
-      followSystem: false,
+      colorMode: 'dark',
     })).toEqual({
       skinId: 'cyber-ops',
       accentColor: '#22d3ee',
       density: 'compact',
       layoutPresetId: 'review-focus',
-      followSystem: false,
+      colorMode: 'dark',
     })
 
     expect(normalizeWorkspaceThemePreferences({
@@ -83,7 +90,7 @@ describe('theme registry', () => {
       accentColor: '',
       density: '',
       layoutPresetId: '',
-      followSystem: null,
+      colorMode: '',
     })
   })
 
@@ -91,12 +98,12 @@ describe('theme registry', () => {
     const skin = getBuiltInSkin('light-pro')
     expect(skin).not.toBeNull()
 
-    const tokens = resolveThemeTokens(skin!, {
+    const tokens = resolveThemeTokens(resolveSkinPack(skin!, 'light'), {
       skinId: 'light-pro',
+      colorMode: 'light',
       accentColor: '#123456',
       density: 'spacious',
       layoutPresetId: 'ide-mode',
-      followSystem: false,
     })
     const variables = themeTokensToCssVariables(tokens)
 
@@ -114,12 +121,14 @@ describe('theme registry', () => {
 
   it('keeps every built-in skin readable across core and action surfaces', () => {
     for (const skin of BUILT_IN_SKINS) {
-      const { color } = skin.tokens
-      expect(contrastRatio(color.text, color.background), `${skin.id}: text/background`).toBeGreaterThanOrEqual(4.5)
-      expect(contrastRatio(color.text, color.panel), `${skin.id}: text/panel`).toBeGreaterThanOrEqual(4.5)
+      for (const mode of supportedSkinColorModes(skin)) {
+        const { color } = resolveSkinPack(skin, mode).tokens
+        expect(contrastRatio(color.text, color.background), `${skin.id}/${mode}: text/background`).toBeGreaterThanOrEqual(4.5)
+        expect(contrastRatio(color.text, color.panel), `${skin.id}/${mode}: text/panel`).toBeGreaterThanOrEqual(4.5)
 
-      for (const semanticColor of [color.accent, color.danger, color.warning, color.success, color.info]) {
-        expect(contrastRatio(contrastingTextColor(semanticColor), semanticColor), `${skin.id}: action foreground`).toBeGreaterThanOrEqual(4.5)
+        for (const semanticColor of [color.accent, color.danger, color.warning, color.success, color.info]) {
+          expect(contrastRatio(contrastingTextColor(semanticColor), semanticColor), `${skin.id}/${mode}: action foreground`).toBeGreaterThanOrEqual(4.5)
+        }
       }
     }
   })
@@ -135,10 +144,10 @@ describe('theme registry', () => {
       accentColor: '',
       density: 'comfortable',
       layoutPresetId: 'ops-dashboard',
-      followSystem: false,
+      colorMode: 'dark',
     } as const
-    const controlVariables = themeTokensToCssVariables(resolveThemeTokens(controlTower!, basePreferences))
-    const terminalVariables = themeTokensToCssVariables(resolveThemeTokens(terminal!, {
+    const controlVariables = themeTokensToCssVariables(resolveThemeTokens(resolveSkinPack(controlTower!, 'dark'), basePreferences))
+    const terminalVariables = themeTokensToCssVariables(resolveThemeTokens(resolveSkinPack(terminal!, 'dark'), {
       ...basePreferences,
       skinId: 'terminal',
     }))
@@ -161,18 +170,44 @@ describe('theme registry', () => {
     expect(() => parseSkinPack('{}')).toThrow('id is invalid.')
   })
 
-  it('upgrades legacy color-only skins to Skin API v1 defaults', () => {
-    const legacy = JSON.parse(serializeSkinPack(getBuiltInSkin('light-pro')!)) as Record<string, unknown>
-    delete legacy.manifest
-    delete legacy.recipes
+  it('round-trips portable identity avatar assets', () => {
+    const skin = getBuiltInSkin('terminal')
+    expect(skin).not.toBeNull()
+    const avatar = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+    const parsed = parseSkinPack(serializeSkinPack({
+      ...skin!,
+      recipes: { ...skin!.recipes, identity: 'avatars' },
+      assets: { assistantAvatar: avatar, userAvatar: avatar },
+    }))
+    expect(parsed.recipes.identity).toBe('avatars')
+    expect(parsed.assets?.assistantAvatar).toMatch(/^data:image\/png;base64,/u)
+    expect(parsed.assets?.userAvatar).toMatch(/^data:image\/png;base64,/u)
+  })
+
+  it('upgrades legacy color-only skins to a single-mode Skin API v2 package', () => {
+    const source = resolveSkinPack(getBuiltInSkin('light-pro')!, 'light')
+    const legacy: Record<string, unknown> = {
+      id: source.id,
+      name: source.name,
+      description: source.description,
+      isDark: source.isDark,
+      tokens: source.tokens,
+      syntaxTheme: source.syntaxTheme,
+      terminalTheme: source.terminalTheme,
+      chartPalette: source.chartPalette,
+      background: source.background,
+    }
     const parsed = parseSkinPack(JSON.stringify(legacy))
-    expect(parsed.manifest).toMatchObject({ schemaVersion: 1, version: '1.0.0', author: 'Imported' })
+    expect(parsed.manifest).toMatchObject({ schemaVersion: 2, version: '1.0.0', author: 'Imported' })
+    expect(parsed.defaultColorMode).toBe('light')
+    expect(supportedSkinColorModes(parsed)).toEqual(['light'])
     expect(parsed.recipes).toMatchObject({
       chrome: 'native',
       navigation: 'native',
       panel: 'native',
       control: 'native',
       message: 'native',
+      identity: 'none',
       composer: 'native',
       backdrop: 'solid',
     })
@@ -186,8 +221,8 @@ describe('theme registry', () => {
       .toThrow('must be an embedded PNG, JPEG, or WebP data URL.')
     expect(() => parseSkinPack(JSON.stringify({ ...base, assets: { brandMark: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' } })))
       .toThrow('must be an embedded PNG, JPEG, or WebP data URL.')
-    expect(() => parseSkinPack(JSON.stringify({ ...base, manifest: { ...(base.manifest as object), schemaVersion: 2 } })))
-      .toThrow('Unsupported skin schema version: 2.')
+    expect(() => parseSkinPack(JSON.stringify({ ...base, manifest: { ...(base.manifest as object), schemaVersion: 3 } })))
+      .toThrow('Unsupported skin schema version: 3.')
     expect(() => parseSkinPack(' '.repeat(1_500_001))).toThrow('Skin package exceeds 1.5 MB.')
   })
 

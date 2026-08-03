@@ -1,9 +1,26 @@
 // @vitest-environment happy-dom
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import ThreadConversation from './ThreadConversation.vue'
 import type { UiLiveOverlay, UiMessage } from '../../types/codex'
+import { useTheme } from '../../theme/useTheme'
+
+const settingsClientMock = vi.hoisted(() => ({
+  fetchUserSetting: vi.fn().mockResolvedValue(null),
+  writeUserSetting: vi.fn().mockResolvedValue({ key: '', value: null, updatedAtIso: '' }),
+}))
+const tokenUsageClientMock = vi.hoisted(() => ({
+  fetchDailyTokenUsage: vi.fn().mockResolvedValue({
+    cwd: '', repoRoot: '', generatedAtIso: '2026-08-02T12:00:00.000Z', date: '2026-08-02', timezoneOffsetMinutes: -480,
+    inputTokens: 100_000, outputTokens: 20_000, totalTokens: 120_000, tokenUsageEventCount: 1,
+    threadCount: 1, turnCount: 1, costUsd: null, costEventCount: 0,
+    source: 'reconciled-rollouts', lastReconciledAtIso: '2026-08-02T12:00:00.000Z',
+  }),
+}))
+
+vi.mock('../../api/codexSettingsClient', () => settingsClientMock)
+vi.mock('../../api/codexTokenUsageClient', () => tokenUsageClientMock)
 
 function message(index: number, overrides: Partial<UiMessage> = {}): UiMessage {
   return {
@@ -45,6 +62,28 @@ function waitForAnimationFrame(): Promise<void> {
 }
 
 describe('ThreadConversation', () => {
+  it('renders one abstract identity avatar per consecutive speaker group for avatar skins', async () => {
+    const theme = useTheme()
+    theme.setSkin('qq-2007')
+    try {
+      const wrapper = mountConversation({
+        messages: [
+          message(1, { role: 'user', text: 'First' }),
+          message(2, { role: 'user', text: 'Second' }),
+          message(3, { role: 'assistant', text: 'Reply one' }),
+          message(4, { role: 'system', text: 'Recorded', messageType: 'worked' }),
+          message(5, { role: 'assistant', text: 'Reply two' }),
+        ],
+      })
+
+      expect(wrapper.findAll('.message-identity-user')).toHaveLength(1)
+      expect(wrapper.findAll('.message-identity-assistant')).toHaveLength(1)
+      expect(wrapper.get('.message-identity-assistant summary').attributes('aria-label')).toContain('Cody')
+    } finally {
+      theme.setSkin('control-tower')
+    }
+  })
+
   it('renders a dedicated accessible loading page before the first message snapshot arrives', () => {
     const wrapper = mountConversation({ isLoading: true })
     const loadingPage = wrapper.get('[data-testid="conversation-loading-page"]')

@@ -206,6 +206,13 @@
         :data-message-id="message.id"
       >
         <div class="message-row" :data-role="message.role" :data-message-type="message.messageType || ''">
+          <MessageIdentityAvatar
+            v-if="shouldShowMessageIdentity(message, renderedMessageIndex) && message.role === 'assistant'"
+            role="assistant"
+            :growth="codyGrowth"
+            :is-loading="isCodyGrowthLoading"
+            :error="codyGrowthError"
+          />
           <div class="message-stack" :data-role="message.role">
             <article class="message-body" data-cody-component="message" :data-role="message.role">
               <ul
@@ -323,6 +330,13 @@
               </button>
             </article>
           </div>
+          <MessageIdentityAvatar
+            v-if="shouldShowMessageIdentity(message, renderedMessageIndex) && message.role === 'user'"
+            role="user"
+            :growth="codyGrowth"
+            :is-loading="isCodyGrowthLoading"
+            :error="codyGrowthError"
+          />
         </div>
       </li>
       <li v-if="liveOverlay" class="conversation-item conversation-item-overlay">
@@ -455,7 +469,10 @@ import IconTablerChevronRight from '../icons/IconTablerChevronRight.vue'
 import IconTablerCopy from '../icons/IconTablerCopy.vue'
 import IconTablerX from '../icons/IconTablerX.vue'
 import MessageMarkdown from './MessageMarkdown.vue'
+import MessageIdentityAvatar from './MessageIdentityAvatar.vue'
 import { useLocale } from '../../composables/useLocale'
+import { useCodyGrowth } from '../../composables/useCodyGrowth'
+import { useTheme } from '../../theme/useTheme'
 
 const props = defineProps<{
   cwd?: string
@@ -476,6 +493,14 @@ const emit = defineEmits<{
 }>()
 const approvalScopeOptions = APPROVAL_SCOPE_OPTIONS
 const { t } = useLocale()
+const { activeSkin } = useTheme()
+const identityAvatarsEnabled = computed(() => activeSkin.value.recipes.identity === 'avatars')
+const growthCwd = computed(() => props.cwd ?? '')
+const {
+  snapshot: codyGrowth,
+  isLoading: isCodyGrowthLoading,
+  error: codyGrowthError,
+} = useCodyGrowth({ cwd: growthCwd, enabled: identityAvatarsEnabled })
 
 const conversationListRef = ref<HTMLElement | null>(null)
 const bottomAnchorRef = ref<HTMLElement | null>(null)
@@ -516,6 +541,21 @@ const hiddenMessagesCount = computed(() => hiddenThreadMessageCount(
   normalizedVisibleMessagesCount.value,
 ))
 const visibleMessages = computed(() => props.messages.slice(visibleMessagesStartIndex.value))
+
+function isIdentityMessage(message: UiMessage): boolean {
+  return (message.role === 'assistant' || message.role === 'user')
+    && (message.text.trim().length > 0 || (message.images?.length ?? 0) > 0)
+}
+
+function shouldShowMessageIdentity(message: UiMessage, renderedIndex: number): boolean {
+  if (!identityAvatarsEnabled.value || !isIdentityMessage(message)) return false
+  for (let index = renderedIndex - 1; index >= 0; index -= 1) {
+    const previous = visibleMessages.value[index]
+    if (!previous || !isIdentityMessage(previous)) continue
+    return previous.role !== message.role
+  }
+  return true
+}
 const historyButtonLabel = computed(() => historyPageButtonLabel(hiddenMessagesCount.value, MESSAGE_HISTORY_PAGE_SIZE))
 const visibleMessageWindowLabel = computed(() => visibleMessageWindowSummary(
   props.messages.length,
@@ -1263,12 +1303,12 @@ function turnReceiptDetails(message: UiMessage): TurnReceiptDetail[] {
 }
 
 .message-row[data-role='user'] {
-  @apply justify-end;
+  @apply justify-end gap-2;
 }
 
 .message-row[data-role='assistant'],
 .message-row[data-role='system'] {
-  @apply justify-start;
+  @apply justify-start gap-2;
 }
 
 .conversation-bottom-anchor {

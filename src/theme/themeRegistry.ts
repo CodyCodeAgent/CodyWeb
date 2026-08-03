@@ -3,6 +3,10 @@ import type {
   LayoutPreset,
   LayoutPresetId,
   SkinPack,
+  ResolvedSkinPack,
+  ResolvedThemeColorMode,
+  SkinVariant,
+  ThemeColorMode,
   ThemeDensity,
   ThemePreferences,
   ThemeTokens,
@@ -13,12 +17,14 @@ import { DEFAULT_SKIN_RECIPES, DEFAULT_THEME_PREFERENCES, SKIN_API_VERSION } fro
 const MAX_SKIN_PACKAGE_BYTES = 1_500_000
 const MAX_SKIN_ASSET_BYTES = 512_000
 const DATA_IMAGE_PATTERN = /^data:image\/(?:png|jpeg|webp);base64,([a-z0-9+/]+={0,2})$/iu
+const BUNDLED_SKIN_IMAGE_PATTERN = /^\/skin-assets\/[a-z0-9/_-]+\.(?:png|jpe?g|webp)$/iu
 const RECIPE_VALUES = {
   chrome: ['native', 'glossy', 'terminal'],
   navigation: ['native', 'classic', 'pill'],
   panel: ['native', 'beveled', 'glass'],
   control: ['native', 'beveled', 'outline'],
   message: ['native', 'bubble', 'rail'],
+  identity: ['none', 'avatars'],
   composer: ['native', 'beveled', 'glass'],
   backdrop: ['solid', 'aero-grid', 'grid', 'image'],
 } as const
@@ -63,6 +69,10 @@ export function normalizeThemeDensity(value: unknown): ThemeDensity {
   return value === 'compact' || value === 'comfortable' || value === 'spacious' ? value : 'comfortable'
 }
 
+export function normalizeThemeColorMode(value: unknown, fallback: ThemeColorMode = DEFAULT_THEME_PREFERENCES.colorMode): ThemeColorMode {
+  return value === 'light' || value === 'dark' || value === 'system' ? value : fallback
+}
+
 function isColor(value: string): boolean {
   return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/u.test(value.trim())
 }
@@ -74,13 +84,14 @@ export function normalizeAccentColor(value: string): string {
 
 export function normalizeThemePreferences(
   value: unknown,
-  options: { skinIds?: string[] } = {},
+  options: { skinIds?: string[]; skins?: SkinPack[] } = {},
 ): ThemePreferences {
   const row = value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {}
   const knownSkinIds = new Set([
     ...BUILT_IN_SKINS.map((skin) => skin.id),
+    ...(options.skins ?? []).map((skin) => skin.id),
     ...(options.skinIds ?? []),
   ])
   const skinId = typeof row.skinId === 'string' && knownSkinIds.has(row.skinId)
@@ -89,12 +100,16 @@ export function normalizeThemePreferences(
   const layoutPresetId = typeof row.layoutPresetId === 'string'
     ? getLayoutPreset(row.layoutPresetId).id
     : DEFAULT_THEME_PREFERENCES.layoutPresetId
+  const fallbackMode = (
+    getBuiltInSkin(skinId)
+    ?? options.skins?.find((skin) => skin.id === skinId)
+  )?.defaultColorMode ?? DEFAULT_THEME_PREFERENCES.colorMode
   return {
     skinId,
+    colorMode: normalizeThemeColorMode(row.colorMode, row.followSystem === true ? 'system' : fallbackMode),
     accentColor: typeof row.accentColor === 'string' ? normalizeAccentColor(row.accentColor) : '',
     density: normalizeThemeDensity(row.density),
     layoutPresetId: layoutPresetId as LayoutPresetId,
-    followSystem: row.followSystem === true,
   }
 }
 
@@ -112,14 +127,48 @@ export function normalizeWorkspaceThemePreferences(value: unknown): WorkspaceThe
     : ''
   return {
     skinId: typeof row.skinId === 'string' ? row.skinId.trim() : '',
+    colorMode: row.colorMode === 'light' || row.colorMode === 'dark' || row.colorMode === 'system'
+      ? row.colorMode
+      : row.followSystem === true ? 'system' : '',
     accentColor: typeof row.accentColor === 'string' ? normalizeAccentColor(row.accentColor) : '',
     density,
     layoutPresetId,
-    followSystem: typeof row.followSystem === 'boolean' ? row.followSystem : null,
   }
 }
 
-export function resolveThemeTokens(skin: SkinPack, preferences: ThemePreferences): ThemeTokens {
+export function supportedSkinColorModes(skin: SkinPack): ResolvedThemeColorMode[] {
+  return (['light', 'dark'] as const).filter((mode) => Boolean(skin.variants[mode]))
+}
+
+export function resolveSkinColorMode(
+  skin: SkinPack,
+  requestedMode: ThemeColorMode,
+  systemPrefersDark = false,
+): ResolvedThemeColorMode {
+  const desiredMode = requestedMode === 'system' ? (systemPrefersDark ? 'dark' : 'light') : requestedMode
+  if (skin.variants[desiredMode]) return desiredMode
+  if (skin.variants[skin.defaultColorMode]) return skin.defaultColorMode
+  return supportedSkinColorModes(skin)[0] ?? 'light'
+}
+
+export function resolveSkinPack(
+  skin: SkinPack,
+  requestedMode: ThemeColorMode,
+  systemPrefersDark = false,
+): ResolvedSkinPack {
+  const colorMode = resolveSkinColorMode(skin, requestedMode, systemPrefersDark)
+  const variant = skin.variants[colorMode]
+  if (!variant) throw new Error(`Skin "${skin.id}" does not contain a usable color variant.`)
+  const { defaultColorMode: _defaultColorMode, variants: _variants, ...definition } = skin
+  return {
+    ...definition,
+    ...variant,
+    colorMode,
+    isDark: colorMode === 'dark',
+  }
+}
+
+export function resolveThemeTokens(skin: Pick<ResolvedSkinPack, 'tokens'>, preferences: ThemePreferences): ThemeTokens {
   return {
     ...skin.tokens,
     color: {
@@ -242,6 +291,7 @@ function cssValue(value: unknown, label: string, maxLength = 240): string {
 
 function imageAsset(value: unknown, label: string): string {
   const asset = safeString(value, label, MAX_SKIN_ASSET_BYTES * 2)
+  if (BUNDLED_SKIN_IMAGE_PATTERN.test(asset)) return asset
   const match = DATA_IMAGE_PATTERN.exec(asset)
   if (!match) throw new Error(`${label} must be an embedded PNG, JPEG, or WebP data URL.`)
   const decodedBytes = Math.floor(match[1].length * 3 / 4) - (match[1].endsWith('==') ? 2 : match[1].endsWith('=') ? 1 : 0)
@@ -303,6 +353,32 @@ function normalizedTokens(value: unknown): ThemeTokens {
   }
 }
 
+function normalizedBackground(value: unknown, label: string): SkinVariant['background'] {
+  const row = objectRow(value, label)
+  return {
+    type: enumValue(row.type ?? 'solid', ['solid', 'grid', 'noise', 'image', 'animated'] as const, `${label}.type`),
+    ...(row.fit === undefined ? {} : { fit: enumValue(row.fit, ['cover', 'contain'] as const, `${label}.fit`) }),
+    ...(row.position === undefined ? {} : { position: safeString(row.position, `${label}.position`, 40) }),
+  }
+}
+
+function normalizedVariant(value: unknown, label: string): SkinVariant {
+  const row = objectRow(value, label)
+  const terminalThemeRow = objectRow(row.terminalTheme, `${label}.terminalTheme`)
+  const chartPalette = Array.isArray(row.chartPalette) ? row.chartPalette : []
+  if (chartPalette.length < 1 || chartPalette.length > 12) throw new Error(`${label}.chartPalette must contain 1–12 colors.`)
+  return {
+    tokens: normalizedTokens(row.tokens),
+    syntaxTheme: safeString(row.syntaxTheme, `${label}.syntaxTheme`, 40),
+    terminalTheme: Object.fromEntries(Object.entries(terminalThemeRow).map(([key, entry]) => [
+      safeString(key, `${label}.terminalTheme key`, 40),
+      colorValue(entry, `${label}.terminalTheme.${key}`),
+    ])),
+    chartPalette: chartPalette.map((entry, index) => colorValue(entry, `${label}.chartPalette[${index}]`)),
+    ...(row.background === undefined ? {} : { background: normalizedBackground(row.background, `${label}.background`) }),
+  }
+}
+
 export function parseSkinPack(value: string): SkinPack {
   if (new TextEncoder().encode(value).byteLength > MAX_SKIN_PACKAGE_BYTES) throw new Error('Skin package exceeds 1.5 MB.')
   let parsed: unknown
@@ -316,13 +392,33 @@ export function parseSkinPack(value: string): SkinPack {
   if (!/^[a-z0-9][a-z0-9-]{1,63}$/u.test(id)) throw new Error('id must use 2–64 lowercase letters, numbers, or hyphens.')
   const manifestRow = row.manifest === undefined ? {} : objectRow(row.manifest, 'manifest')
   const schemaVersion = manifestRow.schemaVersion ?? SKIN_API_VERSION
-  if (schemaVersion !== SKIN_API_VERSION) throw new Error(`Unsupported skin schema version: ${String(schemaVersion)}.`)
+  if (schemaVersion !== 1 && schemaVersion !== SKIN_API_VERSION) throw new Error(`Unsupported skin schema version: ${String(schemaVersion)}.`)
   const recipesRow = row.recipes === undefined ? {} : objectRow(row.recipes, 'recipes')
   const assetsRow = row.assets === undefined ? null : objectRow(row.assets, 'assets')
-  const backgroundRow = row.background === undefined ? null : objectRow(row.background, 'background')
-  const terminalThemeRow = objectRow(row.terminalTheme, 'terminalTheme')
-  const chartPalette = Array.isArray(row.chartPalette) ? row.chartPalette : []
-  if (chartPalette.length < 1 || chartPalette.length > 12) throw new Error('chartPalette must contain 1–12 colors.')
+  let defaultColorMode: ResolvedThemeColorMode
+  let variants: SkinPack['variants']
+  if (row.variants !== undefined) {
+    const variantsRow = objectRow(row.variants, 'variants')
+    variants = {
+      ...(variantsRow.light === undefined ? {} : { light: normalizedVariant(variantsRow.light, 'variants.light') }),
+      ...(variantsRow.dark === undefined ? {} : { dark: normalizedVariant(variantsRow.dark, 'variants.dark') }),
+    }
+    if (!variants.light && !variants.dark) throw new Error('variants must contain light and/or dark.')
+    const requestedDefault = enumValue(row.defaultColorMode ?? (variants.light ? 'light' : 'dark'), ['light', 'dark'] as const, 'defaultColorMode')
+    defaultColorMode = variants[requestedDefault] ? requestedDefault : (variants.light ? 'light' : 'dark')
+  } else {
+    // Skin API v1 stored one resolved palette at the package root. Keep it portable as a single-mode v2 skin.
+    defaultColorMode = row.isDark === true ? 'dark' : 'light'
+    variants = {
+      [defaultColorMode]: normalizedVariant({
+        tokens: row.tokens,
+        syntaxTheme: row.syntaxTheme,
+        terminalTheme: row.terminalTheme,
+        chartPalette: row.chartPalette,
+        ...(row.background === undefined ? {} : { background: row.background }),
+      }, `variants.${defaultColorMode}`),
+    }
+  }
   const homepage = manifestRow.homepage === undefined ? '' : safeString(manifestRow.homepage, 'manifest.homepage', 300)
   if (homepage && !/^https?:\/\//u.test(homepage)) throw new Error('manifest.homepage must use http or https.')
   const pack: SkinPack = {
@@ -336,14 +432,8 @@ export function parseSkinPack(value: string): SkinPack {
     id,
     name: safeString(row.name, 'name', 80),
     description: safeString(row.description ?? '', 'description', 240, true),
-    isDark: row.isDark === true,
-    tokens: normalizedTokens(row.tokens),
-    syntaxTheme: safeString(row.syntaxTheme, 'syntaxTheme', 40),
-    terminalTheme: Object.fromEntries(Object.entries(terminalThemeRow).map(([key, entry]) => [
-      safeString(key, 'terminalTheme key', 40),
-      colorValue(entry, `terminalTheme.${key}`),
-    ])),
-    chartPalette: chartPalette.map((entry, index) => colorValue(entry, `chartPalette[${index}]`)),
+    defaultColorMode,
+    variants,
     recipes: Object.fromEntries(Object.entries(RECIPE_VALUES).map(([key, allowed]) => [
       key,
       enumValue(recipesRow[key] ?? DEFAULT_SKIN_RECIPES[key as keyof typeof DEFAULT_SKIN_RECIPES], allowed, `recipes.${key}`),
@@ -351,11 +441,8 @@ export function parseSkinPack(value: string): SkinPack {
     ...(assetsRow ? { assets: {
       ...(assetsRow.background === undefined ? {} : { background: imageAsset(assetsRow.background, 'assets.background') }),
       ...(assetsRow.brandMark === undefined ? {} : { brandMark: imageAsset(assetsRow.brandMark, 'assets.brandMark') }),
-    } } : {}),
-    ...(backgroundRow ? { background: {
-      type: enumValue(backgroundRow.type ?? 'solid', ['solid', 'grid', 'noise', 'image', 'animated'] as const, 'background.type'),
-      ...(backgroundRow.fit === undefined ? {} : { fit: enumValue(backgroundRow.fit, ['cover', 'contain'] as const, 'background.fit') }),
-      ...(backgroundRow.position === undefined ? {} : { position: safeString(backgroundRow.position, 'background.position', 40) }),
+      ...(assetsRow.assistantAvatar === undefined ? {} : { assistantAvatar: imageAsset(assetsRow.assistantAvatar, 'assets.assistantAvatar') }),
+      ...(assetsRow.userAvatar === undefined ? {} : { userAvatar: imageAsset(assetsRow.userAvatar, 'assets.userAvatar') }),
     } } : {}),
   }
   if (pack.assets?.background && pack.recipes.backdrop !== 'image') {

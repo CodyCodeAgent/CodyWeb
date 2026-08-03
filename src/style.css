@@ -2302,7 +2302,7 @@ button,
   #app .new-thread-grid > .thread-composer { width: 100%; max-width: 100%; }
 }
 
-/* Skin API v1 recipes ---------------------------------------------------------
+/* Skin API v2 recipes ---------------------------------------------------------
    These selectors depend only on the public recipe/data-cody contract. A skin
    chooses recipes and semantic tokens; it never reaches into generated Vue
    classes or executes code. QQ 2007 is the first reference pack. */
@@ -2350,7 +2350,7 @@ button,
   text-shadow: 0 1px 1px rgb(15 64 105 / 0.8);
 }
 
-#app .desktop-layout[data-skin-recipe-chrome='glossy'] .sidebar-brand span::after {
+#app .desktop-layout[data-skin-recipe-chrome='glossy'] .sidebar-brand span[data-skin-label]:not([data-skin-label=''])::after {
   content: ' · ' attr(data-skin-label);
   color: color-mix(in srgb, white 84%, var(--color-accent));
   font-size: 0.62rem;
@@ -2549,7 +2549,15 @@ button,
   background: color-mix(in srgb, var(--color-accent) 10%, var(--color-panel));
 }
 
-#app .desktop-layout[data-skin-api='1'] :is(button, select, input, textarea):focus-visible {
+#app .desktop-layout[data-skin-recipe-identity='avatars'] .message-row {
+  max-width: min(58rem, calc(100% - 1rem));
+}
+
+#app .desktop-layout[data-skin-recipe-identity='avatars'] .message-stack {
+  min-width: 0;
+}
+
+#app .desktop-layout[data-skin-api] :is(button, select, input, textarea):focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
   box-shadow: var(--shadow-focus);
@@ -2599,9 +2607,191 @@ button,
     box-shadow: none;
   }
 
-  #app .desktop-layout[data-skin-api='1'] .content-error-text {
+  #app .desktop-layout[data-skin-api] .content-error-text {
     min-width: 0;
     overflow-wrap: anywhere;
     word-break: break-word;
+  }
+}
+
+/* Cohesive app-shell geometry -------------------------------------------------
+   Every skin supplies material through semantic tokens/recipes, while the
+   shell owns one shared two-rail geometry. This keeps the sidebar and workspace
+   visually continuous instead of rendering several unrelated stacked bars. */
+#app .desktop-layout[data-skin-api] {
+  --ui-shell-titlebar-height: calc(3.5rem * var(--density-scale));
+  --ui-shell-commandbar-height: 2.75rem;
+  --ui-shell-titlebar-background: color-mix(in srgb, var(--color-background) 86%, var(--color-surface));
+  --ui-shell-commandbar-background: color-mix(in srgb, var(--color-surface) 90%, var(--color-panel));
+  --ui-shell-subbar-background: color-mix(in srgb, var(--color-surface) 94%, var(--color-panel));
+  --ui-shell-divider: color-mix(in srgb, var(--color-border) 68%, transparent);
+  --ui-shell-shadow: 0 5px 18px color-mix(in srgb, var(--color-background) 70%, transparent);
+}
+
+#app .desktop-layout[data-skin-recipe-chrome='glossy'] {
+  --ui-shell-titlebar-background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-accent) 70%, white) 0%,
+    color-mix(in srgb, var(--color-accent) 90%, white) 46%,
+    color-mix(in srgb, var(--color-accent) 78%, black) 52%,
+    color-mix(in srgb, var(--color-accent) 88%, black) 100%
+  );
+  --ui-shell-commandbar-background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface) 80%, white) 0%,
+    color-mix(in srgb, var(--color-surface) 88%, var(--color-panel)) 100%
+  );
+  --ui-shell-subbar-background: color-mix(in srgb, var(--color-surface) 92%, var(--color-panel));
+  --ui-shell-divider: color-mix(in srgb, var(--color-border) 72%, transparent);
+  --ui-shell-shadow: 0 4px 14px color-mix(in srgb, var(--color-background) 74%, transparent);
+}
+
+#app .desktop-layout[data-skin-recipe-chrome='terminal'] {
+  --ui-shell-titlebar-background: var(--color-terminal-background);
+  --ui-shell-commandbar-background: color-mix(in srgb, var(--color-terminal-background) 82%, var(--color-surface));
+  --ui-shell-subbar-background: color-mix(in srgb, var(--color-terminal-background) 68%, var(--color-surface));
+}
+
+#app .desktop-layout[data-skin-api] [data-cody-region='sidebar'] {
+  border-right: 0;
+  background: var(--color-surface);
+  box-shadow: none;
+}
+
+#app .desktop-layout[data-skin-api] .desktop-resize-handle {
+  background: var(--ui-shell-divider);
+  box-shadow: none;
+}
+
+#app .desktop-layout[data-skin-api] .sidebar-root {
+  height: 100%;
+  min-height: 0;
+  gap: 0;
+  overflow: hidden;
+  padding: 0;
+  background: var(--color-surface);
+}
+
+#app .desktop-layout[data-skin-api] .sidebar-brand {
+  box-sizing: border-box;
+  min-height: var(--ui-shell-titlebar-height);
+  height: var(--ui-shell-titlebar-height);
+  justify-content: flex-start;
+  gap: 0.6rem;
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--ui-shell-divider);
+  border-radius: 0;
+  background: var(--ui-shell-titlebar-background);
+  padding: 0 1rem;
+  box-shadow: none;
+  opacity: 1;
+}
+
+#app .desktop-layout[data-skin-recipe-chrome='glossy'] .sidebar-brand {
+  color: #fff;
+  text-shadow: 0 1px 1px rgb(15 64 105 / 0.72);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.58);
+}
+
+#app .desktop-layout[data-skin-api] .sidebar-thread-controls-host {
+  box-sizing: border-box;
+  min-height: var(--ui-shell-commandbar-height);
+  height: var(--ui-shell-commandbar-height);
+  flex: 0 0 var(--ui-shell-commandbar-height);
+  gap: 0.28rem;
+  margin: 0;
+  transform: none;
+  border-bottom: 1px solid var(--ui-shell-divider);
+  background: var(--ui-shell-commandbar-background);
+  padding: 0 0.7rem;
+}
+
+#app .desktop-layout[data-skin-api] .sidebar-search-bar {
+  flex: 0 0 auto;
+  margin: 0.55rem 0.65rem 0;
+}
+
+#app .desktop-layout[data-skin-api] .sidebar-thread-tree-host {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0.65rem 0.65rem 1.25rem;
+}
+
+#app .desktop-layout[data-skin-api] .sidebar-thread-tree-host > * {
+  flex-shrink: 0;
+}
+
+#app .desktop-layout[data-skin-api] .workspace-chrome {
+  position: relative;
+  z-index: 40;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--ui-shell-divider);
+  background: var(--ui-shell-commandbar-background);
+  box-shadow: var(--ui-shell-shadow);
+  isolation: isolate;
+}
+
+#app .desktop-layout[data-skin-api] .workspace-chrome .content-header {
+  box-sizing: border-box;
+  min-height: var(--ui-shell-titlebar-height);
+  height: var(--ui-shell-titlebar-height);
+  border: 0;
+  border-bottom: 1px solid var(--ui-shell-divider);
+  background: var(--ui-shell-titlebar-background);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+#app .desktop-layout[data-skin-api] .workspace-chrome .content-telemetry {
+  opacity: 0.42;
+  box-shadow: none;
+}
+
+#app .desktop-layout[data-skin-api] .workspace-chrome .workspace-context-bar {
+  box-sizing: border-box;
+  min-height: var(--ui-shell-commandbar-height);
+  height: var(--ui-shell-commandbar-height);
+  border: 0;
+  background: var(--ui-shell-commandbar-background);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+#app .desktop-layout[data-skin-api] .workspace-context-bar[data-context-mode='section'] {
+  gap: 0.55rem;
+  color: var(--color-text-muted);
+}
+
+#app .desktop-layout[data-skin-api] .workspace-context-section-icon {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: 0 0 auto;
+  color: var(--color-accent);
+}
+
+#app .desktop-layout[data-skin-api] .workspace-chrome .thread-context-dock {
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--ui-shell-divider) 66%, transparent);
+  background: var(--ui-shell-subbar-background);
+  backdrop-filter: none;
+}
+
+@media (max-width: 700px) {
+  #app .desktop-layout[data-skin-api] {
+    --ui-shell-titlebar-height: 3.5rem;
+    --ui-shell-commandbar-height: 3.25rem;
+  }
+
+  #app .desktop-layout[data-skin-api] .sidebar-brand {
+    padding-inline: 0.75rem;
+  }
+
+  #app .desktop-layout[data-skin-api] .sidebar-thread-controls-host {
+    overflow-x: auto;
+    padding-inline: 0.35rem;
+    scrollbar-width: none;
   }
 }

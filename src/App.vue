@@ -34,9 +34,10 @@
             class="sidebar-search-toggle toolbar-secondary"
             type="button"
             data-theme-toggle="true"
+            :disabled="!canToggleColorMode"
             :aria-pressed="isDarkMode"
-            :aria-label="isDarkMode ? t('app.theme.light') : t('app.theme.dark')"
-            :title="isDarkMode ? t('app.theme.light') : t('app.theme.dark')"
+            :aria-label="canToggleColorMode ? (isDarkMode ? t('app.theme.light') : t('app.theme.dark')) : t('app.theme.unavailable')"
+            :title="canToggleColorMode ? (isDarkMode ? t('app.theme.light') : t('app.theme.dark')) : t('app.theme.unavailable')"
             @click="toggleDarkMode"
           >
             <IconTablerSun v-if="isDarkMode" class="sidebar-search-toggle-icon" />
@@ -94,7 +95,7 @@
           </button>
         </div>
 
-        <SidebarThreadTree :groups="projectGroups" :project-display-name-by-id="projectDisplayNameById"
+        <SidebarThreadTree class="sidebar-thread-tree-host" :groups="projectGroups" :project-display-name-by-id="projectDisplayNameById"
           v-if="!isEffectiveSidebarCollapsed"
           :skill-counts-by-cwd="skillCountsByCwd"
           :selected-thread-id="selectedThreadId" :is-loading="isLoadingThreads"
@@ -113,7 +114,8 @@
 
     <template #content>
       <section class="content-root" data-cody-region="content">
-        <ContentHeader :title="contentTitle">
+        <div class="workspace-chrome" data-cody-region="workspace-chrome">
+          <ContentHeader :title="contentTitle">
           <template #leading>
             <SidebarThreadControls
               v-if="isEffectiveSidebarCollapsed"
@@ -130,9 +132,10 @@
                 class="sidebar-search-toggle toolbar-secondary"
                 type="button"
                 data-theme-toggle="true"
+                :disabled="!canToggleColorMode"
                 :aria-pressed="isDarkMode"
-                :aria-label="isDarkMode ? t('app.theme.light') : t('app.theme.dark')"
-                :title="isDarkMode ? t('app.theme.light') : t('app.theme.dark')"
+                :aria-label="canToggleColorMode ? (isDarkMode ? t('app.theme.light') : t('app.theme.dark')) : t('app.theme.unavailable')"
+                :title="canToggleColorMode ? (isDarkMode ? t('app.theme.light') : t('app.theme.dark')) : t('app.theme.unavailable')"
                 @click="toggleDarkMode"
               >
                 <IconTablerSun v-if="isDarkMode" class="sidebar-search-toggle-icon" />
@@ -194,7 +197,39 @@
               />
             </div>
           </template>
-        </ContentHeader>
+          </ContentHeader>
+
+          <div
+            class="workspace-context-bar"
+            data-cody-region="contextbar"
+            :data-context-mode="isSettingsRoute ? 'section' : 'workspace'"
+            :aria-label="isSettingsRoute ? t('settings.aria') : t('app.workspaceContext')"
+          >
+            <template v-if="isSettingsRoute">
+              <IconTablerSettings class="workspace-context-section-icon" aria-hidden="true" />
+              <span><small>{{ t('settings.page.eyebrow') }}</small>{{ t('settings.page.title') }}</span>
+            </template>
+            <template v-else>
+              <span class="workspace-context-live" aria-hidden="true" />
+              <span><small>{{ t('app.workspace') }}</small>{{ newThreadProjectLabel || t('app.notSelected') }}</span>
+              <span><small>{{ t('app.path') }}</small>{{ tokenFlameCwd || '—' }}</span>
+              <span><small>{{ t('app.permissions') }}</small>{{ selectedPermissionMode }}</span>
+              <button
+                v-if="tokenFlameCwd"
+                type="button"
+                :aria-label="t('skills.openProject')"
+                @click="openCurrentWorkspaceSkills"
+              >
+                <IconTablerClipboardList aria-hidden="true" />
+                {{ activeWorkspaceSkillCount === null ? t('skills.title') : t('skills.count', { count: String(activeWorkspaceSkillCount) }) }}
+              </button>
+            </template>
+          </div>
+          <ThreadContextUsageBar
+            v-if="!isHomeRoute && !isSettingsRoute && !isSkillsRoute"
+            :usage="selectedThreadContextUsage"
+          />
+        </div>
 
         <div
           v-if="backendConnectionBannerVisible"
@@ -212,26 +247,6 @@
             {{ backendHealthCheckInFlight ? t('app.backend.checking') : t('app.backend.retry') }}
           </button>
         </div>
-
-        <div v-if="!isSettingsRoute" class="workspace-context-bar" data-cody-region="contextbar" :aria-label="t('app.workspaceContext')">
-          <span class="workspace-context-live" aria-hidden="true" />
-          <span><small>{{ t('app.workspace') }}</small>{{ newThreadProjectLabel || t('app.notSelected') }}</span>
-          <span><small>{{ t('app.path') }}</small>{{ tokenFlameCwd || '—' }}</span>
-          <span><small>{{ t('app.permissions') }}</small>{{ selectedPermissionMode }}</span>
-          <button
-            v-if="tokenFlameCwd"
-            type="button"
-            :aria-label="t('skills.openProject')"
-            @click="openCurrentWorkspaceSkills"
-          >
-            <IconTablerClipboardList aria-hidden="true" />
-            {{ activeWorkspaceSkillCount === null ? t('skills.title') : t('skills.count', { count: String(activeWorkspaceSkillCount) }) }}
-          </button>
-        </div>
-        <ThreadContextUsageBar
-          v-if="!isHomeRoute && !isSettingsRoute && !isSkillsRoute"
-          :usage="selectedThreadContextUsage"
-        />
 
         <RateLimitFloatingStatus
           :snapshot="rateLimitSnapshot"
@@ -422,6 +437,7 @@ const {
 const browserNotifications = useBrowserNotifications()
 const {
   isDarkTheme: isDarkMode,
+  availableColorModes,
   activeSkin,
   themeRootClass,
   themeAttributes,
@@ -429,6 +445,7 @@ const {
   toggleLightDark,
 } = useTheme()
 const { t } = useLocale()
+const canToggleColorMode = computed(() => availableColorModes.value.length === 2)
 
 const route = useRoute()
 const router = useRouter()

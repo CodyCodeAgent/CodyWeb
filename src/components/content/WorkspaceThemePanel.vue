@@ -37,10 +37,24 @@
         <select
           data-testid="theme-skin-select"
           :value="effectivePreferences.skinId"
-          :disabled="effectivePreferences.followSystem || hasWorkspaceThemeBinding"
+          :disabled="hasWorkspaceThemeBinding"
           @change="onSkinSelect"
         >
           <option v-for="skin in availableSkins" :key="skin.id" :value="skin.id">{{ skin.name }}</option>
+        </select>
+      </label>
+
+      <label>
+        <span>{{ t('theme.mode') }}</span>
+        <select
+          data-testid="theme-color-mode-select"
+          :value="effectivePreferences.colorMode"
+          :disabled="hasWorkspaceThemeBinding"
+          @change="onColorModeSelect"
+        >
+          <option value="light" :disabled="!availableColorModes.includes('light')">{{ t('theme.mode.light') }}</option>
+          <option value="dark" :disabled="!availableColorModes.includes('dark')">{{ t('theme.mode.dark') }}</option>
+          <option value="system">{{ t('theme.mode.system') }}</option>
         </select>
       </label>
 
@@ -81,17 +95,6 @@
         />
       </label>
     </div>
-
-    <label class="workspace-theme-panel-follow">
-      <input
-        data-testid="theme-follow-system"
-        type="checkbox"
-        :checked="effectivePreferences.followSystem"
-        :disabled="hasWorkspaceThemeBinding"
-        @change="onFollowSystemChange"
-      />
-      <span>{{ t('theme.followSystem') }}</span>
-    </label>
 
     <div class="workspace-theme-panel-package" data-testid="theme-package-actions">
       <div>
@@ -142,7 +145,7 @@
 import { computed, ref, watch } from 'vue'
 import { LAYOUT_PRESETS } from '../../theme/themeRegistry'
 import { useTheme } from '../../theme/useTheme'
-import type { LayoutPresetId, ThemeDensity } from '../../theme/tokens'
+import type { LayoutPresetId, ThemeColorMode, ThemeDensity } from '../../theme/tokens'
 import type { UiWorkspaceConfig } from '../../types/codex'
 import { useLocale } from '../../composables/useLocale'
 
@@ -156,13 +159,14 @@ const {
   activeSkin,
   isActiveSkinImported,
   activeLayoutPreset,
+  availableColorModes,
   workspacePreferences,
   themePersistenceError,
   setSkin,
+  setColorMode,
   setAccentColor,
   setDensity,
   setLayoutPreset,
-  setFollowSystem,
   setWorkspaceThemePreferences,
   clearWorkspaceThemePreferences,
   resetTheme,
@@ -184,12 +188,14 @@ const selectedSkinName = computed(() =>
   availableSkins.value.find((skin) => skin.id === effectivePreferences.value.skinId)?.name ?? activeSkin.value.name,
 )
 const themeSummary = computed(() => {
-  const mode = effectivePreferences.value.followSystem ? t('theme.followSystem') : selectedSkinName.value
-  return `${mode} · ${activeLayoutPreset.value.name}`
+  const mode = t(`theme.mode.${effectivePreferences.value.colorMode}`)
+  return `${selectedSkinName.value} · ${mode} · ${activeLayoutPreset.value.name}`
 })
 const themeDetail = computed(() => {
   if (hasWorkspaceThemeBinding.value) return t('theme.detail.workspaceOverride')
-  if (effectivePreferences.value.followSystem) return t('theme.detail.activeSkin', { name: activeSkin.value.name })
+  if (effectivePreferences.value.colorMode === 'system') {
+    return t('theme.detail.activeMode', { mode: t(`theme.mode.${activeSkin.value.colorMode}`) })
+  }
   if (effectivePreferences.value.accentColor) {
     return t('theme.detail.accentOverride', { value: effectivePreferences.value.accentColor })
   }
@@ -203,15 +209,17 @@ const workspaceThemeSummary = computed(() => {
     theme.layoutPresetId ? t('theme.summary.layout', { value: theme.layoutPresetId }) : '',
     theme.density ? t('theme.summary.density', { value: theme.density }) : '',
     theme.accentColor ? t('theme.summary.accent', { value: theme.accentColor }) : '',
-    theme.followSystem !== null
-      ? t('theme.summary.system', { value: theme.followSystem ? t('theme.summary.on') : t('theme.summary.off') })
-      : '',
+    theme.colorMode ? t('theme.summary.mode', { value: t(`theme.mode.${theme.colorMode}`) }) : '',
   ].filter(Boolean)
   return parts.join(' · ') || t('theme.workspaceDefaults')
 })
 
 function onSkinSelect(event: Event): void {
   setSkin((event.target as HTMLSelectElement).value)
+}
+
+function onColorModeSelect(event: Event): void {
+  setColorMode((event.target as HTMLSelectElement).value as ThemeColorMode)
 }
 
 function onLayoutSelect(event: Event): void {
@@ -226,9 +234,6 @@ function onAccentInput(event: Event): void {
   setAccentColor((event.target as HTMLInputElement).value)
 }
 
-function onFollowSystemChange(event: Event): void {
-  setFollowSystem((event.target as HTMLInputElement).checked)
-}
 
 function exportSkin(): void {
   skinJsonDraft.value = exportActiveSkin()
@@ -371,15 +376,15 @@ watch(() => props.workspaceTheme, (theme) => {
 }
 
 .workspace-theme-panel-grid {
-  @apply mt-3 grid grid-cols-4 gap-2;
+  @apply mt-3 grid gap-2;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
 }
 
 .workspace-theme-panel-grid label {
   @apply grid gap-1;
 }
 
-.workspace-theme-panel-grid span,
-.workspace-theme-panel-follow span {
+.workspace-theme-panel-grid span {
   @apply text-[0.68rem] font-semibold uppercase leading-4 theme-muted;
   color: var(--color-text-muted);
 }
@@ -395,15 +400,6 @@ watch(() => props.workspaceTheme, (theme) => {
 .workspace-theme-panel-grid input[type='color'] {
   @apply p-1;
   background: var(--color-elevated);
-}
-
-.workspace-theme-panel-follow {
-  @apply mt-3 flex items-center gap-2;
-}
-
-.workspace-theme-panel-follow input {
-  @apply h-4 w-4;
-  accent-color: var(--color-accent);
 }
 
 .workspace-theme-panel-package {

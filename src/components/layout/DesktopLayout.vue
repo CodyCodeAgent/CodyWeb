@@ -113,9 +113,8 @@ function onResizeHandleKeyDown(event: KeyboardEvent): void {
 }
 
 .desktop-sidebar {
-  @apply min-h-0 overflow-y-auto;
+  @apply min-h-0 overflow-hidden;
   background: var(--color-surface);
-  border-right: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
 }
 
 .desktop-resize-handle {

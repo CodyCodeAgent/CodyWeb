@@ -1,6 +1,8 @@
 export type ThemeDensity = 'compact' | 'comfortable' | 'spacious'
+export type ThemeColorMode = 'light' | 'dark' | 'system'
+export type ResolvedThemeColorMode = Exclude<ThemeColorMode, 'system'>
 
-export const SKIN_API_VERSION = 1 as const
+export const SKIN_API_VERSION = 2 as const
 
 export type SkinRecipes = {
   chrome: 'native' | 'glossy' | 'terminal'
@@ -8,6 +10,7 @@ export type SkinRecipes = {
   panel: 'native' | 'beveled' | 'glass'
   control: 'native' | 'beveled' | 'outline'
   message: 'native' | 'bubble' | 'rail'
+  identity: 'none' | 'avatars'
   composer: 'native' | 'beveled' | 'glass'
   backdrop: 'solid' | 'aero-grid' | 'grid' | 'image'
 }
@@ -15,6 +18,8 @@ export type SkinRecipes = {
 export type SkinAssets = {
   background?: string
   brandMark?: string
+  assistantAvatar?: string
+  userAvatar?: string
 }
 
 export type SkinManifest = {
@@ -70,23 +75,32 @@ export type ThemeTokens = {
   density: ThemeDensity
 }
 
-export type SkinPack = {
-  manifest: SkinManifest
-  id: string
-  name: string
-  description: string
-  isDark: boolean
+export type SkinVariant = {
   tokens: ThemeTokens
   syntaxTheme: 'light' | 'dark' | string
   terminalTheme: Record<string, string>
   chartPalette: string[]
-  recipes: SkinRecipes
-  assets?: SkinAssets
   background?: {
     type: 'solid' | 'grid' | 'noise' | 'image' | 'animated'
     fit?: 'cover' | 'contain'
     position?: string
   }
+}
+
+export type SkinPack = {
+  manifest: SkinManifest
+  id: string
+  name: string
+  description: string
+  defaultColorMode: ResolvedThemeColorMode
+  variants: Partial<Record<ResolvedThemeColorMode, SkinVariant>>
+  recipes: SkinRecipes
+  assets?: SkinAssets
+}
+
+export type ResolvedSkinPack = Omit<SkinPack, 'defaultColorMode' | 'variants'> & SkinVariant & {
+  colorMode: ResolvedThemeColorMode
+  isDark: boolean
 }
 
 export const DEFAULT_SKIN_RECIPES: SkinRecipes = {
@@ -95,6 +109,7 @@ export const DEFAULT_SKIN_RECIPES: SkinRecipes = {
   panel: 'native',
   control: 'native',
   message: 'native',
+  identity: 'none',
   composer: 'native',
   backdrop: 'solid',
 }
@@ -109,24 +124,24 @@ export type LayoutPreset = {
 
 export type ThemePreferences = {
   skinId: string
+  colorMode: ThemeColorMode
   accentColor: string
   density: ThemeDensity
   layoutPresetId: LayoutPresetId
-  followSystem: boolean
 }
 
 export type WorkspaceThemePreferences = {
   skinId: string
+  colorMode: ThemeColorMode | ''
   accentColor: string
   density: ThemeDensity | ''
   layoutPresetId: LayoutPresetId | ''
-  followSystem: boolean | null
 }
 
 export const DEFAULT_THEME_PREFERENCES: ThemePreferences = {
   skinId: 'control-tower',
+  colorMode: 'dark',
   accentColor: '',
   density: 'comfortable',
   layoutPresetId: 'ops-dashboard',
-  followSystem: false,
 }
