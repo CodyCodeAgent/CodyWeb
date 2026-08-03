@@ -86,12 +86,60 @@ describe('ThreadConversation', () => {
       expect(wrapper.get('.message-identity-assistant summary').attributes('aria-label')).toContain('Cody')
 
       const identityRows = wrapper.findAll('.message-row[data-identity-layout="avatars"]')
-      expect(identityRows).toHaveLength(4)
-      expect(wrapper.findAll('.message-identity-slot')).toHaveLength(4)
+      expect(identityRows).toHaveLength(5)
+      expect(wrapper.findAll('.message-identity-slot')).toHaveLength(5)
       expect(identityRows[0].element.children[0]?.classList.contains('message-stack')).toBe(true)
       expect(identityRows[0].element.children[1]?.classList.contains('message-identity-slot')).toBe(true)
       expect(identityRows[2].element.children[0]?.classList.contains('message-identity-slot')).toBe(true)
       expect(identityRows[2].element.children[1]?.classList.contains('message-stack')).toBe(true)
+      expect(identityRows[4].find('.message-identity').exists()).toBe(false)
+      expect(identityRows[4].get('.message-body').attributes('data-has-tool')).toBe('true')
+    } finally {
+      theme.setSkin('control-tower')
+    }
+  })
+
+  it('groups consecutive file changes into one compact card on the assistant content lane', () => {
+    const theme = useTheme()
+    theme.setSkin('qq-2007')
+    try {
+      const fileChange = (id: string, count: number): UiMessage => ({
+        id,
+        role: 'system',
+        text: '',
+        tool: {
+          kind: 'fileChange',
+          title: 'File changes',
+          status: 'completed',
+          summary: `${String(count)} files changed`,
+          details: ['status: completed', ...Array.from({ length: count }, (_, index) => `update: src/${id}-${String(index + 1)}.ts`)],
+          output: `diff --git a/${id} b/${id}`,
+          outputLabel: 'Diff',
+        },
+      })
+      const wrapper = mountConversation({
+        messages: [
+          message(1, { text: 'Starting the focused change.' }),
+          fileChange('change-one', 4),
+          fileChange('change-two', 3),
+          message(4, { text: 'Validation complete.' }),
+        ],
+      })
+
+      const cards = wrapper.findAll('[data-testid="file-change-group-card"]')
+      expect(cards).toHaveLength(1)
+      expect(cards[0].attributes('data-update-count')).toBe('2')
+      expect(cards[0].text()).toContain('Changed')
+      expect(cards[0].text()).toContain('7 files')
+      expect(cards[0].text()).toContain('2 updates')
+      expect(cards[0].element.hasAttribute('open')).toBe(false)
+      expect(cards[0].findAll('.file-change-group-update')).toHaveLength(2)
+      expect(wrapper.findAll('[data-testid="conversation-message"]')).toHaveLength(3)
+
+      const groupRow = wrapper.get('[data-message-id="change-one"] .message-row')
+      expect(groupRow.attributes('data-identity-layout')).toBe('avatars')
+      expect(groupRow.find('.message-identity-slot').exists()).toBe(true)
+      expect(groupRow.find('.message-identity').exists()).toBe(false)
     } finally {
       theme.setSkin('control-tower')
     }

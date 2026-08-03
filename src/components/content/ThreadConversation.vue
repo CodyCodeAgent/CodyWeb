@@ -196,23 +196,23 @@
         <p class="conversation-history-window">{{ visibleMessageWindowLabel }}</p>
       </li>
 
-      <li
-        v-for="(message, renderedMessageIndex) in visibleMessages"
-        :key="message.id"
-        class="conversation-item"
-        data-testid="conversation-message"
-        :data-role="message.role"
-        :data-message-type="message.messageType || ''"
-        :data-message-id="message.id"
-      >
+      <template v-for="(message, renderedMessageIndex) in visibleMessages" :key="message.id">
+        <li
+          v-if="shouldRenderConversationMessage(message)"
+          class="conversation-item"
+          data-testid="conversation-message"
+          :data-role="message.role"
+          :data-message-type="message.messageType || ''"
+          :data-message-id="message.id"
+        >
         <div
           class="message-row"
           :data-role="message.role"
           :data-message-type="message.messageType || ''"
-          :data-identity-layout="identityAvatarsEnabled && isIdentityMessage(message) ? 'avatars' : undefined"
+          :data-identity-layout="messageUsesIdentityLane(message) ? 'avatars' : undefined"
         >
           <div
-            v-if="identityAvatarsEnabled && isIdentityMessage(message) && message.role === 'assistant'"
+            v-if="messageUsesIdentityLane(message) && message.role !== 'user'"
             class="message-identity-slot"
             data-role="assistant"
             :data-visible="shouldShowMessageIdentity(message, renderedMessageIndex)"
@@ -226,7 +226,12 @@
             />
           </div>
           <div class="message-stack" :data-role="message.role">
-            <article class="message-body" data-cody-component="message" :data-role="message.role">
+            <article
+              class="message-body"
+              data-cody-component="message"
+              :data-role="message.role"
+              :data-has-tool="message.tool ? 'true' : undefined"
+            >
               <ul
                 v-if="message.skills && message.skills.length > 0"
                 class="message-skill-list"
@@ -262,6 +267,11 @@
                 </span>
                 <span class="context-compaction-divider-line" aria-hidden="true" />
               </div>
+
+              <FileChangeTimelineGroup
+                v-else-if="isFileChangeGroupHead(message)"
+                :group="fileChangeGroupFor(message)"
+              />
 
               <details
                 v-else-if="message.tool"
@@ -343,7 +353,7 @@
             </article>
           </div>
           <div
-            v-if="identityAvatarsEnabled && isIdentityMessage(message) && message.role === 'user'"
+            v-if="messageUsesIdentityLane(message) && message.role === 'user'"
             class="message-identity-slot"
             data-role="user"
             :data-visible="shouldShowMessageIdentity(message, renderedMessageIndex)"
@@ -357,7 +367,8 @@
             />
           </div>
         </div>
-      </li>
+        </li>
+      </template>
       <li v-if="liveOverlay" class="conversation-item conversation-item-overlay">
         <div class="message-row">
           <div class="message-stack">
@@ -469,8 +480,11 @@ import {
   visibleMessageStartIndex,
 } from '../../composables/threadConversationRules'
 import {
+  buildFileChangeMessageGroups,
   formatToolStatus,
   buildToolOutputPreview,
+  fileChangeMessageCount,
+  type FileChangeMessageGroup,
   isToolOutputTruncated,
   isToolTimelineExpandedByDefault,
   toolOutputToggleLabel,
@@ -489,6 +503,7 @@ import IconTablerCopy from '../icons/IconTablerCopy.vue'
 import IconTablerX from '../icons/IconTablerX.vue'
 import MessageMarkdown from './MessageMarkdown.vue'
 import MessageIdentityAvatar from './MessageIdentityAvatar.vue'
+import FileChangeTimelineGroup from './FileChangeTimelineGroup.vue'
 import { useLocale } from '../../composables/useLocale'
 import { useCodyGrowth } from '../../composables/useCodyGrowth'
 import { useTheme } from '../../theme/useTheme'
@@ -560,10 +575,43 @@ const hiddenMessagesCount = computed(() => hiddenThreadMessageCount(
   normalizedVisibleMessagesCount.value,
 ))
 const visibleMessages = computed(() => props.messages.slice(visibleMessagesStartIndex.value))
+const visibleFileChangeGroups = computed(() => buildFileChangeMessageGroups(visibleMessages.value))
+const fileChangeGroupsByHeadId = computed<Record<string, FileChangeMessageGroup>>(() => Object.fromEntries(
+  visibleFileChangeGroups.value.map((group) => [group.headId, group]),
+))
+const groupedFileChangeContinuationIds = computed(() => new Set(
+  visibleFileChangeGroups.value.flatMap((group) => group.messageIds.slice(1)),
+))
 
 function isIdentityMessage(message: UiMessage): boolean {
   return (message.role === 'assistant' || message.role === 'user')
     && (message.text.trim().length > 0 || (message.images?.length ?? 0) > 0)
+}
+
+function messageUsesIdentityLane(message: UiMessage): boolean {
+  if (!identityAvatarsEnabled.value) return false
+  if (message.role === 'user') return isIdentityMessage(message)
+  if (message.role === 'assistant') return isIdentityMessage(message) || Boolean(message.tool)
+  return message.role === 'system' && Boolean(message.tool)
+}
+
+function isFileChangeGroupHead(message: UiMessage): boolean {
+  return fileChangeGroupsByHeadId.value[message.id] !== undefined
+}
+
+function fileChangeGroupFor(message: UiMessage): FileChangeMessageGroup {
+  return fileChangeGroupsByHeadId.value[message.id] ?? {
+    headId: message.id,
+    messages: [message],
+    messageIds: [message.id],
+    fileCount: fileChangeMessageCount(message),
+    updateCount: 1,
+    status: message.tool?.status ?? 'unknown',
+  }
+}
+
+function shouldRenderConversationMessage(message: UiMessage): boolean {
+  return !groupedFileChangeContinuationIds.value.has(message.id)
 }
 
 function shouldShowMessageIdentity(message: UiMessage, renderedIndex: number): boolean {
@@ -1502,6 +1550,10 @@ function turnReceiptDetails(message: UiMessage): TurnReceiptDetail[] {
 .message-body[data-role='user'] {
   @apply ml-auto items-end;
   align-self: flex-end;
+}
+
+.message-body[data-has-tool='true'] {
+  width: 100%;
 }
 
 .message-image-list {

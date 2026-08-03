@@ -2561,7 +2561,8 @@ button,
   column-gap: var(--message-identity-gap);
 }
 
-#app .desktop-layout[data-skin-recipe-identity='avatars'] .message-row[data-identity-layout='avatars'][data-role='assistant'] {
+#app .desktop-layout[data-skin-recipe-identity='avatars'] .message-row[data-identity-layout='avatars'][data-role='assistant'],
+#app .desktop-layout[data-skin-recipe-identity='avatars'] .message-row[data-identity-layout='avatars'][data-role='system'] {
   grid-template-columns: var(--message-identity-lane) minmax(0, 1fr);
 }
 
