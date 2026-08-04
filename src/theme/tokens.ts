@@ -84,6 +84,9 @@ export type SkinVariant = {
     type: 'solid' | 'grid' | 'noise' | 'image' | 'animated'
     fit?: 'cover' | 'contain'
     position?: string
+    blur?: number
+    dim?: number
+    saturation?: number
   }
 }
 

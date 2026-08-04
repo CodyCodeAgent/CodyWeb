@@ -18,6 +18,7 @@ const MAX_SKIN_PACKAGE_BYTES = 1_500_000
 const MAX_SKIN_ASSET_BYTES = 512_000
 const DATA_IMAGE_PATTERN = /^data:image\/(?:png|jpeg|webp);base64,([a-z0-9+/]+={0,2})$/iu
 const BUNDLED_SKIN_IMAGE_PATTERN = /^\/skin-assets\/[a-z0-9/_-]+\.(?:png|jpe?g|webp)$/iu
+const STORED_SKIN_IMAGE_PATTERN = /^\/codex-api\/theme-assets\/[a-f0-9]{64}$/u
 const RECIPE_VALUES = {
   chrome: ['native', 'glossy', 'terminal'],
   navigation: ['native', 'classic', 'pill'],
@@ -291,9 +292,9 @@ function cssValue(value: unknown, label: string, maxLength = 240): string {
 
 function imageAsset(value: unknown, label: string): string {
   const asset = safeString(value, label, MAX_SKIN_ASSET_BYTES * 2)
-  if (BUNDLED_SKIN_IMAGE_PATTERN.test(asset)) return asset
+  if (BUNDLED_SKIN_IMAGE_PATTERN.test(asset) || STORED_SKIN_IMAGE_PATTERN.test(asset)) return asset
   const match = DATA_IMAGE_PATTERN.exec(asset)
-  if (!match) throw new Error(`${label} must be an embedded PNG, JPEG, or WebP data URL.`)
+  if (!match) throw new Error(`${label} must be a stored CodyWeb asset or an embedded PNG, JPEG, or WebP data URL.`)
   const decodedBytes = Math.floor(match[1].length * 3 / 4) - (match[1].endsWith('==') ? 2 : match[1].endsWith('=') ? 1 : 0)
   if (decodedBytes > MAX_SKIN_ASSET_BYTES) throw new Error(`${label} exceeds 500 KB.`)
   return asset
@@ -355,10 +356,19 @@ function normalizedTokens(value: unknown): ThemeTokens {
 
 function normalizedBackground(value: unknown, label: string): SkinVariant['background'] {
   const row = objectRow(value, label)
+  const boundedNumber = (input: unknown, name: string, minimum: number, maximum: number): number => {
+    if (typeof input !== 'number' || !Number.isFinite(input) || input < minimum || input > maximum) {
+      throw new Error(`${name} must be between ${minimum} and ${maximum}.`)
+    }
+    return Math.round(input * 100) / 100
+  }
   return {
     type: enumValue(row.type ?? 'solid', ['solid', 'grid', 'noise', 'image', 'animated'] as const, `${label}.type`),
     ...(row.fit === undefined ? {} : { fit: enumValue(row.fit, ['cover', 'contain'] as const, `${label}.fit`) }),
     ...(row.position === undefined ? {} : { position: safeString(row.position, `${label}.position`, 40) }),
+    ...(row.blur === undefined ? {} : { blur: boundedNumber(row.blur, `${label}.blur`, 0, 48) }),
+    ...(row.dim === undefined ? {} : { dim: boundedNumber(row.dim, `${label}.dim`, 0, 80) }),
+    ...(row.saturation === undefined ? {} : { saturation: boundedNumber(row.saturation, `${label}.saturation`, 50, 160) }),
   }
 }
 
