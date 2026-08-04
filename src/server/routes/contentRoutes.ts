@@ -3,12 +3,17 @@ import { handleDirectoryList } from '../directoryBrowser.js'
 import { handleImageUpload, handleLocalImage } from '../imageUploads.js'
 import { handleDeletePromptTemplate, handleFavoritePromptTemplate, handleListPromptTemplates, handleReplacePromptTemplates, handleSavePromptTemplate, handleUsePromptTemplate } from '../promptLibraryStore.js'
 import { handleListUserSettings, handleReadUserSetting, handleWriteUserSetting } from '../settingsStore.js'
+import { handleThemeAssetRead, handleThemeAssetUpload } from '../themeAssetStore.js'
 import { asRecord, readJsonBody, setJson, type DomainRoute } from './httpRoute.js'
 
 export function createContentRoutes(): DomainRoute {
   return async ({ req, res, url }) => {
     const key = `${req.method ?? ''} ${url.pathname}`
     if (key === 'POST /codex-api/uploads/images') await handleImageUpload(req, res)
+    else if (key === 'POST /codex-api/theme-assets') await handleThemeAssetUpload(req, res)
+    else if ((req.method === 'GET' || req.method === 'HEAD') && /^\/codex-api\/theme-assets\/[a-f0-9]{64}$/u.test(url.pathname)) {
+      await handleThemeAssetRead(url.pathname.slice('/codex-api/theme-assets/'.length), res, req.method)
+    }
     else if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/codex-api/local-image') await handleLocalImage(url, res, req.method)
     else if (key === 'GET /codex-api/settings') await handleReadUserSetting(url, res)
     else if (key === 'GET /codex-api/settings/list') await handleListUserSettings(url, res)

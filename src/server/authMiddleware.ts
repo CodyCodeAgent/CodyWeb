@@ -9,7 +9,7 @@ import {
 
 const TOKEN_COOKIE = 'cody_web_ui_token'
 const DEVICE_COOKIE = 'cody_web_ui_device'
-const DEFAULT_SESSION_TTL_MS = 8 * 60 * 60 * 1000
+const DEFAULT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000
 const DEFAULT_RATE_LIMIT_BLOCK_MS = 15 * 60 * 1000
 const DEFAULT_MAX_FAILED_ATTEMPTS = 5
@@ -131,8 +131,16 @@ export function createAuthMiddleware(password: string, options: AuthMiddlewareOp
     return sessionStore.readSession(token, nowMs)
   }
 
-  function readSession(req: Request, nowMs: number): AuthSession | null {
-    return readSessionFromCookie(req.headers.cookie, nowMs)
+  function readSession(req: Request, res: Response, nowMs: number): AuthSession | null {
+    const session = readSessionFromCookie(req.headers.cookie, nowMs)
+    if (!session) return null
+    const desiredExpiryMs = session.createdAtMs + sessionTtlMs
+    if (session.expiresAtMs < desiredExpiryMs) {
+      session.expiresAtMs = desiredExpiryMs
+      sessionStore.writeSession(session)
+      res.append('Set-Cookie', `${TOKEN_COOKIE}=${session.token}; ${cookieAttributes((desiredExpiryMs - nowMs) / 1000)}`)
+    }
+    return session
   }
 
   function readRateLimit(ip: string, nowMs: number): LoginRateLimitState {
@@ -164,7 +172,7 @@ export function createAuthMiddleware(password: string, options: AuthMiddlewareOp
     const ip = requestIp(req)
 
     if (req.method === 'GET' && req.path === '/auth/session') {
-      const session = readSession(req, nowMs)
+      const session = readSession(req, res, nowMs)
       if (!session) {
         res.status(401).json({ authenticated: false })
         return
@@ -187,7 +195,7 @@ export function createAuthMiddleware(password: string, options: AuthMiddlewareOp
     }
 
     if (req.method === 'GET' && req.path === '/auth/devices') {
-      const session = readSession(req, nowMs)
+      const session = readSession(req, res, nowMs)
       if (!session) {
         res.status(401).json({ authenticated: false })
         return
@@ -205,7 +213,7 @@ export function createAuthMiddleware(password: string, options: AuthMiddlewareOp
     }
 
     if (req.method === 'POST' && req.path === '/auth/device/trust') {
-      const session = readSession(req, nowMs)
+      const session = readSession(req, res, nowMs)
       if (!session) {
         res.status(401).json({ authenticated: false })
         return
@@ -227,7 +235,7 @@ export function createAuthMiddleware(password: string, options: AuthMiddlewareOp
     }
 
     if (req.method === 'POST' && req.path === '/auth/device/revoke') {
-      const session = readSession(req, nowMs)
+      const session = readSession(req, res, nowMs)
       if (!session) {
         res.status(401).json({ authenticated: false })
         return
@@ -320,7 +328,7 @@ export function createAuthMiddleware(password: string, options: AuthMiddlewareOp
     }
 
     // Check for valid token cookie
-    if (readSession(req, nowMs)) {
+    if (readSession(req, res, nowMs)) {
       next()
       return
     }

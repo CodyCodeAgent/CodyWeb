@@ -83,6 +83,33 @@ afterEach(async () => {
 })
 
 describe('authMiddleware', () => {
+  it('keeps default login sessions valid for 30 days', async () => {
+    let nowMs = Date.parse('2026-07-05T00:00:00.000Z')
+    const server = await startAuthServer({ now: () => nowMs })
+    servers.push(server)
+
+    const login = await fetch(`${server.baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'correct-password' }),
+    })
+    expect(login.status).toBe(200)
+    await expect(login.clone().json()).resolves.toMatchObject({
+      ok: true,
+      expiresAtIso: '2026-08-04T00:00:00.000Z',
+    })
+    expect(login.headers.get('set-cookie')).toMatch(/cody_web_ui_token=[a-f0-9]+;[^,]*Max-Age=2592000/u)
+    const cookie = cookiesFrom(login)
+
+    nowMs += 30 * 24 * 60 * 60 * 1000 - 1
+    const beforeExpiry = await fetch(`${server.baseUrl}/auth/session`, { headers: { cookie } })
+    expect(beforeExpiry.status).toBe(200)
+
+    nowMs += 2
+    const afterExpiry = await fetch(`${server.baseUrl}/auth/session`, { headers: { cookie } })
+    expect(afterExpiry.status).toBe(401)
+  })
+
   it('creates short-lived authenticated sessions with status and logout', async () => {
     let nowMs = Date.parse('2026-07-05T00:00:00.000Z')
     const server = await startAuthServer({
@@ -306,6 +333,35 @@ describe('authMiddleware', () => {
       headers: { cookie },
     })
     expect(invalidated.status).toBe(401)
+  })
+
+  it('upgrades a still-valid legacy session to the 30-day lifetime', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cody-auth-legacy-'))
+    temporaryDirectories.push(directory)
+    const databasePath = join(directory, 'settings.sqlite3')
+    let nowMs = Date.parse('2026-07-05T00:00:00.000Z')
+    const legacyServer = await startAuthServer({ databasePath, sessionTtlMs: 60_000, now: () => nowMs })
+    servers.push(legacyServer)
+
+    const login = await fetch(`${legacyServer.baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'correct-password' }),
+    })
+    const cookie = cookiesFrom(login)
+    await legacyServer.close()
+
+    nowMs += 30_000
+    const upgradedServer = await startAuthServer({ databasePath, now: () => nowMs })
+    servers.push(upgradedServer)
+    const upgraded = await fetch(`${upgradedServer.baseUrl}/auth/session`, { headers: { cookie } })
+
+    expect(upgraded.status).toBe(200)
+    await expect(upgraded.clone().json()).resolves.toMatchObject({
+      authenticated: true,
+      expiresAtIso: '2026-08-04T00:00:00.000Z',
+    })
+    expect(upgraded.headers.get('set-cookie')).toMatch(/cody_web_ui_token=[a-f0-9]+;[^,]*Max-Age=2591970/u)
   })
 
   it('rate limits repeated failed logins and resets after success', async () => {

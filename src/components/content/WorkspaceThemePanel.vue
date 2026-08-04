@@ -96,6 +96,8 @@
       </label>
     </div>
 
+    <ImageSkinStudio :disabled="hasWorkspaceThemeBinding" />
+
     <div class="workspace-theme-panel-package" data-testid="theme-package-actions">
       <div>
         <strong>{{ t('theme.package.title') }}</strong>
@@ -148,6 +150,7 @@ import { useTheme } from '../../theme/useTheme'
 import type { LayoutPresetId, ThemeColorMode, ThemeDensity } from '../../theme/tokens'
 import type { UiWorkspaceConfig } from '../../types/codex'
 import { useLocale } from '../../composables/useLocale'
+import ImageSkinStudio from './ImageSkinStudio.vue'
 
 const props = defineProps<{
   workspaceTheme?: UiWorkspaceConfig['theme'] | null
@@ -257,19 +260,42 @@ function skinPackageFilename(): string {
   return `${safeId || 'cody-skin'}.cody-skin`
 }
 
-function downloadSkinPackage(): void {
-  const packageText = exportActiveSkin()
-  const url = URL.createObjectURL(new Blob([packageText], { type: 'application/json;charset=utf-8' }))
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = skinPackageFilename()
-  anchor.hidden = true
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  window.setTimeout(() => URL.revokeObjectURL(url), 0)
-  skinJsonMessage.value = t('theme.package.downloaded')
-  skinJsonMessageTone.value = 'success'
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error(t('theme.package.downloadFailed')))
+    reader.onload = () => resolve(String(reader.result))
+    reader.readAsDataURL(blob)
+  })
+}
+
+async function downloadSkinPackage(): Promise<void> {
+  try {
+    const packageValue = JSON.parse(exportActiveSkin()) as Record<string, unknown>
+    const assets = packageValue.assets && typeof packageValue.assets === 'object' && !Array.isArray(packageValue.assets)
+      ? packageValue.assets as Record<string, unknown>
+      : null
+    if (assets && typeof assets.background === 'string' && /^\/codex-api\/theme-assets\/[a-f0-9]{64}$/u.test(assets.background)) {
+      const response = await fetch(assets.background)
+      if (!response.ok) throw new Error(t('theme.package.downloadFailed'))
+      assets.background = await blobToDataUrl(await response.blob())
+    }
+    const packageText = `${JSON.stringify(packageValue, null, 2)}\n`
+    const url = URL.createObjectURL(new Blob([packageText], { type: 'application/json;charset=utf-8' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = skinPackageFilename()
+    anchor.hidden = true
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    skinJsonMessage.value = t('theme.package.downloaded')
+    skinJsonMessageTone.value = 'success'
+  } catch (error) {
+    skinJsonMessage.value = error instanceof Error ? error.message : t('theme.package.downloadFailed')
+    skinJsonMessageTone.value = 'danger'
+  }
 }
 
 function openSkinPackagePicker(): void {

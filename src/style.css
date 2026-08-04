@@ -2322,13 +2322,34 @@ button,
 }
 
 #app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true'] {
+  isolation: isolate;
+  overflow: hidden;
   background-color: var(--color-background);
-  background-image:
-    linear-gradient(color-mix(in srgb, var(--color-background) 30%, transparent), color-mix(in srgb, var(--color-background) 30%, transparent)),
-    var(--skin-background-image);
-  background-position: center, var(--skin-background-position);
+  background-image: none;
+}
+
+#app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true']::before,
+#app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true']::after {
+  position: absolute;
+  pointer-events: none;
+  content: '';
+  inset: 0;
+}
+
+#app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true']::before {
+  z-index: -2;
+  inset: calc(-1 * var(--skin-background-blur));
+  background-image: var(--skin-background-image);
+  background-position: var(--skin-background-position);
   background-repeat: no-repeat;
-  background-size: cover, var(--skin-background-fit);
+  background-size: var(--skin-background-fit);
+  filter: blur(var(--skin-background-blur)) saturate(var(--skin-background-saturation));
+  transform: scale(1.035);
+}
+
+#app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true']::after {
+  z-index: -1;
+  background: color-mix(in srgb, var(--color-background) var(--skin-background-dim), transparent);
 }
 
 #app .desktop-layout[data-skin-recipe-chrome='glossy'] [data-cody-region='sidebar'] {
