@@ -2328,6 +2328,28 @@ button,
   background-image: none;
 }
 
+#app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true'] > :is(
+  [data-cody-region='sidebar'],
+  [data-cody-region='workspace'],
+  .desktop-resize-handle
+) {
+  position: relative;
+  z-index: 1;
+}
+
+#app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true'] > [data-cody-region='workspace'] {
+  background: transparent;
+}
+
+#app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true'] > [data-cody-region='sidebar'],
+#app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true'] .sidebar-root {
+  background: color-mix(in srgb, var(--color-surface) 76%, transparent);
+}
+
+#app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true'] > [data-cody-region='sidebar'] {
+  backdrop-filter: blur(18px) saturate(108%);
+}
+
 #app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true']::before,
 #app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true']::after {
   position: absolute;
@@ -2337,7 +2359,7 @@ button,
 }
 
 #app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true']::before {
-  z-index: -2;
+  z-index: 0;
   inset: calc(-1 * var(--skin-background-blur));
   background-image: var(--skin-background-image);
   background-position: var(--skin-background-position);
@@ -2348,7 +2370,7 @@ button,
 }
 
 #app .desktop-layout[data-skin-recipe-backdrop='image'][data-skin-has-background='true']::after {
-  z-index: -1;
+  z-index: 0;
   background: color-mix(in srgb, var(--color-background) var(--skin-background-dim), transparent);
 }
 
