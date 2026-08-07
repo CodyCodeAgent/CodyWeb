@@ -2190,6 +2190,24 @@ describe('toolingService', () => {
     })
   })
 
+  it('keeps directories visible when a workspace folder exceeds the entry limit', async () => {
+    const repo = await createRepo()
+    await Promise.all(Array.from({ length: 205 }, (_, index) => (
+      writeFile(join(repo, `generated-${String(index).padStart(3, '0')}.txt`), 'generated\n', 'utf8')
+    )))
+    await mkdir(join(repo, 'worktrees'))
+
+    const rootList = await listWorkspaceFiles({ cwd: repo })
+
+    expect(rootList.truncated).toBe(true)
+    expect(rootList.entries).toHaveLength(200)
+    expect(rootList.entries[0]).toEqual(expect.objectContaining({
+      name: 'worktrees',
+      path: 'worktrees',
+      kind: 'directory',
+    }))
+  })
+
   it('rejects workspace file paths outside the workspace root', async () => {
     const repo = await createRepo()
 

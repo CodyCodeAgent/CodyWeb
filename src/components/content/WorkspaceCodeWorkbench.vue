@@ -1,5 +1,6 @@
 <template>
-  <section class="code-workbench" :data-navigator-collapsed="isNavigatorCollapsed" :data-chat-collapsed="isChatCollapsed">
+  <section class="code-workbench" :data-navigator-collapsed="isNavigatorCollapsed" :data-chat-open="isChatOpen"
+    :data-chat-mode="effectiveChatMode">
     <aside v-if="!isNavigatorCollapsed" class="code-navigator" aria-label="代码导航">
       <header class="code-navigator-header">
         <div class="code-navigator-tabs" role="tablist" aria-label="代码导航视图">
@@ -48,7 +49,7 @@
           <WorkspaceFileTreeBranch v-for="entry in treeEntries" :key="entry.path" :entry="entry" :cwd="cwd"
             :depth="0" :selected-path="activePath" :refresh-key="treeRefreshKey" @open-file="openLocation($event)" />
         </ol>
-        <p v-if="treeTruncated" class="code-empty">目录内容较多，仅显示前 200 项。</p>
+        <p v-if="treeTruncated" class="code-empty">已优先展示目录；其余内容较多，仅显示前 200 项，可用搜索查找文件。</p>
       </div>
 
       <div v-else class="code-navigator-body code-search-panel">
@@ -93,8 +94,11 @@
         </div>
         <div class="code-editor-actions">
           <button class="code-icon-button" type="button" :aria-pressed="isWordWrap" :title="isWordWrap ? '关闭自动换行' : '开启自动换行'" @click="isWordWrap = !isWordWrap">↩</button>
-          <button class="code-icon-button" type="button" :aria-label="isChatCollapsed ? '展开对话' : '收起对话'" :title="isChatCollapsed ? '展开对话' : '收起对话'" @click="isChatCollapsed = !isChatCollapsed">
+          <button class="code-chat-trigger" type="button" :aria-expanded="isChatOpen" aria-controls="code-workbench-chat"
+            :aria-label="isChatOpen ? '关闭当前对话' : '打开当前对话'" :title="isChatOpen ? '关闭当前对话' : '打开当前对话'"
+            :data-open="isChatOpen" @click="isChatOpen = !isChatOpen">
             <IconTablerLayoutSidebar />
+            <span>对话</span>
           </button>
         </div>
       </header>
@@ -152,10 +156,31 @@
       </section>
     </main>
 
-    <aside v-if="!isChatCollapsed" class="code-chat-panel" aria-label="当前任务对话">
-      <header><strong>当前对话</strong><button class="code-icon-button" type="button" aria-label="收起对话" @click="isChatCollapsed = true"><IconTablerX /></button></header>
-      <div class="code-chat-content"><slot name="conversation" /></div>
-    </aside>
+    <Transition name="code-chat">
+      <aside v-if="isChatOpen" id="code-workbench-chat" class="code-chat-panel" :data-mode="effectiveChatMode"
+        aria-label="当前任务对话">
+        <header>
+          <div class="code-chat-heading">
+            <strong>当前对话</strong>
+            <small>{{ effectiveChatMode === 'docked' ? '已吸附' : '浮窗' }}</small>
+          </div>
+          <div class="code-chat-actions">
+            <button v-if="effectiveChatMode === 'floating' && canDockChat" class="code-icon-button" type="button"
+              aria-label="吸附到右侧" title="吸附到右侧" @click="setChatPresentation('docked')">
+              <IconTablerLayoutSidebarFilled />
+            </button>
+            <button v-else-if="effectiveChatMode === 'docked'" class="code-icon-button" type="button"
+              aria-label="切换为浮窗" title="切换为浮窗" @click="setChatPresentation('floating')">
+              <IconTablerLayoutSidebar />
+            </button>
+            <button class="code-icon-button" type="button" aria-label="关闭对话" title="关闭对话" @click="isChatOpen = false">
+              <IconTablerX />
+            </button>
+          </div>
+        </header>
+        <div class="code-chat-content"><slot name="conversation" /></div>
+      </aside>
+    </Transition>
   </section>
 </template>
 
@@ -168,6 +193,7 @@ import type { UiComposerContextAttachment, UiMessage, UiWorkspaceCodeTab, UiWork
 import IconTablerChevronLeft from '../icons/IconTablerChevronLeft.vue'
 import IconTablerFolderOpen from '../icons/IconTablerFolderOpen.vue'
 import IconTablerLayoutSidebar from '../icons/IconTablerLayoutSidebar.vue'
+import IconTablerLayoutSidebarFilled from '../icons/IconTablerLayoutSidebarFilled.vue'
 import IconTablerRefresh from '../icons/IconTablerRefresh.vue'
 import IconTablerSearch from '../icons/IconTablerSearch.vue'
 import IconTablerX from '../icons/IconTablerX.vue'
@@ -181,14 +207,18 @@ const route = useRoute()
 const router = useRouter()
 
 type NavigatorMode = 'changes' | 'files' | 'search'
+type ChatPresentation = 'floating' | 'docked'
 type CodeSelection = { text: string; startLine: number; endLine: number }
+const CHAT_PRESENTATION_KEY = 'cody-code-chat-presentation'
 const navigatorOptions: Array<{ id: NavigatorMode; label: string }> = [
   { id: 'changes', label: '变更' }, { id: 'files', label: '文件' }, { id: 'search', label: '搜索' },
 ]
 
 const navigatorMode = ref<NavigatorMode>('changes')
 const isNavigatorCollapsed = ref(false)
-const isChatCollapsed = ref(false)
+const isChatOpen = ref(false)
+const chatPresentation = ref<ChatPresentation>('floating')
+const isNarrowViewport = ref(false)
 const isWordWrap = ref(true)
 const tabs = ref<UiWorkspaceCodeTab[]>([])
 const activePath = ref('')
@@ -239,6 +269,8 @@ const diffReview = computed(() => {
 const activeDiffFile = computed(() => diffReview.value.files.find((file) => file.filePath === activePath.value) ?? null)
 const projectName = computed(() => props.cwd.split('/').filter(Boolean).at(-1) ?? 'workspace')
 const sessionKey = computed(() => `cody-code-tabs:${props.threadId}`)
+const effectiveChatMode = computed<ChatPresentation>(() => isNarrowViewport.value ? 'floating' : chatPresentation.value)
+const canDockChat = computed(() => !isNarrowViewport.value)
 
 const treeBreadcrumbs = computed(() => pathCrumbs(treeBasePath.value).map((crumb) => ({ label: crumb.label, path: crumb.path })))
 const activeBreadcrumbs = computed(() => pathCrumbs(activePath.value).map((crumb, index, all) => ({
@@ -274,6 +306,17 @@ function cacheFile(file: UiWorkspaceFileContent): void {
   fileCache.set(fileCacheKey(file.path, file.modifiedAtIso), file)
 }
 function clearFileCache(): void { fileCache.clear(); latestFileRevision.clear() }
+
+function restoreChatPresentation(): void {
+  try {
+    const saved = window.localStorage.getItem(CHAT_PRESENTATION_KEY)
+    if (saved === 'floating' || saved === 'docked') chatPresentation.value = saved
+  } catch { /* Browser storage is optional. */ }
+}
+function setChatPresentation(mode: ChatPresentation): void {
+  chatPresentation.value = mode
+  try { window.localStorage.setItem(CHAT_PRESENTATION_KEY, mode) } catch { /* Browser storage is optional. */ }
+}
 
 function saveTabs(): void {
   try { window.sessionStorage.setItem(sessionKey.value, JSON.stringify(tabs.value)) } catch { /* Browser storage is optional. */ }
@@ -443,6 +486,9 @@ function syncFromRoute(): void {
 }
 
 function onGlobalKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && isChatOpen.value && effectiveChatMode.value === 'floating') {
+    event.preventDefault(); isChatOpen.value = false; return
+  }
   if (!event.metaKey && !event.ctrlKey) return
   const key = event.key.toLowerCase()
   if (key === 'p' && !event.shiftKey) { event.preventDefault(); navigatorMode.value = 'search'; searchScope.value = 'files'; void nextTick(() => searchInputRef.value?.focus()) }
@@ -450,8 +496,8 @@ function onGlobalKeydown(event: KeyboardEvent): void {
   if (key === 'w' && activePath.value) { event.preventDefault(); closeTab(activePath.value) }
 }
 
-function collapseChatForNarrowViewport(event: MediaQueryListEvent | MediaQueryList): void {
-  if (event.matches) isChatCollapsed.value = true
+function syncNarrowViewport(event: MediaQueryListEvent | MediaQueryList): void {
+  isNarrowViewport.value = event.matches
 }
 
 function collapseNavigatorForMobileViewport(event: MediaQueryListEvent | MediaQueryList): void {
@@ -464,34 +510,36 @@ watch(() => props.messages, () => { if (diffReview.value.files.length === 0) voi
 watch(() => props.threadId, () => { clearFileCache(); restoreTabs(); activePath.value = ''; activeFile.value = null; syncFromRoute() })
 
 onMounted(() => {
-  restoreTabs(); void loadTree(); void loadFallbackDiff(); syncFromRoute()
+  restoreTabs(); restoreChatPresentation(); void loadTree(); void loadFallbackDiff(); syncFromRoute()
   if (!activePath.value && diffReview.value.files[0]) {
     openChangedFile(diffReview.value.files[0], route.query.mode === 'diff' ? 'diff' : 'file')
   }
   chatMediaQuery = window.matchMedia('(max-width: 1180px)')
   navigatorMediaQuery = window.matchMedia('(max-width: 760px)')
-  collapseChatForNarrowViewport(chatMediaQuery)
+  syncNarrowViewport(chatMediaQuery)
   collapseNavigatorForMobileViewport(navigatorMediaQuery)
-  chatMediaQuery.addEventListener('change', collapseChatForNarrowViewport)
+  chatMediaQuery.addEventListener('change', syncNarrowViewport)
   navigatorMediaQuery.addEventListener('change', collapseNavigatorForMobileViewport)
   window.addEventListener('keydown', onGlobalKeydown)
 })
 onBeforeUnmount(() => {
   window.clearTimeout(searchTimer); fileController?.abort(); searchController?.abort()
-  chatMediaQuery?.removeEventListener('change', collapseChatForNarrowViewport)
+  chatMediaQuery?.removeEventListener('change', syncNarrowViewport)
   navigatorMediaQuery?.removeEventListener('change', collapseNavigatorForMobileViewport)
   window.removeEventListener('keydown', onGlobalKeydown)
 })
 </script>
 
 <style scoped>
-.code-workbench { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(13rem, 16rem) minmax(24rem, 1fr) minmax(18rem, 23rem); overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-panel); }
-.code-workbench[data-chat-collapsed='true'] { grid-template-columns: minmax(13rem, 16rem) minmax(24rem, 1fr); }
-.code-workbench[data-navigator-collapsed='true'] { grid-template-columns: 2.75rem minmax(24rem, 1fr) minmax(18rem, 23rem); }
-.code-workbench[data-navigator-collapsed='true'][data-chat-collapsed='true'] { grid-template-columns: 2.75rem minmax(24rem, 1fr); }
+.code-workbench { position: relative; min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(13rem, 16rem) minmax(24rem, 1fr); overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-panel); isolation: isolate; }
+.code-workbench[data-chat-open='true'][data-chat-mode='docked'] { grid-template-columns: minmax(13rem, 16rem) minmax(24rem, 1fr) minmax(20rem, 26rem); }
+.code-workbench[data-navigator-collapsed='true'] { grid-template-columns: 2.75rem minmax(24rem, 1fr); }
+.code-workbench[data-navigator-collapsed='true'][data-chat-open='true'][data-chat-mode='docked'] { grid-template-columns: 2.75rem minmax(24rem, 1fr) minmax(20rem, 26rem); }
 .code-navigator, .code-chat-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: color-mix(in srgb, var(--color-panel) 92%, var(--color-background)); }
 .code-navigator { border-right: 1px solid var(--color-border); }
-.code-chat-panel { border-left: 1px solid var(--color-border); }
+.code-chat-panel { z-index: 20; overflow: hidden; border: 1px solid var(--color-border); background: color-mix(in srgb, var(--color-panel) 97%, var(--color-background)); box-shadow: var(--shadow-lg); }
+.code-chat-panel[data-mode='floating'] { position: absolute; top: 3.35rem; right: 0.75rem; bottom: 0.75rem; width: clamp(22.5rem, 32vw, 35rem); border-radius: var(--radius-lg); }
+.code-chat-panel[data-mode='docked'] { position: static; border-width: 0 0 0 1px; border-radius: 0; box-shadow: none; }
 .code-navigator-header, .code-editor-header, .code-chat-panel > header { min-height: 2.75rem; display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--color-border); }
 .code-navigator-tabs { min-width: 0; display: flex; flex: 1; gap: 0.2rem; }
 .code-navigator-tabs button, .code-search-scope button, .code-view-toggle button { min-height: 2rem; padding: 0.25rem 0.55rem; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-muted); font-size: 0.72rem; cursor: pointer; }
@@ -501,6 +549,10 @@ onBeforeUnmount(() => {
 .code-icon-button:hover, .code-rail-button:hover { border-color: var(--color-border); background: var(--color-control); color: var(--color-text); }
 .code-icon-button:focus-visible, .code-rail-button:focus-visible, .code-workbench button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 .code-icon-button svg, .code-rail-button svg { width: 1rem; height: 1rem; }
+.code-chat-trigger { min-height: 2rem; display: inline-flex; align-items: center; gap: 0.35rem; padding: 0 0.55rem; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-muted); font: inherit; font-size: 0.68rem; cursor: pointer; }
+.code-chat-trigger:hover, .code-chat-trigger[data-open='true'] { border-color: var(--color-border); background: var(--color-control); color: var(--color-text); }
+.code-chat-trigger:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.code-chat-trigger svg { width: 1rem; height: 1rem; }
 .code-rail-button { align-self: start; margin: 0.4rem; }
 .code-navigator-body, .code-chat-content { min-height: 0; flex: 1; overflow: auto; }
 .code-empty { margin: 0; padding: 1rem; color: var(--color-text-muted); font-size: 0.72rem; line-height: 1.4; }
@@ -524,9 +576,10 @@ onBeforeUnmount(() => {
 .code-loading-skeleton { width: 100%; display: grid; align-content: start; gap: 0.75rem; padding: 1.25rem; }.code-loading-skeleton span { height: 0.75rem; border-radius: 999px; background: color-mix(in srgb, var(--color-text-muted) 14%, transparent); animation: code-pulse 1.2s ease-in-out infinite; }.code-file-warning { position: absolute; inset: auto 0 0; margin: 0; padding: 0.4rem 0.75rem; background: color-mix(in srgb, var(--color-warning) 14%, var(--color-panel)); color: var(--color-warning); font-size: 0.68rem; }
 .code-selection-actions { position: absolute; right: 1rem; bottom: 1rem; z-index: 4; display: flex; align-items: center; gap: 0.35rem; padding: 0.35rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-panel); box-shadow: var(--shadow-lg); }.code-selection-actions span { padding: 0 0.35rem; color: var(--color-text-muted); font-family: var(--font-mono); font-size: 0.65rem; }.code-selection-actions button { min-height: 2rem; padding: 0.25rem 0.6rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-control); color: var(--color-text); font-size: 0.7rem; cursor: pointer; }.code-selection-actions .code-selection-primary { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-accent-contrast, white); }
 .code-diff-viewer { min-width: 0; flex: 1; overflow: auto; padding: 0.75rem; font-family: var(--font-mono); font-size: 0.7rem; }.code-diff-hunk { min-width: max-content; margin-bottom: 0.75rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); overflow: hidden; }.code-diff-hunk > header { position: sticky; left: 0; padding: 0.35rem 0.5rem; background: color-mix(in srgb, var(--color-info) 10%, var(--color-panel)); color: var(--color-info); }.code-diff-line { display: grid; grid-template-columns: 3.25rem 3.25rem 1.2rem minmax(30rem, 1fr); min-height: 1.25rem; }.code-diff-line[data-kind='add'] { background: color-mix(in srgb, var(--color-success) 12%, transparent); }.code-diff-line[data-kind='remove'] { background: color-mix(in srgb, var(--color-danger) 12%, transparent); }.code-diff-line > span { padding: 0 0.35rem; color: var(--color-text-muted); text-align: right; user-select: none; }.code-diff-line > i { color: var(--color-text-muted); font-style: normal; text-align: center; }.code-diff-line > code { padding-right: 1rem; white-space: pre; }.code-diff-viewer > pre { margin: 0; white-space: pre; }
-.code-chat-panel > header { justify-content: space-between; }.code-chat-panel > header strong { font-size: 0.75rem; }.code-chat-content { display: flex; }.code-chat-content :deep(.conversation-root) { min-width: 0; flex: 1; }.code-chat-content :deep(.conversation-list) { padding-inline: 0.75rem; }.code-chat-content :deep(.conversation-message) { max-width: 100%; }
+.code-chat-panel > header { justify-content: space-between; padding-inline: 0.65rem 0.4rem; background: color-mix(in srgb, var(--color-panel) 96%, var(--color-background)); }.code-chat-heading { min-width: 0; display: flex; align-items: baseline; gap: 0.45rem; }.code-chat-heading strong { font-size: 0.75rem; }.code-chat-heading small { color: var(--color-text-muted); font-size: 0.62rem; }.code-chat-actions { display: flex; gap: 0.15rem; }.code-chat-content { display: flex; }.code-chat-content :deep(.conversation-root) { min-width: 0; flex: 1; }.code-chat-content :deep(.conversation-list) { padding-inline: 0.75rem; }.code-chat-content :deep(.conversation-message) { max-width: 100%; }
+.code-chat-enter-active, .code-chat-leave-active { transition: opacity 150ms ease, transform 150ms ease; }.code-chat-enter-from, .code-chat-leave-to { opacity: 0; transform: translateX(0.75rem); }
 @keyframes code-pulse { 50% { opacity: 0.45; } }
-@media (prefers-reduced-motion: reduce) { .code-loading-skeleton span { animation: none; } }
-@media (max-width: 1180px) { .code-workbench { grid-template-columns: minmax(12rem, 14rem) minmax(22rem, 1fr); }.code-chat-panel { position: absolute; z-index: 20; top: 0; right: 0; bottom: 0; width: min(24rem, 84vw); box-shadow: var(--shadow-lg); }.code-workbench { position: relative; }.code-workbench[data-navigator-collapsed='true'] { grid-template-columns: 2.75rem minmax(22rem, 1fr); } }
-@media (max-width: 760px) { .code-workbench, .code-workbench[data-navigator-collapsed='true'] { grid-template-columns: 1fr; }.code-navigator { position: absolute; z-index: 18; inset: 0 auto 0 0; width: min(17rem, 86vw); box-shadow: var(--shadow-lg); }.code-workbench[data-navigator-collapsed='true'] .code-editor-shell { grid-column: 1; }.code-rail-button { position: absolute; z-index: 5; left: 0.4rem; top: 3rem; background: var(--color-panel); }.code-tab { min-width: 6.5rem; }.code-location-bar { padding-left: 0.5rem; }.code-selection-actions { left: 0.5rem; right: 0.5rem; bottom: 0.5rem; justify-content: flex-end; } }
+@media (prefers-reduced-motion: reduce) { .code-loading-skeleton span { animation: none; }.code-chat-enter-active, .code-chat-leave-active { transition: none; } }
+@media (max-width: 1180px) { .code-workbench, .code-workbench[data-chat-open='true'][data-chat-mode='docked'] { grid-template-columns: minmax(12rem, 14rem) minmax(22rem, 1fr); }.code-workbench[data-navigator-collapsed='true'], .code-workbench[data-navigator-collapsed='true'][data-chat-open='true'][data-chat-mode='docked'] { grid-template-columns: 2.75rem minmax(22rem, 1fr); }.code-chat-panel, .code-chat-panel[data-mode='docked'] { position: absolute; top: 3.35rem; right: 0.75rem; bottom: 0.75rem; width: min(28rem, calc(100% - 1.5rem)); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); } }
+@media (max-width: 760px) { .code-workbench, .code-workbench[data-navigator-collapsed='true'], .code-workbench[data-chat-open='true'][data-chat-mode='docked'], .code-workbench[data-navigator-collapsed='true'][data-chat-open='true'][data-chat-mode='docked'] { grid-template-columns: 1fr; }.code-navigator { position: absolute; z-index: 18; inset: 0 auto 0 0; width: min(17rem, 86vw); box-shadow: var(--shadow-lg); }.code-workbench[data-navigator-collapsed='true'] .code-editor-shell { grid-column: 1; }.code-rail-button { position: absolute; z-index: 5; left: 0.4rem; top: 3rem; background: var(--color-panel); }.code-tab { min-width: 6.5rem; }.code-location-bar { padding-left: 0.5rem; }.code-selection-actions { left: 0.5rem; right: 0.5rem; bottom: 0.5rem; justify-content: flex-end; }.code-chat-panel, .code-chat-panel[data-mode='docked'] { top: auto; right: 0.4rem; bottom: 0.4rem; left: 0.4rem; width: auto; height: min(72%, 36rem); border-radius: var(--radius-lg); }.code-chat-enter-from, .code-chat-leave-to { transform: translateY(0.75rem); }.code-chat-trigger span { display: none; } }
 </style>
