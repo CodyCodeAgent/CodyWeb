@@ -96,6 +96,42 @@ export type UiMessage = {
   isUnhandled?: boolean
 }
 
+export type UiConversationShareMessage = {
+  id: string
+  turnId: string
+  role: 'user' | 'assistant' | 'system'
+  text: string
+  messageType: string
+  imageCount: number
+  tool: UiToolTimelineEntry | null
+}
+
+export type UiConversationShareSnapshot = {
+  version: 1
+  locale: 'en' | 'zh-CN'
+  title: string
+  threadTitle: string
+  projectName: string
+  createdAtIso: string
+  messages: UiConversationShareMessage[]
+  selectedTurnIds: string[]
+  options: {
+    includeToolDetails: boolean
+    redactLocalPaths: boolean
+  }
+}
+
+export type UiConversationShareSummary = {
+  id: string
+  title: string
+  threadId: string
+  publicPath: string
+  createdAtIso: string
+  expiresAtIso: string | null
+  messageCount: number
+  turnCount: number
+}
+
 export type UiToolTimelineEntry = {
   kind:
     | 'command'

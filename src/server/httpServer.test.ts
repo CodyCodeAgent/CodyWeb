@@ -165,4 +165,87 @@ describe('httpServer', () => {
       await closeServer(server)
     }
   })
+
+  it('serves token-scoped conversation shares without login while protecting share management', async () => {
+    const { createServer } = await import('./httpServer.js')
+    const distDir = await createDistFixture()
+    const instance = createServer({
+      distDir,
+      host: '0.0.0.0',
+      port: null,
+      password: 'test-password',
+      authDatabasePath: join(distDir, 'settings.sqlite3'),
+    })
+    const server = createHttpServer(instance.app)
+
+    try {
+      const port = await listen(server)
+      const baseUrl = `http://127.0.0.1:${String(port)}`
+      const blockedCreate = await fetch(`${baseUrl}/codex-api/conversation-shares`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+      })
+      expect(blockedCreate.status).toBe(200)
+      await expect(blockedCreate.text()).resolves.toContain('Password')
+
+      const login = await fetch(`${baseUrl}/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: 'test-password' }),
+      })
+      const rows = (login.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.()
+        ?? [login.headers.get('set-cookie') ?? '']
+      const cookie = rows.flatMap(row => row.split(/,(?=\s*cody_web_ui_)/u))
+        .map(row => row.split(';')[0]?.trim() ?? '').filter(Boolean).join('; ')
+      const create = await fetch(`${baseUrl}/codex-api/conversation-shares`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({
+          threadId: 'thread-public',
+          expiresInDays: 30,
+          snapshot: {
+            version: 1, locale: 'en', title: 'Public debugging notes', threadTitle: 'Debug', projectName: 'project',
+            createdAtIso: '', selectedTurnIds: ['turn-1'],
+            options: { includeToolDetails: false, redactLocalPaths: true },
+            messages: [
+              { id: 'u1', turnId: 'turn-1', role: 'user', text: 'What changed?', messageType: 'userMessage', imageCount: 0, tool: null },
+              { id: 'a1', turnId: 'turn-1', role: 'assistant', text: 'The parser was fixed.', messageType: 'agentMessage', imageCount: 0, tool: null },
+            ],
+          },
+        }),
+      })
+      expect(create.status).toBe(201)
+      const createPayload = await create.json() as { result: { share: { id: string; publicPath: string } } }
+
+      const publicPage = await fetch(`${baseUrl}${createPayload.result.share.publicPath}`)
+      expect(publicPage.status).toBe(200)
+      expect(publicPage.headers.get('x-robots-tag')).toContain('noindex')
+      const publicHtml = await publicPage.text()
+      expect(publicHtml).toContain('Public debugging notes')
+      expect(publicHtml).toContain('Read-only share')
+      expect(publicHtml).toContain(`${createPayload.result.share.publicPath}/image.svg`)
+
+      const publicImage = await fetch(`${baseUrl}${createPayload.result.share.publicPath}/image.svg`)
+      expect(publicImage.status).toBe(200)
+      expect(publicImage.headers.get('content-type')).toContain('image/svg+xml')
+      const publicImageSvg = await publicImage.text()
+      expect(publicImageSvg).toContain('READ-ONLY SNAPSHOT')
+      expect(publicImageSvg).toContain('Public debugging notes')
+
+      const list = await fetch(`${baseUrl}/codex-api/conversation-shares?threadId=thread-public`, { headers: { cookie } })
+      await expect(list.json()).resolves.toMatchObject({ result: { shares: [{ title: 'Public debugging notes' }] } })
+
+      const revoke = await fetch(`${baseUrl}/codex-api/conversation-shares/${createPayload.result.share.id}`, {
+        method: 'DELETE', headers: { cookie },
+      })
+      expect(revoke.status).toBe(200)
+      expect((await fetch(`${baseUrl}${createPayload.result.share.publicPath}`)).status).toBe(410)
+      expect((await fetch(`${baseUrl}${createPayload.result.share.publicPath}/image.svg`)).status).toBe(410)
+      const missing = await fetch(`${baseUrl}/share/not-a-valid-token`, { headers: { 'accept-language': 'en-US' } })
+      expect(missing.status).toBe(404)
+      await expect(missing.text()).resolves.toContain('Share not found')
+    } finally {
+      instance.dispose()
+      await closeServer(server)
+    }
+  })
 })
