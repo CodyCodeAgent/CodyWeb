@@ -164,6 +164,17 @@
           </template>
           <template #actions>
             <button
+              v-if="route.name === 'thread' && selectedThread && filteredMessages.length > 0"
+              class="content-prompt-trigger"
+              type="button"
+              :aria-label="t('conversation.share.open')"
+              :title="t('conversation.share.open')"
+              :aria-expanded="isConversationShareOpen"
+              @click="isConversationShareOpen = true"
+            >
+              <IconTablerShare3 />
+            </button>
+            <button
               v-if="!isSettingsRoute && !isSkillsRoute"
               class="content-prompt-trigger"
               type="button"
@@ -315,10 +326,18 @@
     @close="isPromptLibraryOpen = false"
     @insert="onInsertPrompt"
   />
+  <ConversationShareDialog
+    v-if="isConversationShareOpen && selectedThread"
+    :thread-id="selectedThread.id"
+    :thread-title="selectedThread.title"
+    :project-name="selectedThread.projectName"
+    :messages="filteredMessages"
+    @close="isConversationShareOpen = false"
+  />
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import DesktopLayout from './components/layout/DesktopLayout.vue'
 import SidebarThreadTree from './components/sidebar/SidebarThreadTree.vue'
@@ -337,7 +356,10 @@ import AppRouteContent from './components/layout/AppRouteContent.vue'
 import IconTablerFolder from './components/icons/IconTablerFolder.vue'
 import IconTablerClipboardList from './components/icons/IconTablerClipboardList.vue'
 import IconTablerChevronsUp from './components/icons/IconTablerChevronsUp.vue'
+import IconTablerShare3 from './components/icons/IconTablerShare3.vue'
 import IconTablerMoon from './components/icons/IconTablerMoon.vue'
+
+const ConversationShareDialog = defineAsyncComponent(() => import('./components/content/ConversationShareDialog.vue'))
 import IconTablerSearch from './components/icons/IconTablerSearch.vue'
 import IconTablerSettings from './components/icons/IconTablerSettings.vue'
 import IconTablerSun from './components/icons/IconTablerSun.vue'
@@ -462,6 +484,7 @@ const newThreadDialogInitialCwd = ref('')
 const isNewThreadDialogOpen = ref(false)
 const isDirectoryPickerOpen = ref(false)
 const isPromptLibraryOpen = ref(false)
+const isConversationShareOpen = ref(false)
 const promptInsertion = ref<PromptInsertion | null>(null)
 const contextInsertion = ref<UiComposerContextAttachment | null>(null)
 const isSidebarCollapsed = ref(loadSidebarCollapsed())
@@ -1030,6 +1053,7 @@ watch(
 watch(
   () => selectedThreadId.value,
   async (threadId) => {
+    isConversationShareOpen.value = false
     if (!hasInitialized.value) return
     if (isHomeRoute.value || isSettingsRoute.value || isSkillsRoute.value) return
 

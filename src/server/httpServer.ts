@@ -6,6 +6,13 @@ import { attachCodexBridgeWebSocketServer, createCodexBridgeMiddleware } from '.
 import { createAuthMiddleware, type AuthMiddleware } from './authMiddleware.js'
 import { buildSecurityAccessSnapshot } from './securityAccess.js'
 import { BUILD_INFO } from '../buildInfo.js'
+import {
+  handleCreateConversationShare,
+  handleListConversationShares,
+  handlePublicConversationShare,
+  handlePublicConversationShareImage,
+  handleRevokeConversationShare,
+} from './conversationShareRoutes.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const distDir = join(__dirname, '..', 'dist')
@@ -48,6 +55,15 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
     res.json({ result: BUILD_INFO })
   })
 
+  // Public by design: a share token grants read-only access to one immutable
+  // snapshot, never to the source thread or the authenticated CodyWeb shell.
+  app.get('/share/:token/image.svg', (req, res) => {
+    handlePublicConversationShareImage(req, res, options.authDatabasePath)
+  })
+  app.get('/share/:token', (req, res) => {
+    handlePublicConversationShare(req, res, options.authDatabasePath)
+  })
+
   // 1. Auth middleware (if password is set)
   if (options.password) {
     authMiddleware = createAuthMiddleware(options.password, {
@@ -55,6 +71,17 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
     })
     app.use(authMiddleware)
   }
+
+  const conversationShareJson = express.json({ limit: '4mb' })
+  app.post('/codex-api/conversation-shares', conversationShareJson, (req, res) => {
+    handleCreateConversationShare(req, res, options.authDatabasePath)
+  })
+  app.get('/codex-api/conversation-shares', (req, res) => {
+    handleListConversationShares(req, res, options.authDatabasePath)
+  })
+  app.delete('/codex-api/conversation-shares/:id', (req, res) => {
+    handleRevokeConversationShare(req, res, options.authDatabasePath)
+  })
 
   // 2. Security access status
   app.get('/codex-api/meta/access-security', (req, res) => {
