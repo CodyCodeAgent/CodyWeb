@@ -8,8 +8,8 @@
 </template>
 
 <script setup lang="ts">
+import './monacoEnvironment'
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
 import * as monaco from 'monaco-editor'
 import 'monaco-editor/esm/vs/basic-languages/css/css.contribution'
 import 'monaco-editor/esm/vs/basic-languages/dockerfile/dockerfile.contribution'
@@ -25,30 +25,22 @@ import 'monaco-editor/esm/vs/basic-languages/shell/shell.contribution'
 import 'monaco-editor/esm/vs/basic-languages/sql/sql.contribution'
 import 'monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution'
 
-declare global {
-  interface Window {
-    MonacoEnvironment?: {
-      getWorker: () => Worker
-    }
-  }
-}
-
-if (typeof window !== 'undefined' && !window.MonacoEnvironment) {
-  window.MonacoEnvironment = {
-    getWorker: () => new editorWorker(),
-  }
-}
-
 const props = withDefaults(defineProps<{
   modelValue: string
   path: string
   readOnly?: boolean
+  targetLine?: number
+  wordWrap?: boolean
 }>(), {
   readOnly: true,
+  targetLine: 1,
+  wordWrap: true,
 })
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
+  'selection-change': [selection: { text: string; startLine: number; endLine: number } | null]
+  'open-relative-path': [path: string]
 }>()
 
 const editorHost = ref<HTMLElement | null>(null)
@@ -56,7 +48,10 @@ let editor: monaco.editor.IStandaloneCodeEditor | null = null
 let model: monaco.editor.ITextModel | null = null
 let contentChangeDisposable: monaco.IDisposable | null = null
 let themeObserver: MutationObserver | null = null
+let selectionDisposable: monaco.IDisposable | null = null
+let mouseDisposable: monaco.IDisposable | null = null
 let ignoreModelEcho = false
+let targetLineDecorations: string[] = []
 
 function languageForPath(path: string): string {
   const normalized = path.toLowerCase()
@@ -139,6 +134,29 @@ function refreshTheme(): void {
   monaco.editor.setTheme(activeMonacoTheme())
 }
 
+function revealTargetLine(): void {
+  if (!editor || !model) return
+  const line = Math.max(1, Math.min(Math.trunc(props.targetLine || 1), model.getLineCount()))
+  editor.revealLineInCenter(line)
+  editor.setPosition({ lineNumber: line, column: 1 })
+  targetLineDecorations = editor.deltaDecorations(targetLineDecorations, [{
+    range: new monaco.Range(line, 1, line, 1),
+    options: { isWholeLine: true, className: 'workspace-monaco-target-line' },
+  }])
+}
+
+function quotedPathAtPosition(position: monaco.Position): string {
+  if (!model) return ''
+  const line = model.getLineContent(position.lineNumber)
+  for (const match of line.matchAll(/(['"])(\.{1,2}\/[^'"\s]+)\1/gu)) {
+    const value = match[2] ?? ''
+    const start = (match.index ?? 0) + 2
+    const end = start + value.length
+    if (position.column >= start && position.column <= end + 1) return value
+  }
+  return ''
+}
+
 function fontFamily(): string {
   if (typeof document === 'undefined') return 'Menlo, Monaco, Consolas, monospace'
   return getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim() || 'Menlo, Monaco, Consolas, monospace'
@@ -163,12 +181,38 @@ onMounted(async () => {
     renderValidationDecorations: 'off',
     scrollBeyondLastLine: false,
     tabSize: 2,
-    wordWrap: 'on',
+    wordWrap: props.wordWrap ? 'on' : 'off',
   })
   contentChangeDisposable = model.onDidChangeContent(() => {
     if (ignoreModelEcho || !model || props.readOnly) return
     emit('update:modelValue', model.getValue())
   })
+  selectionDisposable = editor.onDidChangeCursorSelection(() => {
+    if (!editor || !model) return
+    const selection = editor.getSelection()
+    if (!selection || selection.isEmpty()) {
+      emit('selection-change', null)
+      return
+    }
+    emit('selection-change', {
+      text: model.getValueInRange(selection),
+      startLine: selection.startLineNumber,
+      endLine: selection.endLineNumber,
+    })
+  })
+  mouseDisposable = editor.onMouseDown((event) => {
+    if (!editor || !model || !event.target.position) return
+    if (event.target.type === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS) {
+      const location = `${props.path}:${String(event.target.position.lineNumber)}`
+      void navigator.clipboard?.writeText(location).catch(() => undefined)
+      return
+    }
+    const browserEvent = event.event.browserEvent as MouseEvent
+    if (!browserEvent.metaKey && !browserEvent.ctrlKey) return
+    const targetPath = quotedPathAtPosition(event.target.position)
+    if (targetPath) emit('open-relative-path', targetPath)
+  })
+  revealTargetLine()
   themeObserver = new MutationObserver(refreshTheme)
   themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'data-theme-skin'] })
 })
@@ -192,11 +236,18 @@ watch(
   () => {
     if (!editor) return
     attachModel(createModel())
+    emit('selection-change', null)
+    revealTargetLine()
   },
 )
 
+watch(() => props.targetLine, revealTargetLine)
+watch(() => props.wordWrap, (enabled) => editor?.updateOptions({ wordWrap: enabled ? 'on' : 'off' }))
+
 onBeforeUnmount(() => {
   themeObserver?.disconnect()
+  selectionDisposable?.dispose()
+  mouseDisposable?.dispose()
   contentChangeDisposable?.dispose()
   editor?.dispose()
   model?.dispose()
@@ -212,5 +263,10 @@ onBeforeUnmount(() => {
 
 .workspace-monaco-editor[data-read-only='true'] {
   @apply cursor-default;
+}
+
+.workspace-monaco-editor :deep(.workspace-monaco-target-line) {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-accent);
 }
 </style>

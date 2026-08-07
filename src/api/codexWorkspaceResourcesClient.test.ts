@@ -4,6 +4,7 @@ import {
   fetchWorkspaceDiff,
   fetchWorkspaceFiles,
   saveWorkspaceFile,
+  searchWorkspace,
 } from './codexWorkspaceResourcesClient'
 
 function mockFetch(response: Response): ReturnType<typeof vi.fn> {
@@ -93,5 +94,23 @@ describe('codex workspace resources client', () => {
         content: 'export {}',
       }),
     }))
+  })
+
+  it('searches workspace files with a bounded read-only request', async () => {
+    const fetchSpy = mockFetch(new Response(JSON.stringify({
+      result: {
+        cwd: '/repo', root: '/repo', query: 'needle', scope: 'content', path: '', truncated: false,
+        items: [{ path: 'src/app.ts', line: 2, column: 4, preview: 'needle' }],
+      },
+    }), { status: 200 }))
+
+    await expect(searchWorkspace('/repo', 'needle', 'content')).resolves.toMatchObject({
+      query: 'needle',
+      items: [expect.objectContaining({ path: 'src/app.ts', line: 2 })],
+    })
+    expect(fetchSpy).toHaveBeenCalledWith(
+      '/codex-api/tooling/workspace-search?cwd=%2Frepo&q=needle&scope=content&limit=80',
+      undefined,
+    )
   })
 })

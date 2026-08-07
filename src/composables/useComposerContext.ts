@@ -784,6 +784,16 @@ export function useComposerContext() {
     selectedContexts.value = selectedContexts.value.filter((selected) => selected.id !== context.id)
   }
 
+  function addContextAttachment(context: UiComposerContextAttachment): void {
+    const targetKey = contextSelectionKey(context)
+    selectedContexts.value = [
+      ...selectedContexts.value.filter((selected) => contextSelectionKey(selected) !== targetKey),
+      context,
+    ]
+    contextError.value = ''
+    activeTrigger.value = null
+  }
+
   function closeContextMenu(): void {
     activeTrigger.value = null
   }
@@ -803,6 +813,7 @@ export function useComposerContext() {
     contextError,
     updateContextTrigger,
     selectContext,
+    addContextAttachment,
     removeContext,
     closeContextMenu,
     resetContexts,

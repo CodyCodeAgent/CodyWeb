@@ -7,6 +7,8 @@ import type {
   UiWorkspaceFileContent,
   UiWorkspaceFileList,
   UiWorkspaceFileWriteResult,
+  UiWorkspaceSearchResult,
+  UiWorkspaceSearchScope,
   UiWorkspaceSecuritySnapshot,
   UiWorkspaceSnapshot,
   UiWorkspaceValidationRunHistory,
@@ -205,8 +207,9 @@ export async function fetchWorkspaceFiles(cwd: string, path = ''): Promise<UiWor
   return result as UiWorkspaceFileList
 }
 
-export async function fetchWorkspaceFile(cwd: string, path: string): Promise<UiWorkspaceFileContent> {
+export async function fetchWorkspaceFile(cwd: string, path: string, signal?: AbortSignal): Promise<UiWorkspaceFileContent> {
   const { result, status } = await fetchCodexResultRecord(queryPath('/codex-api/tooling/workspace-file', { cwd, path }), {
+    init: signal ? { signal } : undefined,
     method: 'tooling/workspace-file',
     networkErrorMessage: 'Workspace file failed before request was sent',
     httpErrorMessage: 'Workspace file failed',
@@ -221,6 +224,37 @@ export async function fetchWorkspaceFile(cwd: string, path: string): Promise<UiW
   }
 
   return result as UiWorkspaceFileContent
+}
+
+export async function searchWorkspace(
+  cwd: string,
+  query: string,
+  scope: UiWorkspaceSearchScope,
+  path = '',
+  limit = 80,
+  signal?: AbortSignal,
+): Promise<UiWorkspaceSearchResult> {
+  const { result, status } = await fetchCodexResultRecord(queryPath('/codex-api/tooling/workspace-search', {
+    cwd,
+    q: query,
+    scope,
+    path: path || undefined,
+    limit: Math.max(1, Math.min(limit, 200)),
+  }), {
+    init: signal ? { signal } : undefined,
+    method: 'tooling/workspace-search',
+    networkErrorMessage: 'Workspace search failed before request was sent',
+    httpErrorMessage: 'Workspace search failed',
+    malformedMessage: 'Workspace search returned malformed response',
+  })
+  if (!Array.isArray(result.items) || typeof result.query !== 'string' || typeof result.scope !== 'string') {
+    throw new CodexApiError('Workspace search returned malformed response', {
+      code: 'invalid_response',
+      method: 'tooling/workspace-search',
+      status,
+    })
+  }
+  return result as UiWorkspaceSearchResult
 }
 
 export async function saveWorkspaceFile(

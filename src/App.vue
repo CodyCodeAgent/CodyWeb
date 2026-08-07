@@ -223,6 +223,10 @@
                 <IconTablerClipboardList aria-hidden="true" />
                 {{ activeWorkspaceSkillCount === null ? t('skills.title') : t('skills.count', { count: String(activeWorkspaceSkillCount) }) }}
               </button>
+              <div v-if="route.name === 'thread'" class="workspace-view-toggle" role="group" :aria-label="t('codeWorkspace.viewAria')">
+                <button type="button" :data-active="!isCodeView" @click="openChatView">{{ t('codeWorkspace.chat') }}</button>
+                <button type="button" :data-active="isCodeView" @click="openCodeView({})">{{ t('codeWorkspace.code') }}</button>
+              </div>
             </template>
           </div>
           <ThreadContextUsageBar
@@ -279,12 +283,13 @@
             selectedCollaborationModeName, selectedPermissionMode, homeComposerBusyLabel, filteredMessages,
             isLoadingMessages, selectedThread, selectedMessageLoadError, selectedThreadScrollState, liveOverlay,
             selectedThreadServerRequests, threadComposerBusyLabel,
-            isSelectedThreadInProgress, isInterruptingTurn }"
+            isSelectedThreadInProgress, isInterruptingTurn, isCodeView, contextInsertion }"
           @select-thread="onSelectThread" @respond-server-request="onRespondServerRequest"
           @select-new-thread-folder="onSelectNewThreadFolder" @submit-message="onSubmitThreadMessage"
           @select-model="onSelectModel" @select-reasoning-effort="onSelectReasoningEffort"
           @select-collaboration-mode="onSelectCollaborationMode" @select-permission-mode="onSelectPermissionMode"
           @update-scroll-state="onUpdateThreadScrollState" @retry-load="onRetryLoadMessages" @interrupt="onInterruptTurn"
+          @open-code="openCodeView" @ask-code="onAskCode"
         /></section>
       </section>
     </template>
@@ -314,7 +319,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import DesktopLayout from './components/layout/DesktopLayout.vue'
 import SidebarThreadTree from './components/sidebar/SidebarThreadTree.vue'
 import ContentHeader from './components/content/ContentHeader.vue'
@@ -368,6 +373,7 @@ import type {
   ReasoningEffort,
   ThreadScrollState,
   UiComposerPermissionMode,
+  UiComposerContextAttachment,
   UiComposerSubmitPayload,
   UiServerRequestReply,
   UiToolingRollbackFileResult,
@@ -457,6 +463,7 @@ const isNewThreadDialogOpen = ref(false)
 const isDirectoryPickerOpen = ref(false)
 const isPromptLibraryOpen = ref(false)
 const promptInsertion = ref<PromptInsertion | null>(null)
+const contextInsertion = ref<UiComposerContextAttachment | null>(null)
 const isSidebarCollapsed = ref(loadSidebarCollapsed())
 const isMobileViewport = ref(false)
 const sidebarSearchQuery = ref('')
@@ -490,8 +497,32 @@ function onInsertPrompt(insertion: PromptInsertion): void {
   promptInsertion.value = { ...insertion, id: Date.now() }
 }
 
+function openCodeView(location: { path?: string; line?: number; mode?: 'file' | 'diff' }): void {
+  if (route.name !== 'thread' || !routeThreadId.value) return
+  const query: LocationQueryRaw = { ...route.query, view: 'code' }
+  if (location.path) query.path = location.path
+  if (location.line && location.line > 1) query.line = String(location.line)
+  if (location.mode === 'diff') query.mode = 'diff'
+  void router.push({ name: 'thread', params: { threadId: routeThreadId.value }, query })
+}
+
+function openChatView(): void {
+  if (route.name !== 'thread' || !routeThreadId.value) return
+  const query = { ...route.query }
+  delete query.view
+  delete query.path
+  delete query.line
+  delete query.mode
+  void router.push({ name: 'thread', params: { threadId: routeThreadId.value }, query })
+}
+
+function onAskCode(attachment: UiComposerContextAttachment): void {
+  contextInsertion.value = attachment
+}
+
 const knownThreadIdSet = computed(() => knownThreadIds(projectGroups.value))
 const isEffectiveSidebarCollapsed = computed(() => isSidebarCollapsed.value || isMobileViewport.value)
+const isCodeView = computed(() => route.name === 'thread' && route.query.view === 'code')
 const autoRefreshButtonLabel = computed(() => autoRefreshLabel({
   isEnabled: isAutoRefreshEnabled.value,
   secondsLeft: autoRefreshSecondsLeft.value,
@@ -1204,6 +1235,32 @@ async function submitFirstMessageForNewThread(payload: UiComposerSubmitPayload):
   padding: 0.35rem 0.65rem;
   color: var(--color-text);
   font-size: 0.7rem;
+}
+
+.workspace-view-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.2rem;
+  padding: 0.18rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-background);
+}
+
+.workspace-view-toggle button {
+  min-height: 1.75rem;
+  margin-left: 0;
+  border: 0;
+  padding: 0.2rem 0.55rem;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.workspace-view-toggle button[data-active='true'] {
+  background: var(--color-control);
+  color: var(--color-text);
+  box-shadow: inset 0 -2px 0 var(--color-accent);
 }
 
 @media (max-width: 700px) {

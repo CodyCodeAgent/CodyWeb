@@ -21,16 +21,33 @@
         @update:selected-permission-mode="emit('selectPermissionMode', $event)" />
     </div>
   </template>
-  <div v-else class="content-grid">
-    <div class="content-workbench"><div class="content-thread">
+  <div v-else class="content-grid" :data-view="isCodeView ? 'code' : 'chat'">
+    <WorkspaceCodeWorkbench v-if="isCodeView && selectedThread?.cwd" :cwd="selectedThread.cwd" :thread-id="composerThreadContextId"
+      :messages="filteredMessages" @ask-code="emit('askCode', $event)">
+      <template #conversation>
+        <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages" :cwd="selectedThread?.cwd ?? ''"
+          :thread-title="selectedThread?.title ?? ''" :load-error="selectedMessageLoadError" :active-thread-id="composerThreadContextId"
+          :scroll-state="selectedThreadScrollState" :live-overlay="liveOverlay" :pending-requests="selectedThreadServerRequests"
+          @update-scroll-state="emit('updateScrollState', $event)" @respond-server-request="emit('respondServerRequest', $event)"
+          @retry-load="emit('retryLoad')" @open-code="emit('openCode', $event)" />
+      </template>
+    </WorkspaceCodeWorkbench>
+    <section v-else-if="isCodeView" class="code-workbench-restoring" aria-live="polite">
+      <div class="code-workbench-restoring-nav" aria-hidden="true" />
+      <div class="code-workbench-restoring-main">
+        <span /><span /><span /><span /><span />
+        <p>正在恢复任务与工作区…</p>
+      </div>
+    </section>
+    <div v-else class="content-workbench"><div class="content-thread">
       <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages" :cwd="selectedThread?.cwd ?? ''"
         :thread-title="selectedThread?.title ?? ''"
         :load-error="selectedMessageLoadError" :active-thread-id="composerThreadContextId" :scroll-state="selectedThreadScrollState"
         :live-overlay="liveOverlay" :pending-requests="selectedThreadServerRequests"
         @update-scroll-state="emit('updateScrollState', $event)" @respond-server-request="emit('respondServerRequest', $event)"
-        @retry-load="emit('retryLoad')" />
+        @retry-load="emit('retryLoad')" @open-code="emit('openCode', $event)" />
     </div></div>
-    <ThreadComposer :active-thread-id="composerThreadContextId" :prompt-insertion="promptInsertion" :disabled="isSendingMessage"
+    <ThreadComposer :active-thread-id="composerThreadContextId" :prompt-insertion="promptInsertion" :context-insertion="contextInsertion" :disabled="isSendingMessage"
       :models="availableModelIds" :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
       :collaboration-modes="collaborationModeOptions" :selected-collaboration-mode="selectedCollaborationModeName"
       :selected-permission-mode="selectedPermissionMode" :busy-label="threadComposerBusyLabel" :cwd="selectedThread?.cwd ?? ''"
@@ -46,7 +63,7 @@
 import { defineAsyncComponent } from 'vue'
 import type { PromptInsertion } from '../../composables/promptLibraryRules'
 import { useLocale } from '../../composables/useLocale'
-import type { ReasoningEffort, ThreadScrollState, UiCollaborationModeOption, UiComposerPermissionMode, UiComposerSubmitPayload, UiLiveOverlay, UiMessage, UiServerRequest, UiServerRequestReply, UiThread } from '../../types/codex'
+import type { ReasoningEffort, ThreadScrollState, UiCollaborationModeOption, UiComposerContextAttachment, UiComposerPermissionMode, UiComposerSubmitPayload, UiLiveOverlay, UiMessage, UiServerRequest, UiServerRequestReply, UiThread } from '../../types/codex'
 import ComposerDropdown from '../content/ComposerDropdown.vue'
 import ThreadComposer from '../content/ThreadComposer.vue'
 import ThreadConversation from '../content/ThreadConversation.vue'
@@ -54,11 +71,14 @@ import type { NewThreadProjectOption } from '../content/NewThreadSetupModal.vue'
 
 const AppSettingsPage = defineAsyncComponent(() => import('../content/AppSettingsPage.vue'))
 const WorkspaceSkillsPage = defineAsyncComponent(() => import('../content/WorkspaceSkillsPage.vue'))
+const WorkspaceCodeWorkbench = defineAsyncComponent(() => import('../content/WorkspaceCodeWorkbench.vue'))
 defineProps<{
   isSettingsRoute: boolean; isSkillsRoute: boolean; isHomeRoute: boolean
+  isCodeView: boolean
   newThreadProjectOptions: NewThreadProjectOption[]; skillsCwd: string; skillsProjectLabel: string
   newThreadCwd: string; newThreadFolderOptions: { value: string; label: string }[]
   composerThreadContextId: string; isSendingMessage: boolean; promptInsertion: PromptInsertion | null; availableModelIds: string[]
+  contextInsertion: UiComposerContextAttachment | null
   selectedModelId: string; selectedReasoningEffort: ReasoningEffort | ''; collaborationModeOptions: UiCollaborationModeOption[]
   selectedCollaborationModeName: string; selectedPermissionMode: UiComposerPermissionMode; homeComposerBusyLabel: string
   filteredMessages: UiMessage[]; isLoadingMessages: boolean; selectedThread: UiThread | null; selectedMessageLoadError: string
@@ -70,6 +90,8 @@ const emit = defineEmits<{
   submitMessage: [UiComposerSubmitPayload]; selectModel: [string]; selectReasoningEffort: [ReasoningEffort | '']
   selectCollaborationMode: [string]; selectPermissionMode: [UiComposerPermissionMode]
   updateScrollState: [{ threadId: string; state: ThreadScrollState }]; retryLoad: []; interrupt: []
+  openCode: [location: { path?: string; line?: number; mode?: 'file' | 'diff' }]
+  askCode: [attachment: UiComposerContextAttachment]
 }>()
 const { t } = useLocale()
 </script>
@@ -99,4 +121,48 @@ const { t } = useLocale()
 .content-grid > :deep(.thread-composer) {
   @apply shrink-0;
 }
+
+.content-grid[data-view='code'] > :deep(.thread-composer) {
+  max-width: none;
+  padding-inline: 0;
+}
+
+.code-workbench-restoring {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(12rem, 16rem) 1fr;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-background);
+}
+
+.code-workbench-restoring-nav {
+  border-right: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-panel) 92%, var(--color-background));
+}
+
+.code-workbench-restoring-main {
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+  padding: 4rem 2rem;
+  color: var(--color-text-muted);
+}
+
+.code-workbench-restoring-main span {
+  width: min(34rem, 72%);
+  height: 0.75rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text-muted) 14%, transparent);
+  animation: code-workbench-restore-pulse 1.2s ease-in-out infinite;
+}
+
+.code-workbench-restoring-main span:nth-child(2n) { width: min(27rem, 58%); }
+.code-workbench-restoring-main p { margin: 0.5rem 0 0; font-size: 0.75rem; }
+
+@keyframes code-workbench-restore-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .code-workbench-restoring-main span { animation: none; } }
+@media (max-width: 760px) { .code-workbench-restoring { grid-template-columns: 1fr; }.code-workbench-restoring-nav { display: none; } }
 </style>

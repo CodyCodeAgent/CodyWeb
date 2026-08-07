@@ -96,4 +96,19 @@ describe('ThreadComposer', () => {
     expect((input.element as HTMLTextAreaElement).value).toBe('Replacement')
   })
 
+  it('attaches an externally selected code range to the current thread composer', async () => {
+    const wrapper = mountComposer()
+    const context = {
+      id: 'selection-1', kind: 'file' as const, label: '@file:src/app.ts#L1-L2', description: 'src/app.ts lines 1-2',
+      content: 'Path: src/app.ts\nLines: 1-2\n\nconst answer = 42', createdAtIso: '2026-08-07T00:00:00.000Z',
+      metadata: { path: 'src/app.ts', startLine: 1, endLine: 2 },
+    }
+    await wrapper.setProps({ contextInsertion: context })
+
+    const submit = wrapper.get('[data-testid="thread-composer-submit"]')
+    expect((submit.element as HTMLButtonElement).disabled).toBe(false)
+    await wrapper.get('[data-testid="thread-composer"]').trigger('submit')
+    expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({ contexts: [context] })
+  })
+
 })

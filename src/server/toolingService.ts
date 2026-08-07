@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams, type ExecFileException } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { constants as fsConstants } from 'node:fs'
+import { constants as fsConstants, type Dirent } from 'node:fs'
 import { access, appendFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isIP } from 'node:net'
@@ -16,6 +16,9 @@ const execFileAsync = promisify(execFile)
 const MAX_GIT_OUTPUT_BYTES = 25 * 1024 * 1024
 const MAX_WORKSPACE_FILE_BYTES = 512 * 1024
 const MAX_WORKSPACE_DIRECTORY_ENTRIES = 200
+const MAX_WORKSPACE_SEARCH_RESULTS = 200
+const MAX_WORKSPACE_SEARCH_FILES = 4_000
+const MAX_WORKSPACE_SEARCH_PREVIEW = 320
 const MAX_WORKSPACE_SCRIPT_OUTPUT_BYTES = 2 * 1024 * 1024
 const MAX_PREVIEW_PROBE_BYTES = 768 * 1024
 const MAX_PREVIEW_SCREENSHOT_BYTES = 5 * 1024 * 1024
@@ -702,6 +705,25 @@ export type ToolingWorkspaceFileContent = {
   content: string
   truncated: boolean
   isBinary: boolean
+}
+
+export type ToolingWorkspaceSearchScope = 'files' | 'content'
+
+export type ToolingWorkspaceSearchItem = {
+  path: string
+  line: number | null
+  column: number | null
+  preview: string
+}
+
+export type ToolingWorkspaceSearchResult = {
+  cwd: string
+  root: string
+  query: string
+  scope: ToolingWorkspaceSearchScope
+  path: string
+  items: ToolingWorkspaceSearchItem[]
+  truncated: boolean
 }
 
 export type ToolingWorkspaceFileWriteResult = {
@@ -8065,6 +8087,187 @@ export async function readWorkspaceFile(params: {
   }
 }
 
+function workspaceSearchPreview(value: string): string {
+  const normalized = value.replace(/\r?\n/gu, ' ').trim()
+  if (normalized.length <= MAX_WORKSPACE_SEARCH_PREVIEW) return normalized
+  return `${normalized.slice(0, MAX_WORKSPACE_SEARCH_PREVIEW - 1)}…`
+}
+
+function workspaceSearchPath(root: string, targetPath: string): string {
+  return relative(root, isAbsolute(targetPath) ? targetPath : resolve(root, targetPath)).split(sep).join('/')
+}
+
+function parseRipgrepContentOutput(params: {
+  output: string
+  root: string
+  policy: WorkspacePathProtectionPolicy
+  limit: number
+}): ToolingWorkspaceSearchItem[] {
+  const items: ToolingWorkspaceSearchItem[] = []
+  for (const row of params.output.split(/\r?\n/u)) {
+    if (!row || items.length >= params.limit + 1) continue
+    let payload: Record<string, unknown> | null = null
+    try {
+      payload = asRecord(JSON.parse(row) as unknown)
+    } catch {
+      continue
+    }
+    if (payload?.type !== 'match') continue
+    const data = asRecord(payload.data)
+    const pathData = asRecord(data?.path)
+    const linesData = asRecord(data?.lines)
+    const submatches = Array.isArray(data?.submatches) ? data.submatches : []
+    const firstSubmatch = asRecord(submatches[0])
+    const rawPath = typeof pathData?.text === 'string' ? pathData.text : ''
+    const filePath = workspaceSearchPath(params.root, rawPath)
+    if (!filePath || checkWorkspacePathProtection(params.policy, filePath)) continue
+    items.push({
+      path: filePath,
+      line: typeof data?.line_number === 'number' ? data.line_number : null,
+      column: typeof firstSubmatch?.start === 'number' ? firstSubmatch.start + 1 : null,
+      preview: workspaceSearchPreview(typeof linesData?.text === 'string' ? linesData.text : ''),
+    })
+  }
+  return items
+}
+
+async function runWorkspaceRipgrepSearch(params: {
+  root: string
+  target: WorkspaceTarget
+  query: string
+  scope: ToolingWorkspaceSearchScope
+  policy: WorkspacePathProtectionPolicy
+  limit: number
+}): Promise<ToolingWorkspaceSearchItem[] | null> {
+  const searchTarget = params.target.relativePath || '.'
+  try {
+    if (params.scope === 'files') {
+      const result = await execFileAsync('rg', ['--files', '--', searchTarget], {
+        cwd: params.root,
+        encoding: 'utf8',
+        maxBuffer: MAX_GIT_OUTPUT_BYTES,
+      })
+      const normalizedQuery = params.query.toLocaleLowerCase()
+      return result.stdout.split(/\r?\n/u)
+        .map((path) => workspaceSearchPath(params.root, path))
+        .filter((path) => path && !checkWorkspacePathProtection(params.policy, path))
+        .filter((path) => path.toLocaleLowerCase().includes(normalizedQuery))
+        .slice(0, params.limit + 1)
+        .map((path) => ({ path, line: null, column: null, preview: path }))
+    }
+    const result = await execFileAsync('rg', [
+      '--json', '--line-number', '--column', '--color', 'never', '--fixed-strings', '--smart-case',
+      '--max-filesize', `${String(MAX_WORKSPACE_FILE_BYTES)}B`, '--', params.query, searchTarget,
+    ], {
+      cwd: params.root,
+      encoding: 'utf8',
+      maxBuffer: MAX_GIT_OUTPUT_BYTES,
+    })
+    return parseRipgrepContentOutput({
+      output: result.stdout,
+      root: params.root,
+      policy: params.policy,
+      limit: params.limit,
+    })
+  } catch (error) {
+    const processError = error as ExecFileException
+    if (processError.code === 1) return []
+    if (processError.code === 'ENOENT') return null
+    return null
+  }
+}
+
+async function fallbackWorkspaceSearch(params: {
+  root: string
+  target: WorkspaceTarget
+  query: string
+  scope: ToolingWorkspaceSearchScope
+  policy: WorkspacePathProtectionPolicy
+  limit: number
+}): Promise<ToolingWorkspaceSearchItem[]> {
+  const items: ToolingWorkspaceSearchItem[] = []
+  const pending = [params.target.absolutePath]
+  const normalizedQuery = params.query.toLocaleLowerCase()
+  let visitedFiles = 0
+
+  while (pending.length > 0 && items.length <= params.limit && visitedFiles < MAX_WORKSPACE_SEARCH_FILES) {
+    const directory = pending.pop()
+    if (!directory) break
+    let rows: Dirent<string>[]
+    try {
+      rows = await readdir(directory, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const row of rows) {
+      if (items.length > params.limit || visitedFiles >= MAX_WORKSPACE_SEARCH_FILES) break
+      if (row.name === '.DS_Store' || (row.isDirectory() && HIDDEN_WORKSPACE_DIRS.has(row.name))) continue
+      const absolutePath = join(directory, row.name)
+      const filePath = relative(params.root, absolutePath).split(sep).join('/')
+      if (!filePath || checkWorkspacePathProtection(params.policy, filePath)) continue
+      if (row.isDirectory()) {
+        pending.push(absolutePath)
+        continue
+      }
+      if (!row.isFile()) continue
+      visitedFiles += 1
+      if (params.scope === 'files') {
+        if (filePath.toLocaleLowerCase().includes(normalizedQuery)) {
+          items.push({ path: filePath, line: null, column: null, preview: filePath })
+        }
+        continue
+      }
+      let buffer: Buffer
+      try {
+        const fileStat = await stat(absolutePath)
+        if (fileStat.size > MAX_WORKSPACE_FILE_BYTES) continue
+        buffer = await readFile(absolutePath)
+      } catch {
+        continue
+      }
+      if (isLikelyBinary(buffer)) continue
+      for (const [index, line] of buffer.toString('utf8').split(/\r?\n/u).entries()) {
+        const column = line.toLocaleLowerCase().indexOf(normalizedQuery)
+        if (column < 0) continue
+        items.push({ path: filePath, line: index + 1, column: column + 1, preview: workspaceSearchPreview(line) })
+        if (items.length > params.limit) break
+      }
+    }
+  }
+  return items
+}
+
+export async function searchWorkspace(params: {
+  cwd: string
+  query: string
+  scope?: ToolingWorkspaceSearchScope
+  path?: string
+  limit?: number
+}): Promise<ToolingWorkspaceSearchResult> {
+  const workspace = await getWorkspaceRoot(params.cwd)
+  const query = params.query.trim()
+  if (!query) throw new Error('q is required')
+  if (query.length > 200 || /[\r\n\0]/u.test(query)) throw new Error('q is invalid')
+  const scope: ToolingWorkspaceSearchScope = params.scope === 'files' ? 'files' : 'content'
+  const limit = Math.max(1, Math.min(params.limit ?? 80, MAX_WORKSPACE_SEARCH_RESULTS))
+  const target = normalizeWorkspaceTarget(workspace.root, params.path)
+  const targetStat = await stat(target.absolutePath)
+  if (!targetStat.isDirectory()) throw new Error('path must point to a directory')
+  if (target.relativePath) await assertWorkspaceTargetAllowed(workspace.root, target.relativePath)
+  const policy = await readWorkspacePathProtectionPolicy(workspace.root)
+  const ripgrepItems = await runWorkspaceRipgrepSearch({ root: workspace.root, target, query, scope, policy, limit })
+  const matches = ripgrepItems ?? await fallbackWorkspaceSearch({ root: workspace.root, target, query, scope, policy, limit })
+  return {
+    cwd: workspace.cwd,
+    root: workspace.root,
+    query,
+    scope,
+    path: target.relativePath,
+    items: matches.slice(0, limit),
+    truncated: matches.length > limit,
+  }
+}
+
 export async function writeWorkspaceFile(params: {
   cwd: string
   path: string
@@ -8915,6 +9118,21 @@ export async function handleReadWorkspaceFile(url: URL, res: ServerResponse): Pr
     setJson(res, 200, { result })
   } catch (error) {
     const message = error instanceof Error && error.message ? error.message : 'Failed to read workspace file'
+    setJson(res, 400, { error: message })
+  }
+}
+
+export async function handleSearchWorkspace(url: URL, res: ServerResponse): Promise<void> {
+  try {
+    const cwd = url.searchParams.get('cwd')?.trim() ?? ''
+    const query = url.searchParams.get('q')?.trim() ?? ''
+    const scope = url.searchParams.get('scope') === 'files' ? 'files' : 'content'
+    const path = url.searchParams.get('path')?.trim() ?? ''
+    const limit = Number(url.searchParams.get('limit') ?? '80')
+    const result = await searchWorkspace({ cwd, query, scope, path, limit: Number.isFinite(limit) ? limit : 80 })
+    setJson(res, 200, { result })
+  } catch (error) {
+    const message = error instanceof Error && error.message ? error.message : 'Failed to search workspace'
     setJson(res, 400, { error: message })
   }
 }

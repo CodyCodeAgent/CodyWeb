@@ -276,6 +276,7 @@ import type {
   ReasoningEffort,
   UiCollaborationModeOption,
   UiComposerPermissionMode,
+  UiComposerContextAttachment,
   UiComposerSkill,
   UiComposerSubmitPayload,
 } from '../../types/codex'
@@ -301,6 +302,7 @@ const props = defineProps<{
   disabled?: boolean
   busyLabel?: string
   promptInsertion?: PromptInsertion | null
+  contextInsertion?: UiComposerContextAttachment | null
 }>()
 
 const emit = defineEmits<{
@@ -346,6 +348,7 @@ const {
   contextError,
   updateContextTrigger,
   selectContext,
+  addContextAttachment,
   removeContext,
   closeContextMenu,
   resetContexts,
@@ -402,6 +405,16 @@ watch(() => props.promptInsertion?.id, () => {
     input.setSelectionRange(next.cursor, next.cursor)
     resizeDraftInput()
     onDraftCursorChange()
+  })
+})
+
+watch(() => props.contextInsertion?.id, () => {
+  const insertion = props.contextInsertion
+  if (!insertion) return
+  addContextAttachment(insertion)
+  void nextTick(() => {
+    draftInputRef.value?.focus()
+    resizeDraftInput()
   })
 })
 
