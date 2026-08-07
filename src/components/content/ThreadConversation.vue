@@ -271,6 +271,7 @@
               <FileChangeTimelineGroup
                 v-else-if="isFileChangeGroupHead(message)"
                 :group="fileChangeGroupFor(message)"
+                @open-changes="emit('openCode', { mode: 'diff' })"
               />
 
               <details
@@ -334,9 +335,9 @@
                 </div>
                 <div v-else-if="message.messageType === 'plan' || message.messageType === 'plan.live'" class="plan-message">
                   <p class="plan-message-title">Plan</p>
-                  <MessageMarkdown :text="message.text" :cwd="cwd" />
+                  <MessageMarkdown :text="message.text" :cwd="cwd" @open-file="emit('openCode', $event)" />
                 </div>
-                <MessageMarkdown v-else :text="message.text" :cwd="cwd" />
+                <MessageMarkdown v-else :text="message.text" :cwd="cwd" @open-file="emit('openCode', $event)" />
               </article>
 
               <button
@@ -525,6 +526,7 @@ const emit = defineEmits<{
   updateScrollState: [payload: { threadId: string; state: ThreadScrollState }]
   respondServerRequest: [payload: UiServerRequestReply]
   retryLoad: []
+  openCode: [location: { path?: string; line?: number; mode?: 'file' | 'diff' }]
 }>()
 const approvalScopeOptions = APPROVAL_SCOPE_OPTIONS
 const { t } = useLocale()

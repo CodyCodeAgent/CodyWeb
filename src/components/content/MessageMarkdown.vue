@@ -22,6 +22,9 @@ const props = defineProps<{
   text: string
   cwd?: string
 }>()
+const emit = defineEmits<{
+  openFile: [{ path: string; line: number }]
+}>()
 const { locale, t } = useLocale()
 
 function uiLabels(): MarkdownUiLabels {
@@ -283,9 +286,12 @@ function onMarkdownClick(event: MouseEvent): void {
   if (action === 'copy-table') void copyText(tableCsv(shell?.querySelector('table') as HTMLTableElement), button)
   if (action === 'open-file') {
     const rawPath = button.dataset.filePath ?? ''
-    const path = rawPath.startsWith('/') ? rawPath : `${props.cwd?.replace(/\/$/u, '')}/${rawPath}`
+    const cwd = props.cwd?.replace(/\/$/u, '') ?? ''
+    const path = rawPath.startsWith('/') && cwd && rawPath.startsWith(`${cwd}/`)
+      ? rawPath.slice(cwd.length + 1)
+      : rawPath.replace(/^\.\//u, '')
     const line = Number(button.dataset.fileLine || 0) || 1
-    window.location.href = `vscode://file/${path}:${line}`
+    emit('openFile', { path, line })
   }
   const diagram = button.closest<HTMLElement>('.markdown-diagram-shell')
   if (diagram && action === 'diagram-zoom-in') diagramScale(diagram, 0.2)

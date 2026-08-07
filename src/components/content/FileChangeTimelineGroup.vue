@@ -1,11 +1,12 @@
 <template>
-  <details
-    class="file-change-group-card"
-    data-testid="file-change-group-card"
-    data-kind="fileChange"
-    :data-tone="toolStatusTone(group.status)"
-    :data-update-count="group.updateCount"
-  >
+  <section class="file-change-group-shell">
+    <details
+      class="file-change-group-card"
+      data-testid="file-change-group-card"
+      data-kind="fileChange"
+      :data-tone="toolStatusTone(group.status)"
+      :data-update-count="group.updateCount"
+    >
     <summary class="file-change-group-summary">
       <IconTablerChevronRight class="file-change-group-chevron" aria-hidden="true" />
       <span class="file-change-group-headline">
@@ -54,7 +55,15 @@
         </li>
       </ol>
     </div>
-  </details>
+    </details>
+    <button
+      class="file-change-group-open-button"
+      type="button"
+      aria-label="在代码工作台打开变更"
+      title="在代码工作台打开变更"
+      @click="emit('openChanges')"
+    />
+  </section>
 </template>
 
 <script setup lang="ts">
@@ -77,6 +86,7 @@ import IconTablerChevronRight from '../icons/IconTablerChevronRight.vue'
 defineProps<{
   group: FileChangeMessageGroup
 }>()
+const emit = defineEmits<{ openChanges: [] }>()
 
 const expandedOutputIds = ref<Record<string, boolean>>({})
 
@@ -99,8 +109,13 @@ function renderedOutput(message: UiMessage): string {
 </script>
 
 <style scoped>
-.file-change-group-card {
+.file-change-group-shell {
+  position: relative;
   width: min(100%, 47.5rem);
+}
+
+.file-change-group-card {
+  width: 100%;
   overflow: clip;
   border: 1px solid color-mix(in srgb, var(--color-success) 34%, var(--color-border));
   border-radius: var(--radius-md);
@@ -142,6 +157,25 @@ function renderedOutput(message: UiMessage): string {
   overflow: hidden;
   font-family: var(--font-mono);
   white-space: nowrap;
+  text-align: left;
+}
+
+.file-change-group-open-button {
+  position: absolute;
+  z-index: 1;
+  top: 0.5rem;
+  right: 6rem;
+  left: 2.55rem;
+  height: 1.75rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+.file-change-group-open-button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
 }
 
 .file-change-group-headline strong { color: var(--color-text); font-size: 0.78rem; }

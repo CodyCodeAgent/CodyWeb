@@ -1175,6 +1175,37 @@ export type UiWorkspaceFileContent = {
   isBinary: boolean
 }
 
+export type UiWorkspaceLocation = {
+  path: string
+  line?: number
+  column?: number
+  mode?: 'file' | 'diff'
+}
+
+export type UiWorkspaceSearchScope = 'files' | 'content'
+
+export type UiWorkspaceSearchItem = {
+  path: string
+  line: number | null
+  column: number | null
+  preview: string
+}
+
+export type UiWorkspaceSearchResult = {
+  cwd: string
+  root: string
+  query: string
+  scope: UiWorkspaceSearchScope
+  path: string
+  items: UiWorkspaceSearchItem[]
+  truncated: boolean
+}
+
+export type UiWorkspaceCodeTab = UiWorkspaceLocation & {
+  id: string
+  name: string
+}
+
 export type UiWorkspaceFileWriteResult = {
   file: UiWorkspaceFileContent
   checkpoint: UiToolingCheckpoint

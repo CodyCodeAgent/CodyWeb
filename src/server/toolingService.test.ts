@@ -24,6 +24,7 @@ import {
   listWorkspaceReviewComments,
   updateWorkspaceReviewCommentStatus,
   listWorkspaceFiles,
+  searchWorkspace,
   readWorkspaceFile,
   readWorkspaceAsset,
   writeWorkspaceFile,
@@ -2196,6 +2197,32 @@ describe('toolingService', () => {
       cwd: repo,
       path: '../outside.txt',
     })).rejects.toThrow('path must stay inside the workspace root')
+  })
+
+  it('searches workspace file names and contents without exposing protected paths', async () => {
+    const repo = await createRepo()
+    await mkdir(join(repo, 'src'))
+    await mkdir(join(repo, 'private'))
+    await writeFile(join(repo, 'src', 'workspaceSearch.ts'), 'export const workspaceNeedle = 42\n', 'utf8')
+    await writeFile(join(repo, 'private', 'hidden.ts'), 'workspaceNeedle\n', 'utf8')
+    await writeFile(join(repo, '.cody-web-ui.yml'), [
+      'security:',
+      '  ignorePatterns:',
+      '    - private/**',
+      '',
+    ].join('\n'), 'utf8')
+
+    const fileResult = await searchWorkspace({ cwd: repo, query: 'workspaceSearch', scope: 'files' })
+    expect(fileResult.items).toEqual([
+      expect.objectContaining({ path: 'src/workspaceSearch.ts', line: null }),
+    ])
+
+    const contentResult = await searchWorkspace({ cwd: repo, query: 'workspaceNeedle', scope: 'content' })
+    expect(contentResult.items).toEqual([
+      expect.objectContaining({ path: 'src/workspaceSearch.ts', line: 1, column: 14 }),
+    ])
+    expect(contentResult.items.some((item) => item.path.startsWith('private/'))).toBe(false)
+    await expect(searchWorkspace({ cwd: repo, query: 'needle', path: '../outside' })).rejects.toThrow('workspace root')
   })
 
   it('serves supported workspace images from relative or absolute paths', async () => {

@@ -17,11 +17,13 @@ describe('MessageMarkdown', () => {
     expect(wrapper.get('[data-markdown-action="wrap-code"]').attributes('aria-label')).toBe('Wrap')
   })
 
-  it('renders workspace file references as focused controls', () => {
+  it('renders workspace file references as focused controls and emits internal locations', async () => {
     const wrapper = mount(MessageMarkdown, { props: { text: '`src/main.ts:42`', cwd: '/repo' } })
     const link = wrapper.get('[data-markdown-action="open-file"]')
     expect(link.attributes('data-file-path')).toBe('src/main.ts')
     expect(link.attributes('title')).toContain('Open src/main.ts')
+    await link.trigger('click')
+    expect(wrapper.emitted('openFile')).toEqual([[{ path: 'src/main.ts', line: 42 }]])
   })
 
   it('expands and collapses code blocks longer than ten lines', async () => {
