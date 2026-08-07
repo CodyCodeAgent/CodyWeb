@@ -168,9 +168,12 @@ describe('Feishu cards', () => {
   it('builds a compact session status card', () => {
     const status = JSON.stringify(buildSessionStatusCard({
       projectLabel: 'Repo', sessionTitle: 'Current', threadId: 'thread-1', state: 'running', queuedCount: 2,
+      bindingKey: 'binding-1', requesterOpenId: 'ou_user',
     }))
     expect(status).toContain('运行中')
     expect(status).toContain('排队消息')
     expect(status).toContain('2')
+    expect(status).toContain('YOLO')
+    expect(status).toContain('cody_feishu_set_permission_mode')
   })
 })

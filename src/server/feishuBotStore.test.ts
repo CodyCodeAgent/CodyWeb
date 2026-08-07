@@ -173,8 +173,9 @@ describe('feishuBotStore bindings and pending messages', () => {
       id: 'chat-1:topic-1', botId: 'alpha', botName: 'alpha bot', scopeType: 'topic',
       projectCwd: '/repo/shared', cwd: '/repo/shared', sessionId: 'session-1', threadId: 'session-1',
       collaborationMode: 'plan',
+      permissionMode: 'yolo',
     })
-    expect((await listFeishuBindings({ botId: 'beta' }))[0]?.sessionId).toBe('session-2')
+    expect((await listFeishuBindings({ botId: 'beta' }))[0]).toMatchObject({ sessionId: 'session-2', permissionMode: 'yolo' })
     expect(await listFeishuBindings({ sessionId: 'session-1' })).toHaveLength(1)
     await expect(touchFeishuBinding('chat-1:topic-1', 'alpha')).resolves.toBe(true)
     expect((await findFeishuBinding('chat-1:topic-1', 'alpha'))?.lastMessageAtIso).not.toBeNull()

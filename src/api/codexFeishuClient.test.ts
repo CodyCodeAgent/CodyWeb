@@ -166,7 +166,7 @@ describe('Feishu client', () => {
       threadId: 'thread-1', projectCwd: '/repo', projectName: 'Repo', sessionId: 'session-1',
       sessionTitle: 'Fix CI', userOpenId: 'ou_user', createdAtIso: '', updatedAtIso: '', lastMessageAtIso: null,
     }] }, status: 200 })
-    await expect(fetchFeishuBindings('bot-1')).resolves.toMatchObject([{ id: 'binding-1', scopeType: 'topic', projectName: 'Repo' }])
+    await expect(fetchFeishuBindings('bot-1')).resolves.toMatchObject([{ id: 'binding-1', scopeType: 'topic', projectName: 'Repo', permissionMode: 'yolo' }])
     expect(httpMock.fetchCodexResultRecord).toHaveBeenLastCalledWith('/codex-api/feishu/bindings?botId=bot-1', expect.anything())
 
     httpMock.fetchCodexResultRecord.mockResolvedValueOnce({ result: { removed: true }, status: 200 })

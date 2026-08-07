@@ -87,6 +87,7 @@ export type FeishuSessionBinding = FeishuConversationRoute & {
   threadId: string
   threadTitle: string
   collaborationMode?: 'default' | 'plan'
+  permissionMode?: 'normal' | 'yolo'
 }
 
 export type FeishuRuntimeUpdate = {
@@ -131,6 +132,7 @@ export interface FeishuTurnPort {
     source: 'feishu'
     metadata: Record<string, string>
     collaborationMode?: 'default' | 'plan'
+    permissionMode?: 'normal' | 'yolo'
   }): Promise<{ turnId: string }>
   stopTurn?(input: { threadId: string; turnId?: string }): Promise<void>
   isThreadBusy?(threadId: string): Promise<boolean>
@@ -1356,6 +1358,7 @@ export class FeishuBotService {
       : [
         botId, action, readString(value.binding_key), readString(value.request_id),
         readString(value.pending_message_id), option || readString(value.thread_id) || readString(value.project_key),
+        readString(value.permission_mode),
       ].join(':')
     if (this.inFlightCardActions.has(operationKey)) return { toast: { type: 'info', content: '请求正在处理，请勿重复点击' } }
 
@@ -1371,7 +1374,8 @@ export class FeishuBotService {
     for (const [key, completed] of this.completedCardActions) {
       if (now - completed.completedAt > 10 * 60_000) this.completedCardActions.delete(key)
     }
-    const completed = this.completedCardActions.get(operationKey)
+    const repeatableAction = action === FEISHU_CARD_ACTIONS.setPermissionMode
+    const completed = repeatableAction ? undefined : this.completedCardActions.get(operationKey)
     if (completed) {
       if (openMessageId) this.schedule(() => {
         void runtime.transport.updateCard(openMessageId, completed.card)
@@ -1384,7 +1388,7 @@ export class FeishuBotService {
       .then(async (card) => {
         // Side effects are complete before the UI patch. A failed patch must not
         // make a replay create a second Codex Session or resolve twice.
-        this.completedCardActions.set(operationKey, { completedAt: Date.now(), card })
+        if (!repeatableAction) this.completedCardActions.set(operationKey, { completedAt: Date.now(), card })
         if (openMessageId) await runtime.transport.updateCard(openMessageId, card)
       })
       .catch(async (error) => {
@@ -1451,6 +1455,7 @@ export class FeishuBotService {
           bindingKey,
           webUrl: this.dependencies.webThreadUrl?.(existing.threadId),
           requesterOpenId: existing.senderOpenId,
+          permissionMode: existing.permissionMode ?? 'yolo',
         })
         if (await this.dependencies.store.peekPendingMessage(botId, bindingKey)) {
           throw new Error('另一个 Session 选项正在处理，请勿重复选择')
@@ -1470,6 +1475,7 @@ export class FeishuBotService {
           bindingKey,
           webUrl: this.dependencies.webThreadUrl?.(alreadyBound.threadId),
           requesterOpenId: alreadyBound.senderOpenId,
+          permissionMode: alreadyBound.permissionMode ?? 'yolo',
         })
       }
       const projects = await this.dependencies.catalog.listProjects()
@@ -1552,6 +1558,7 @@ export class FeishuBotService {
         cwd: project.cwd,
         threadId,
         threadTitle: title || 'Untitled session',
+        permissionMode: 'yolo',
       }
       await this.dependencies.store.upsertBinding(binding)
       await this.deliverPendingMessages(runtime, binding, pending)
@@ -1562,10 +1569,29 @@ export class FeishuBotService {
         bindingKey,
         webUrl: this.dependencies.webThreadUrl?.(threadId),
         requesterOpenId: binding.senderOpenId,
+        permissionMode: binding.permissionMode ?? 'yolo',
       })
       } finally {
         await this.dependencies.store.releasePendingMessageClaim(botId, claimToken)
       }
+    }
+
+    if (action === FEISHU_CARD_ACTIONS.setPermissionMode) {
+      const binding = await this.dependencies.store.findBinding(botId, bindingKey)
+      if (!binding) throw new Error('当前对话尚未绑定 Session')
+      const permissionMode = readString(value.permission_mode)
+      if (permissionMode !== 'normal' && permissionMode !== 'yolo') throw new Error('不支持的权限模式')
+      const updated: FeishuSessionBinding = { ...binding, permissionMode }
+      await this.dependencies.store.upsertBinding(updated)
+      return buildBoundSessionCard({
+        projectLabel: updated.projectLabel,
+        sessionTitle: updated.threadTitle,
+        threadId: updated.threadId,
+        bindingKey: updated.bindingKey,
+        webUrl: this.dependencies.webThreadUrl?.(updated.threadId),
+        requesterOpenId: updated.senderOpenId,
+        permissionMode,
+      })
     }
 
     if (action === FEISHU_CARD_ACTIONS.unbind) {
@@ -1818,13 +1844,14 @@ export class FeishuBotService {
     const commandMatch = inbound.prompt.match(/^\/(\w+)(?:\s+([\s\S]+))?$/u)
     const command = commandMatch?.[1]?.toLowerCase() ?? ''
     const commandArgument = commandMatch?.[2]?.trim() ?? ''
-    const managementCommands = new Set(['archive', 'mode', 'new', 'project', 'rename', 'sessions', 'status', 'stop', 'switch', 'unbind'])
+    const managementCommands = new Set(['archive', 'mode', 'new', 'normal', 'permission', 'project', 'rename', 'sessions', 'status', 'stop', 'switch', 'unbind', 'yolo'])
     const knownCommands = new Set([...managementCommands, 'answer', 'help'])
     if (command === 'help') {
       await runtime.transport.replyCard(inbound.messageId, buildBotHelpCard({
         projectLabel: binding?.projectLabel,
         sessionTitle: binding?.threadTitle,
         collaborationMode: binding?.collaborationMode ?? 'default',
+        permissionMode: binding?.permissionMode ?? 'yolo',
       }), Boolean(inbound.rootId))
       return
     }
@@ -1933,6 +1960,9 @@ export class FeishuBotService {
         state: active ? 'running' : queuedCount > 0 ? 'queued' : externalBusy ? 'external' : 'idle',
         queuedCount,
         collaborationMode: binding.collaborationMode ?? 'default',
+        permissionMode: binding.permissionMode ?? 'yolo',
+        bindingKey: binding.bindingKey,
+        requesterOpenId: binding.senderOpenId,
         webUrl: this.dependencies.webThreadUrl?.(binding.threadId),
       }), Boolean(inbound.rootId))
       return
@@ -1957,6 +1987,28 @@ export class FeishuBotService {
       await runtime.transport.replyText(inbound.messageId, collaborationMode === 'plan'
         ? '已切换到 Plan 模式。后续消息可以发起 request_user_input 交互卡；使用 /mode default 可切回。'
         : '已切换到 Default 模式。', Boolean(inbound.rootId))
+      return
+    }
+
+    if (command === 'permission' || command === 'yolo' || command === 'normal') {
+      if (!binding) {
+        await runtime.transport.replyText(inbound.messageId, '当前对话尚未绑定 Session。', Boolean(inbound.rootId))
+        return
+      }
+      const requested = command === 'yolo' || command === 'normal' ? command : commandArgument.toLowerCase()
+      if (!requested) {
+        await runtime.transport.replyText(inbound.messageId, `当前权限：${(binding.permissionMode ?? 'yolo').toUpperCase()}。用法：/permission yolo 或 /permission normal`, Boolean(inbound.rootId))
+        return
+      }
+      if (requested !== 'yolo' && requested !== 'normal') {
+        await runtime.transport.replyText(inbound.messageId, '用法：/permission yolo 或 /permission normal', Boolean(inbound.rootId))
+        return
+      }
+      binding = { ...binding, permissionMode: requested }
+      await this.dependencies.store.upsertBinding(binding)
+      await runtime.transport.replyText(inbound.messageId, requested === 'yolo'
+        ? '已切换到 YOLO。后续飞书消息将不再请求操作审批，并使用完整工作区权限。'
+        : '已切换到 Normal。后续飞书消息将恢复默认审批与沙箱策略。', Boolean(inbound.rootId))
       return
     }
 
@@ -2008,6 +2060,7 @@ export class FeishuBotService {
         bindingKey: binding.bindingKey,
         webUrl: this.dependencies.webThreadUrl?.(binding.threadId),
         requesterOpenId: binding.senderOpenId,
+        permissionMode: binding.permissionMode ?? 'yolo',
       }), Boolean(inbound.rootId))
       return
     }
@@ -2072,6 +2125,7 @@ export class FeishuBotService {
           bindingKey: binding.bindingKey,
           webUrl: this.dependencies.webThreadUrl?.(binding.threadId),
           requesterOpenId: binding.senderOpenId,
+          permissionMode: binding.permissionMode ?? 'yolo',
         }), Boolean(inbound.rootId))
         return
       }
@@ -2259,6 +2313,7 @@ export class FeishuBotService {
           feishuSenderOpenId: active.requesterOpenId,
         },
         collaborationMode: active.binding.collaborationMode ?? 'default',
+        permissionMode: active.binding.permissionMode ?? 'yolo',
       })
       active.turnId = result.turnId
       // Notifications can overtake the turn/start RPC response. Do not revive

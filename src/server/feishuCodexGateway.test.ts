@@ -45,6 +45,8 @@ describe('FeishuCodexGateway', () => {
         { type: 'localImage', path: '/private/one.png' },
         { type: 'localImage', path: '/private/two.jpg' },
       ],
+      approvalPolicy: 'never',
+      sandboxPolicy: { type: 'dangerFullAccess' },
     })
     expect(rpc).not.toHaveBeenCalledWith('thread/read', expect.anything())
     expect(rpc).not.toHaveBeenCalledWith('thread/resume', expect.anything())
@@ -58,6 +60,18 @@ describe('FeishuCodexGateway', () => {
     expect(rpc).toHaveBeenNthCalledWith(1, 'thread/resume', { threadId: 'thread-1' })
     expect(rpc).toHaveBeenNthCalledWith(2, 'turn/start', {
       threadId: 'thread-1', input: [{ type: 'text', text: 'Continue', text_elements: [] }],
+      approvalPolicy: 'never',
+      sandboxPolicy: { type: 'dangerFullAccess' },
+    })
+  })
+
+  it('restores Codex approval and sandbox defaults in Normal mode', async () => {
+    const rpc = vi.fn(async (method: string) => method === 'turn/start' ? { turn: { id: 'turn-normal' } } : {})
+    const gateway = new FeishuCodexGateway({ rpc, respondToServerRequest: vi.fn(), readCatalog: vi.fn(async () => catalog) })
+
+    await expect(gateway.startTurn('thread-1', 'Proceed carefully', [], 'default', 'normal')).resolves.toEqual({ threadId: 'thread-1', turnId: 'turn-normal' })
+    expect(rpc).toHaveBeenCalledWith('turn/start', {
+      threadId: 'thread-1', input: [{ type: 'text', text: 'Proceed carefully', text_elements: [] }],
     })
   })
 
@@ -76,6 +90,8 @@ describe('FeishuCodexGateway', () => {
     expect(rpc).toHaveBeenCalledWith('turn/start', {
       threadId: 'thread-1',
       input: [{ type: 'text', text: 'Ask before deciding', text_elements: [] }],
+      approvalPolicy: 'never',
+      sandboxPolicy: { type: 'dangerFullAccess' },
       collaborationMode: {
         mode: 'plan',
         settings: {

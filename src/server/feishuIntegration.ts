@@ -91,6 +91,7 @@ function runtimeBinding(binding: FeishuConversationBinding): FeishuSessionBindin
     threadId: binding.sessionId,
     threadTitle: binding.sessionTitle,
     collaborationMode: binding.collaborationMode,
+    permissionMode: binding.permissionMode,
   }
 }
 
@@ -210,6 +211,7 @@ function createStorePort(): FeishuBotStorePort {
       sessionId: binding.threadId,
       sessionTitle: binding.threadTitle,
       collaborationMode: binding.collaborationMode,
+      permissionMode: binding.permissionMode,
     }) },
     touchBinding: async (botId, bindingKey) => { await touchFeishuBinding(bindingKey, botId) },
     deleteBinding: async (botId, bindingKey) => { await deleteFeishuBinding(bindingKey, botId) },
@@ -270,6 +272,7 @@ function bindingDto(binding: FeishuConversationBinding): FeishuBindingDto {
     sessionId: binding.sessionId || null,
     sessionTitle: binding.sessionTitle || null,
     collaborationMode: binding.collaborationMode,
+    permissionMode: binding.permissionMode,
     userOpenId: binding.userOpenId || null,
     createdAtIso: binding.createdAtIso,
     updatedAtIso: binding.updatedAtIso,
@@ -427,8 +430,8 @@ export function createFeishuIntegration(input: {
       archiveSession: ({ threadId }) => gateway.archiveSession(threadId),
     },
     turns: {
-      startTurn: async ({ threadId, prompt, localImagePaths, collaborationMode }) => {
-        const result = await gateway.startTurn(threadId, prompt, localImagePaths, collaborationMode)
+      startTurn: async ({ threadId, prompt, localImagePaths, collaborationMode, permissionMode }) => {
+        const result = await gateway.startTurn(threadId, prompt, localImagePaths, collaborationMode, permissionMode)
         return { turnId: result.turnId }
       },
       stopTurn: async ({ threadId, turnId }) => {
