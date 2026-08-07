@@ -8006,17 +8006,21 @@ export async function listWorkspaceFiles(params: {
 
   const rows = await readdir(target.absolutePath, { withFileTypes: true })
   const visibleRows = rows
+    .filter((entry) => entry.isDirectory() || entry.isFile())
     .filter((entry) => !entry.name.startsWith('.DS_Store'))
     .filter((entry) => !(entry.isDirectory() && HIDDEN_WORKSPACE_DIRS.has(entry.name)))
     .filter((entry) => {
       const relativeEntryPath = relative(workspace.root, join(target.absolutePath, entry.name)).split(sep).join('/')
       return !checkWorkspacePathProtection(protectionPolicy, relativeEntryPath)
     })
-    .slice(0, MAX_WORKSPACE_DIRECTORY_ENTRIES)
+    .sort((first, second) => {
+      if (first.isDirectory() !== second.isDirectory()) return first.isDirectory() ? -1 : 1
+      return first.name.localeCompare(second.name)
+    })
+  const selectedRows = visibleRows.slice(0, MAX_WORKSPACE_DIRECTORY_ENTRIES)
 
   const entries: ToolingWorkspaceFileEntry[] = []
-  for (const entry of visibleRows) {
-    if (!entry.isDirectory() && !entry.isFile()) continue
+  for (const entry of selectedRows) {
     const absoluteEntryPath = join(target.absolutePath, entry.name)
     const entryStat = await stat(absoluteEntryPath)
     entries.push({
@@ -8028,11 +8032,6 @@ export async function listWorkspaceFiles(params: {
     })
   }
 
-  entries.sort((first, second) => {
-    if (first.kind !== second.kind) return first.kind === 'directory' ? -1 : 1
-    return first.name.localeCompare(second.name)
-  })
-
   const parentPath = target.relativePath
     ? relative(workspace.root, dirname(target.absolutePath)).split(sep).join('/')
     : ''
@@ -8043,7 +8042,7 @@ export async function listWorkspaceFiles(params: {
     path: target.relativePath,
     parentPath,
     entries,
-    truncated: rows.length > visibleRows.length,
+    truncated: visibleRows.length > selectedRows.length,
   }
 }
 
