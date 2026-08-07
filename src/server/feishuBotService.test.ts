@@ -1504,7 +1504,47 @@ describe('FeishuBotService', () => {
 
     transport.handlers?.onMessage(commandMessage('om_mode_prompt', 'Ask me to choose one option'))
     await vi.waitFor(() => expect(startTurn).toHaveBeenCalledOnce())
-    expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({ collaborationMode: 'plan' }))
+    expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({ collaborationMode: 'plan', permissionMode: 'yolo' }))
+    await service.stop()
+  })
+
+  it('defaults Feishu bindings to YOLO and persists Normal permission mode', async () => {
+    const { service, store, transport, startTurn } = harness(binding())
+    await service.start()
+
+    transport.handlers?.onMessage(commandMessage('om_permission_normal', '/permission normal'))
+    await vi.waitFor(() => expect(transport.texts.some((text) => text.includes('Normal'))).toBe(true))
+    expect(store.bindings.get(binding().bindingKey)?.permissionMode).toBe('normal')
+
+    transport.handlers?.onMessage(commandMessage('om_permission_prompt', 'Run this carefully'))
+    await vi.waitFor(() => expect(startTurn).toHaveBeenCalledOnce())
+    expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: 'normal' }))
+
+    transport.handlers?.onMessage(commandMessage('om_permission_yolo', '/yolo'))
+    await vi.waitFor(() => expect(transport.texts.some((text) => text.includes('已切换到 YOLO'))).toBe(true))
+    expect(store.bindings.get(binding().bindingKey)?.permissionMode).toBe('yolo')
+    await service.stop()
+  })
+
+  it('switches permission mode from a bound-session card in both directions', async () => {
+    const { service, store } = harness({ ...binding(), permissionMode: 'yolo' })
+    await service.start()
+    const action = (permissionMode: 'normal' | 'yolo') => ({
+      operator: { open_id: 'ou_user' },
+      context: { open_message_id: 'permission-card' },
+      action: { value: {
+        action: 'cody_feishu_set_permission_mode',
+        binding_key: binding().bindingKey,
+        permission_mode: permissionMode,
+      } },
+    })
+
+    await service.handleCardAction('bot-1', action('normal'))
+    await vi.waitFor(() => expect(store.bindings.get(binding().bindingKey)?.permissionMode).toBe('normal'))
+    await service.handleCardAction('bot-1', action('yolo'))
+    await vi.waitFor(() => expect(store.bindings.get(binding().bindingKey)?.permissionMode).toBe('yolo'))
+    await service.handleCardAction('bot-1', action('normal'))
+    await vi.waitFor(() => expect(store.bindings.get(binding().bindingKey)?.permissionMode).toBe('normal'))
     await service.stop()
   })
 

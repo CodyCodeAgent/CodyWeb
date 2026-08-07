@@ -39,6 +39,7 @@ export type FeishuBindingDto = {
   sessionId: string | null
   sessionTitle: string | null
   collaborationMode: 'default' | 'plan'
+  permissionMode: 'normal' | 'yolo'
   userOpenId: string | null
   createdAtIso: string
   updatedAtIso: string

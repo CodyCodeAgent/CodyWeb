@@ -115,6 +115,7 @@ export class FeishuCodexGateway {
     text: string,
     localImagePaths: string[] = [],
     collaborationMode: 'default' | 'plan' = 'default',
+    permissionMode: 'normal' | 'yolo' = 'yolo',
   ): Promise<FeishuStartedTurn> {
     const normalizedThreadId = threadId.trim()
     const normalizedText = text.trim()
@@ -133,6 +134,10 @@ export class FeishuCodexGateway {
     const turnStartParams: Record<string, unknown> = {
       threadId: normalizedThreadId,
       input,
+    }
+    if (permissionMode === 'yolo') {
+      turnStartParams.approvalPolicy = 'never'
+      turnStartParams.sandboxPolicy = { type: 'dangerFullAccess' }
     }
     if (collaborationMode === 'plan') {
       const [modePayload, configPayload] = await Promise.all([

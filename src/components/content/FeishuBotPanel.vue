@@ -553,7 +553,7 @@
                 <div class="feishu-binding-main">
                   <strong>{{ binding.projectName || binding.projectCwd }}</strong>
                   <span>{{ binding.sessionTitle || binding.sessionId || t('settings.feishu.newSession') }}</span>
-                  <code>{{ bindingScopeLabel(binding) }} · {{ binding.collaborationMode }} · {{ binding.threadId || binding.chatId }}</code>
+                  <code>{{ bindingScopeLabel(binding) }} · {{ binding.collaborationMode }} · {{ binding.permissionMode.toUpperCase() }} · {{ binding.threadId || binding.chatId }}</code>
                 </div>
                 <div class="feishu-binding-meta">
                   <time :datetime="binding.lastMessageAtIso || undefined">{{ formatTime(binding.lastMessageAtIso) }}</time>

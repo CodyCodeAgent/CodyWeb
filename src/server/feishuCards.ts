@@ -11,6 +11,7 @@ export const FEISHU_CARD_ACTIONS = {
   denyAccess: 'cody_feishu_deny_access',
   userInputToggle: 'cody_feishu_user_input_toggle',
   userInputSubmit: 'cody_feishu_user_input_submit',
+  setPermissionMode: 'cody_feishu_set_permission_mode',
 } as const
 
 export type FeishuCard = Record<string, unknown>
@@ -207,9 +208,21 @@ export function buildBoundSessionCard(input: {
   bindingKey: string
   webUrl?: string
   requesterOpenId?: string
+  permissionMode?: 'normal' | 'yolo'
 }): FeishuCard {
   const actions: unknown[] = []
   if (input.webUrl) actions.push({ tag: 'button', text: plainText('打开 Session'), type: 'primary', url: input.webUrl })
+  actions.push({
+    tag: 'button',
+    text: plainText(input.permissionMode === 'normal' ? '切换为 YOLO' : '切换为 Normal'),
+    type: 'default',
+    value: {
+      action: FEISHU_CARD_ACTIONS.setPermissionMode,
+      binding_key: input.bindingKey,
+      permission_mode: input.permissionMode === 'normal' ? 'yolo' : 'normal',
+      requester_open_id: input.requesterOpenId ?? '',
+    },
+  })
   actions.push({
     tag: 'button',
     text: plainText('解除绑定'),
@@ -221,7 +234,7 @@ export function buildBoundSessionCard(input: {
     },
   })
   return card('Session 已连接', [
-    { tag: 'div', text: markdown(`项目：**${truncate(input.projectLabel, 80)}**\n\nSession：**${truncate(input.sessionTitle, 100)}**`) },
+    { tag: 'div', text: markdown(`项目：**${truncate(input.projectLabel, 80)}**\n\nSession：**${truncate(input.sessionTitle, 100)}**\n\n权限：**${(input.permissionMode ?? 'yolo').toUpperCase()}**`) },
     { tag: 'action', actions },
   ], 'green')
 }
@@ -432,6 +445,9 @@ export function buildSessionStatusCard(input: {
   state: 'idle' | 'running' | 'queued' | 'external'
   queuedCount: number
   collaborationMode?: 'default' | 'plan'
+  permissionMode?: 'normal' | 'yolo'
+  bindingKey?: string
+  requesterOpenId?: string
   webUrl?: string
 }): FeishuCard {
   const stateLabel = input.state === 'running'
@@ -447,10 +463,23 @@ export function buildSessionStatusCard(input: {
       { is_short: false, text: markdown(`**Session**\n${truncate(input.sessionTitle, 120)}`) },
       { is_short: true, text: markdown(`**排队消息**\n${input.queuedCount}`) },
       { is_short: true, text: markdown(`**模式**\n${input.collaborationMode ?? 'default'}`) },
+      { is_short: true, text: markdown(`**权限**\n${(input.permissionMode ?? 'yolo').toUpperCase()}`) },
     ],
   }]
   if (input.webUrl) {
     elements.push({ tag: 'action', actions: [{ tag: 'button', type: 'primary', text: plainText('打开 Session'), url: input.webUrl }] })
+  }
+  if (input.bindingKey) {
+    elements.push({ tag: 'action', actions: [{
+      tag: 'button', type: 'default',
+      text: plainText(input.permissionMode === 'normal' ? '切换为 YOLO' : '切换为 Normal'),
+      value: {
+        action: FEISHU_CARD_ACTIONS.setPermissionMode,
+        binding_key: input.bindingKey,
+        permission_mode: input.permissionMode === 'normal' ? 'yolo' : 'normal',
+        requester_open_id: input.requesterOpenId ?? '',
+      },
+    }] })
   }
   return card('Session 状态', elements, input.state === 'running' || input.state === 'external' ? 'turquoise' : 'blue')
 }
@@ -476,12 +505,13 @@ export function buildBotHelpCard(input: {
   projectLabel?: string
   sessionTitle?: string
   collaborationMode?: 'default' | 'plan'
+  permissionMode?: 'normal' | 'yolo'
 }): FeishuCard {
   const status = input.sessionTitle
     ? `当前绑定：**${truncate(input.projectLabel || '未知项目', 80)} / ${truncate(input.sessionTitle, 100)}**`
     : '当前状态：**尚未绑定 Session**'
   return card('CodyWeb 机器人帮助', [
-    { tag: 'div', text: markdown(`${status}\n当前模式：**${input.collaborationMode ?? 'default'}**`) },
+    { tag: 'div', text: markdown(`${status}\n当前模式：**${input.collaborationMode ?? 'default'}**\n当前权限：**${(input.permissionMode ?? 'yolo').toUpperCase()}**`) },
     { tag: 'div', text: markdown([
       '`/project` 选择项目',
       '`/sessions` 查看 Session',
@@ -489,6 +519,7 @@ export function buildBotHelpCard(input: {
       '`/new` 新建 Session',
       '`/status` 查看状态',
       '`/mode plan|default` 切换对话模式',
+      '`/permission yolo|normal` 切换执行权限',
       '`/stop` 停止当前回复',
       '`/answer 请求ID 问题ID 答案` 回答自定义问题',
       '`/rename 新名称` 重命名',
