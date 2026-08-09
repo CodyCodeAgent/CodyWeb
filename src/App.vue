@@ -169,8 +169,9 @@
               type="button"
               :aria-label="t('conversation.share.open')"
               :title="t('conversation.share.open')"
-              :aria-expanded="isConversationShareOpen"
-              @click="isConversationShareOpen = true"
+              :aria-pressed="isConversationShareSelecting"
+              :data-active="isConversationShareSelecting ? 'true' : undefined"
+              @click="toggleConversationShareSelection"
             >
               <IconTablerShare3 />
             </button>
@@ -294,13 +295,15 @@
             selectedCollaborationModeName, selectedPermissionMode, homeComposerBusyLabel, filteredMessages,
             isLoadingMessages, selectedThread, selectedMessageLoadError, selectedThreadScrollState, liveOverlay,
             selectedThreadServerRequests, threadComposerBusyLabel,
-            isSelectedThreadInProgress, isInterruptingTurn, isCodeView, contextInsertion }"
+            isSelectedThreadInProgress, isInterruptingTurn, isCodeView, contextInsertion,
+            conversationShareSelecting: isConversationShareSelecting, conversationShareSelectedMessageIds }"
           @select-thread="onSelectThread" @respond-server-request="onRespondServerRequest"
           @select-new-thread-folder="onSelectNewThreadFolder" @submit-message="onSubmitThreadMessage"
           @select-model="onSelectModel" @select-reasoning-effort="onSelectReasoningEffort"
           @select-collaboration-mode="onSelectCollaborationMode" @select-permission-mode="onSelectPermissionMode"
           @update-scroll-state="onUpdateThreadScrollState" @retry-load="onRetryLoadMessages" @interrupt="onInterruptTurn"
-          @open-code="openCodeView" @ask-code="onAskCode"
+          @open-code="openCodeView" @ask-code="onAskCode" @confirm-share-selection="onConfirmConversationShareSelection"
+          @cancel-share-selection="cancelConversationShareSelection"
         /></section>
       </section>
     </template>
@@ -332,7 +335,10 @@
     :thread-title="selectedThread.title"
     :project-name="selectedThread.projectName"
     :messages="filteredMessages"
-    @close="isConversationShareOpen = false"
+    :initial-selected-message-ids="conversationShareSelectedMessageIds"
+    configuration-only
+    @close="closeConversationShareDialog"
+    @reselect="reselectConversationShareMessages"
   />
 </template>
 
@@ -485,6 +491,8 @@ const isNewThreadDialogOpen = ref(false)
 const isDirectoryPickerOpen = ref(false)
 const isPromptLibraryOpen = ref(false)
 const isConversationShareOpen = ref(false)
+const isConversationShareSelecting = ref(false)
+const conversationShareSelectedMessageIds = ref<string[]>([])
 const promptInsertion = ref<PromptInsertion | null>(null)
 const contextInsertion = ref<UiComposerContextAttachment | null>(null)
 const isSidebarCollapsed = ref(loadSidebarCollapsed())
@@ -498,6 +506,38 @@ const sidebarSearchInputRef = ref<HTMLInputElement | null>(null)
 
 function collapseAllSidebarProjects(): void {
   sidebarCollapseAllRequest.value += 1
+}
+
+function toggleConversationShareSelection(): void {
+  if (isConversationShareSelecting.value) {
+    cancelConversationShareSelection()
+    return
+  }
+  isConversationShareOpen.value = false
+  conversationShareSelectedMessageIds.value = []
+  isConversationShareSelecting.value = true
+}
+
+function cancelConversationShareSelection(): void {
+  isConversationShareSelecting.value = false
+  conversationShareSelectedMessageIds.value = []
+}
+
+function onConfirmConversationShareSelection(messageIds: string[]): void {
+  if (messageIds.length === 0) return
+  conversationShareSelectedMessageIds.value = messageIds
+  isConversationShareSelecting.value = false
+  isConversationShareOpen.value = true
+}
+
+function closeConversationShareDialog(): void {
+  isConversationShareOpen.value = false
+  conversationShareSelectedMessageIds.value = []
+}
+
+function reselectConversationShareMessages(): void {
+  isConversationShareOpen.value = false
+  isConversationShareSelecting.value = true
 }
 
 const {
@@ -1054,6 +1094,8 @@ watch(
   () => selectedThreadId.value,
   async (threadId) => {
     isConversationShareOpen.value = false
+    isConversationShareSelecting.value = false
+    conversationShareSelectedMessageIds.value = []
     if (!hasInitialized.value) return
     if (isHomeRoute.value || isSettingsRoute.value || isSkillsRoute.value) return
 
@@ -1207,6 +1249,12 @@ async function submitFirstMessageForNewThread(payload: UiComposerSubmitPayload):
 }
 
 .content-prompt-trigger svg { @apply h-4 w-4; }
+
+.content-prompt-trigger[data-active='true'] {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-panel));
+  color: var(--color-accent);
+}
 
 .workspace-context-bar {
   display: flex;

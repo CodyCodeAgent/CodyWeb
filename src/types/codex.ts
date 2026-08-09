@@ -103,11 +103,57 @@ export type UiConversationShareMessage = {
   text: string
   messageType: string
   imageCount: number
+  images?: string[]
   tool: UiToolTimelineEntry | null
 }
 
+export type UiConversationShareThemeSnapshot = {
+  skinId: string
+  skinName: string
+  colorMode: 'light' | 'dark'
+  colors: {
+    background: string
+    surface: string
+    panel: string
+    elevated: string
+    text: string
+    textMuted: string
+    border: string
+    accent: string
+    codeBackground: string
+  }
+  fonts: {
+    sans: string
+    mono: string
+  }
+  radii: {
+    sm: string
+    md: string
+    lg: string
+  }
+  recipes: {
+    message: 'native' | 'bubble' | 'rail'
+    identity: 'none' | 'avatars'
+    panel: 'native' | 'beveled' | 'glass'
+    backdrop: 'solid' | 'aero-grid' | 'grid' | 'image'
+  }
+  background: {
+    type: 'solid' | 'grid' | 'noise' | 'image' | 'animated'
+    fit: 'cover' | 'contain'
+    position: string
+    blur: number
+    dim: number
+    saturation: number
+  } | null
+  assets: {
+    background?: string
+    assistantAvatar?: string
+    userAvatar?: string
+  }
+}
+
 export type UiConversationShareSnapshot = {
-  version: 1
+  version: 1 | 2
   locale: 'en' | 'zh-CN'
   title: string
   threadTitle: string
@@ -115,6 +161,8 @@ export type UiConversationShareSnapshot = {
   createdAtIso: string
   messages: UiConversationShareMessage[]
   selectedTurnIds: string[]
+  selectedMessageIds?: string[]
+  theme?: UiConversationShareThemeSnapshot | null
   options: {
     includeToolDetails: boolean
     redactLocalPaths: boolean

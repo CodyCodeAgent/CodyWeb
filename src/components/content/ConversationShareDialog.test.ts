@@ -42,16 +42,38 @@ beforeEach(() => {
 })
 
 describe('ConversationShareDialog', () => {
-  it('selects non-contiguous turns and creates a public snapshot', async () => {
+  it('opens as a configuration step with the inline-selected messages preserved', async () => {
+    const wrapper = mount(ConversationShareDialog, {
+      props: {
+        threadId: 'thread-1', threadTitle: 'Shared thread', projectName: 'project', messages,
+        configurationOnly: true, initialSelectedMessageIds: ['u1', 'a3'],
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Configure this share')
+    expect(wrapper.text()).toContain('2 messages selected')
+    expect(wrapper.find('.share-message-option').exists()).toBe(false)
+    expect(wrapper.findAll('.share-selection-summary-item')).toHaveLength(2)
+
+    await wrapper.get('.share-selection-summary-heading button').trigger('click')
+    expect(wrapper.emitted('reselect')).toHaveLength(1)
+
+    await wrapper.get('.share-config').trigger('submit')
+    await flushPromises()
+    expect(shareClient.createConversationShare.mock.calls.at(-1)?.[0].snapshot.selectedMessageIds).toEqual(['u1', 'a3'])
+  })
+
+  it('selects non-contiguous messages and creates a themed public snapshot', async () => {
     const wrapper = mount(ConversationShareDialog, {
       props: { threadId: 'thread-1', threadTitle: 'Shared thread', projectName: 'project', messages },
     })
     await flushPromises()
 
-    const options = wrapper.findAll('.share-turn-option input')
-    expect(options).toHaveLength(3)
+    const options = wrapper.findAll('.share-message-option input')
+    expect(options).toHaveLength(6)
     await options[0]?.setValue(true)
-    await options[2]?.setValue(true)
+    await options[5]?.setValue(true)
     await wrapper.get('.share-config').trigger('submit')
     await flushPromises()
 
@@ -59,8 +81,11 @@ describe('ConversationShareDialog', () => {
     const request = shareClient.createConversationShare.mock.calls.at(-1)?.[0]
     expect(request.expiresInDays).toBe(30)
     expect(request.snapshot.locale).toBe('en')
+    expect(request.snapshot.version).toBe(2)
+    expect(request.snapshot.selectedMessageIds).toEqual(['u1', 'a3'])
     expect(request.snapshot.selectedTurnIds).toEqual(['turn-1', 'turn-3'])
-    expect(request.snapshot.messages.map((row: UiMessage) => row.id)).toEqual(['u1', 'a1', 'u3', 'a3'])
+    expect(request.snapshot.messages.map((row: UiMessage) => row.id)).toEqual(['u1', 'a3'])
+    expect(request.snapshot.theme).toMatchObject({ skinId: expect.any(String), colors: { accent: expect.any(String) } })
     expect(wrapper.text()).toContain('Share link created')
     expect(wrapper.get('.share-link-field input').attributes('value')).toContain('/share/public-token')
     await wrapper.get('.share-success-actions button').trigger('click')
@@ -96,8 +121,8 @@ describe('ConversationShareDialog', () => {
     })
     await flushPromises()
 
-    expect(wrapper.text()).toContain('分享这个 Session')
-    await wrapper.findAll('.share-turn-option input')[0]?.setValue(true)
+    expect(wrapper.text()).toContain('选择要分享的消息')
+    await wrapper.findAll('.share-message-option input')[0]?.setValue(true)
     await wrapper.get('.share-config').trigger('submit')
     await flushPromises()
 

@@ -204,7 +204,20 @@
           :data-role="message.role"
           :data-message-type="message.messageType || ''"
           :data-message-id="message.id"
+          :data-share-selectable="shareSelectionActive && isShareSelectableMessage(message) ? 'true' : undefined"
+          :data-share-selected="selectedShareMessageIds.has(message.id) ? 'true' : undefined"
         >
+        <button
+          v-if="shareSelectionActive && isShareSelectableMessage(message)"
+          class="conversation-share-checkbox"
+          type="button"
+          role="checkbox"
+          :aria-checked="selectedShareMessageIds.has(message.id)"
+          :aria-label="t('conversation.share.selection.checkbox')"
+          @click="toggleShareMessage(message.id)"
+        >
+          <IconTablerCheck aria-hidden="true" />
+        </button>
         <div
           class="message-row"
           :data-role="message.role"
@@ -412,6 +425,33 @@
       <li ref="bottomAnchorRef" class="conversation-bottom-anchor" />
     </ul>
 
+    <aside
+      v-if="shareSelectionActive"
+      class="conversation-share-selection-bar"
+      role="toolbar"
+      :aria-label="t('conversation.share.selection.toolbar')"
+    >
+      <span class="conversation-share-selection-count">
+        {{ t('conversation.share.selection.count', { count: String(selectedShareMessageIds.size) }) }}
+      </span>
+      <div class="conversation-share-selection-actions">
+        <button type="button" @click="emit('cancelShareSelection')">
+          {{ t('conversation.share.selection.cancel') }}
+        </button>
+        <button type="button" @click="toggleAllShareMessages">
+          {{ allVisibleShareMessagesSelected ? t('conversation.share.selection.clear') : t('conversation.share.selection.selectAll') }}
+        </button>
+        <button
+          class="conversation-share-selection-next"
+          type="button"
+          :disabled="selectedShareMessageIds.size === 0"
+          @click="confirmShareSelection"
+        >
+          {{ t('conversation.share.selection.next') }}
+        </button>
+      </div>
+    </aside>
+
     <button
       v-if="showScrollToBottomButton"
       class="conversation-scroll-bottom"
@@ -501,6 +541,7 @@ import {
 } from '../../composables/serverRequestRules'
 import IconTablerChevronDown from '../icons/IconTablerChevronDown.vue'
 import IconTablerChevronRight from '../icons/IconTablerChevronRight.vue'
+import IconTablerCheck from '../icons/IconTablerCheck.vue'
 import IconTablerCopy from '../icons/IconTablerCopy.vue'
 import IconTablerX from '../icons/IconTablerX.vue'
 import MessageMarkdown from './MessageMarkdown.vue'
@@ -520,6 +561,8 @@ const props = defineProps<{
   loadError: string
   activeThreadId: string
   scrollState: ThreadScrollState | null
+  shareSelectionActive?: boolean
+  initialShareSelectedMessageIds?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -527,6 +570,8 @@ const emit = defineEmits<{
   respondServerRequest: [payload: UiServerRequestReply]
   retryLoad: []
   openCode: [location: { path?: string; line?: number; mode?: 'file' | 'diff' }]
+  confirmShareSelection: [messageIds: string[]]
+  cancelShareSelection: []
 }>()
 const approvalScopeOptions = APPROVAL_SCOPE_OPTIONS
 const { t } = useLocale()
@@ -548,6 +593,9 @@ const isLiveOverlayExpanded = ref((props.liveOverlay?.reasoningText ?? '').trim(
 const visibleMessageCount = ref(DEFAULT_VISIBLE_MESSAGE_COUNT)
 const openToolMessageIds = ref<Record<string, boolean>>({})
 const expandedToolOutputIds = ref<Record<string, boolean>>({})
+const selectedShareMessageIds = ref(new Set<string>(
+  props.shareSelectionActive ? (props.initialShareSelectedMessageIds ?? []) : [],
+))
 const toolQuestionAnswers = ref<Record<string, string>>({})
 const toolQuestionOtherAnswers = ref<Record<string, string>>({})
 const BOTTOM_THRESHOLD_PX = 16
@@ -585,6 +633,38 @@ const fileChangeGroupsByHeadId = computed<Record<string, FileChangeMessageGroup>
 const groupedFileChangeContinuationIds = computed(() => new Set(
   visibleFileChangeGroups.value.flatMap((group) => group.messageIds.slice(1)),
 ))
+const visibleShareMessages = computed(() => visibleMessages.value.filter(isShareSelectableMessage))
+const allVisibleShareMessagesSelected = computed(() => visibleShareMessages.value.length > 0
+  && visibleShareMessages.value.every((message) => selectedShareMessageIds.value.has(message.id)))
+
+function isShareSelectableMessage(message: UiMessage): boolean {
+  if (message.role !== 'user' && message.role !== 'assistant') return false
+  return message.text.trim().length > 0 || (message.images?.length ?? 0) > 0
+}
+
+function toggleShareMessage(messageId: string): void {
+  const next = new Set(selectedShareMessageIds.value)
+  if (next.has(messageId)) next.delete(messageId)
+  else next.add(messageId)
+  selectedShareMessageIds.value = next
+}
+
+function toggleAllShareMessages(): void {
+  const visibleIds = visibleShareMessages.value.map((message) => message.id)
+  const next = new Set(selectedShareMessageIds.value)
+  if (allVisibleShareMessagesSelected.value) visibleIds.forEach((id) => next.delete(id))
+  else visibleIds.forEach((id) => next.add(id))
+  selectedShareMessageIds.value = next
+}
+
+function confirmShareSelection(): void {
+  if (selectedShareMessageIds.value.size === 0) return
+  emit('confirmShareSelection', [...selectedShareMessageIds.value])
+}
+
+watch(() => props.shareSelectionActive, (isActive) => {
+  selectedShareMessageIds.value = new Set(isActive ? (props.initialShareSelectedMessageIds ?? []) : [])
+})
 
 function isIdentityMessage(message: UiMessage): boolean {
   return (message.role === 'assistant' || message.role === 'user')
@@ -1316,8 +1396,148 @@ function turnReceiptHeadline(message: UiMessage): string {
   @apply h-full min-h-0 list-none m-0 px-6 py-0 overflow-y-auto overflow-x-visible flex flex-col gap-3;
 }
 
+.conversation-root:has(.conversation-share-selection-bar) .conversation-list {
+  padding-bottom: 6.5rem;
+}
+
 .conversation-item {
   @apply m-0 w-full flex;
+}
+
+.conversation-item[data-share-selectable='true'] {
+  @apply items-start justify-center gap-3;
+}
+
+.conversation-item[data-share-selectable='true'] > .message-row {
+  flex: 0 1 45rem;
+  margin-inline: 0;
+}
+
+.conversation-item[data-share-selected='true'] > .message-row {
+  border-radius: calc(var(--radius-md) + 4px);
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 72%, transparent);
+  outline-offset: 5px;
+}
+
+.conversation-share-checkbox {
+  @apply mt-1 grid h-11 w-11 shrink-0 place-items-center rounded-xl border transition focus:outline-none;
+  border-color: var(--color-border);
+  background: color-mix(in srgb, var(--color-panel) 92%, transparent);
+  color: transparent;
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.conversation-share-checkbox:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 62%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-panel));
+}
+
+.conversation-share-checkbox[aria-checked='true'] {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.conversation-share-checkbox:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.conversation-share-checkbox svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.conversation-share-selection-bar {
+  position: absolute;
+  z-index: 30;
+  right: clamp(1rem, 4vw, 3rem);
+  bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-height: 4rem;
+  padding: .6rem .7rem .6rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-panel) 94%, transparent);
+  color: var(--color-text);
+  box-shadow: 0 18px 44px color-mix(in srgb, #000 26%, transparent);
+  backdrop-filter: blur(16px);
+}
+
+.conversation-share-selection-count {
+  min-width: 7rem;
+  font-size: .82rem;
+  font-weight: 700;
+}
+
+.conversation-share-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+}
+
+.conversation-share-selection-actions button {
+  min-height: 2.75rem;
+  padding: 0 .85rem;
+  border: 1px solid var(--color-border);
+  border-radius: .7rem;
+  background: transparent;
+  color: var(--color-text);
+  font-weight: 650;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.conversation-share-selection-actions button:hover {
+  background: var(--color-surface-muted);
+}
+
+.conversation-share-selection-actions button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.conversation-share-selection-actions .conversation-share-selection-next {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.conversation-share-selection-actions button:disabled {
+  cursor: not-allowed;
+  opacity: .42;
+}
+
+@media (max-width: 700px) {
+  .conversation-list {
+    padding-inline: .75rem;
+  }
+
+  .conversation-item[data-share-selectable='true'] {
+    gap: .5rem;
+  }
+
+  .conversation-share-checkbox {
+    width: 2.75rem;
+  }
+
+  .conversation-share-selection-bar {
+    right: .75rem;
+    bottom: .75rem;
+    left: .75rem;
+    align-items: stretch;
+    flex-direction: column;
+    gap: .45rem;
+  }
+
+  .conversation-share-selection-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1.15fr;
+  }
 }
 
 .conversation-item-request {
