@@ -1405,12 +1405,15 @@ function turnReceiptHeadline(message: UiMessage): string {
 }
 
 .conversation-item[data-share-selectable='true'] {
-  @apply items-start justify-center gap-3;
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr);
+  align-items: start;
+  column-gap: .75rem;
 }
 
 .conversation-item[data-share-selectable='true'] > .message-row {
-  flex: 0 1 45rem;
-  margin-inline: 0;
+  min-width: 0;
+  margin-inline: auto;
 }
 
 .conversation-item[data-share-selected='true'] > .message-row {
@@ -1518,7 +1521,7 @@ function turnReceiptHeadline(message: UiMessage): string {
   }
 
   .conversation-item[data-share-selectable='true'] {
-    gap: .5rem;
+    column-gap: .5rem;
   }
 
   .conversation-share-checkbox {
