@@ -25,17 +25,30 @@ afterEach(async () => {
 
 function snapshot() {
   return {
-    version: 1,
+    version: 2,
     locale: 'zh-CN',
     title: 'Why the test failed',
     threadTitle: 'Debug session',
     projectName: 'project',
     createdAtIso: 'ignored',
     selectedTurnIds: ['turn-1'],
+    selectedMessageIds: ['u1', 'a1'],
+    theme: {
+      skinId: 'qq-2007', skinName: 'QQ 2007', colorMode: 'dark',
+      colors: {
+        background: '#081522', surface: '#10263a', panel: '#12304a', elevated: '#173b58',
+        text: '#f1f7ff', textMuted: '#a9bfd2', border: '#315d7a', accent: '#54b8ff', codeBackground: '#050b12',
+      },
+      fonts: { sans: 'Inter, Arial, sans-serif', mono: 'Consolas, monospace' },
+      radii: { sm: '8px', md: '14px', lg: '20px' },
+      recipes: { message: 'bubble', identity: 'avatars', panel: 'glass', backdrop: 'image' },
+      background: { type: 'image', fit: 'cover', position: 'center', blur: 12, dim: 42, saturation: 110 },
+      assets: { assistantAvatar: 'data:image/png;base64,AA==' },
+    },
     options: { includeToolDetails: true, redactLocalPaths: true },
     messages: [
       { id: 'u1', turnId: 'turn-1', role: 'user', text: 'Check /Users/alice/code/project/src/a.ts', messageType: 'userMessage', imageCount: 0, tool: null },
-      { id: 'a1', turnId: 'turn-1', role: 'assistant', text: 'token=super-secret-token-value\n<script>alert(1)</script>', messageType: 'agentMessage', imageCount: 0, tool: null },
+      { id: 'a1', turnId: 'turn-1', role: 'assistant', text: 'token=super-secret-token-value\n<script>alert(1)</script>', messageType: 'agentMessage', imageCount: 1, images: ['data:image/png;base64,AA=='], tool: null },
     ],
   }
 }
@@ -58,13 +71,19 @@ describe('conversation share store', () => {
     const html = renderConversationSharePage(lookup.share, `${created.summary.publicPath}/image.svg`)
     expect(html).toContain('Why the test failed')
     expect(html).toContain('只读分享')
+    expect(html).toContain('data-message-recipe="bubble"')
+    expect(html).toContain('--share-accent:#54b8ff')
+    expect(html).toContain('QQ 2007')
+    expect(html).toContain('data:image/png;base64,AA==')
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
     expect(html).not.toContain('<script>alert(1)</script>')
     expect(html).not.toContain('super-secret-token-value')
     const image = renderConversationShareImage(lookup.share)
     expect(image).toContain('<svg')
     expect(image).toContain('Why the test failed')
-    expect(image).toContain('共享对话')
+    expect(image).toContain('分享的对话')
+    expect(image).toContain('#54b8ff')
+    expect(image).toContain('data:image/png;base64,AA==')
     expect(image).not.toContain('super-secret-token-value')
     expect(listConversationShares('thread-1', databasePath)).toHaveLength(1)
   })

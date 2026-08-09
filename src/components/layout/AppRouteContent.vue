@@ -28,8 +28,11 @@
         <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages" :cwd="selectedThread?.cwd ?? ''"
           :thread-title="selectedThread?.title ?? ''" :load-error="selectedMessageLoadError" :active-thread-id="composerThreadContextId"
           :scroll-state="selectedThreadScrollState" :live-overlay="liveOverlay" :pending-requests="selectedThreadServerRequests"
+          :share-selection-active="conversationShareSelecting"
+          :initial-share-selected-message-ids="conversationShareSelectedMessageIds"
           @update-scroll-state="emit('updateScrollState', $event)" @respond-server-request="emit('respondServerRequest', $event)"
-          @retry-load="emit('retryLoad')" @open-code="emit('openCode', $event)" />
+          @retry-load="emit('retryLoad')" @open-code="emit('openCode', $event)"
+          @confirm-share-selection="emit('confirmShareSelection', $event)" @cancel-share-selection="emit('cancelShareSelection')" />
       </template>
     </WorkspaceCodeWorkbench>
     <section v-else-if="isCodeView" class="code-workbench-restoring" aria-live="polite">
@@ -43,9 +46,11 @@
       <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages" :cwd="selectedThread?.cwd ?? ''"
         :thread-title="selectedThread?.title ?? ''"
         :load-error="selectedMessageLoadError" :active-thread-id="composerThreadContextId" :scroll-state="selectedThreadScrollState"
-        :live-overlay="liveOverlay" :pending-requests="selectedThreadServerRequests"
+        :live-overlay="liveOverlay" :pending-requests="selectedThreadServerRequests" :share-selection-active="conversationShareSelecting"
+        :initial-share-selected-message-ids="conversationShareSelectedMessageIds"
         @update-scroll-state="emit('updateScrollState', $event)" @respond-server-request="emit('respondServerRequest', $event)"
-        @retry-load="emit('retryLoad')" @open-code="emit('openCode', $event)" />
+        @retry-load="emit('retryLoad')" @open-code="emit('openCode', $event)"
+        @confirm-share-selection="emit('confirmShareSelection', $event)" @cancel-share-selection="emit('cancelShareSelection')" />
     </div></div>
     <ThreadComposer :active-thread-id="composerThreadContextId" :prompt-insertion="promptInsertion" :context-insertion="contextInsertion" :disabled="isSendingMessage"
       :models="availableModelIds" :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
@@ -84,6 +89,8 @@ defineProps<{
   filteredMessages: UiMessage[]; isLoadingMessages: boolean; selectedThread: UiThread | null; selectedMessageLoadError: string
   selectedThreadScrollState: ThreadScrollState | null; liveOverlay: UiLiveOverlay | null; selectedThreadServerRequests: UiServerRequest[]
   threadComposerBusyLabel: string; isSelectedThreadInProgress: boolean; isInterruptingTurn: boolean
+  conversationShareSelecting: boolean
+  conversationShareSelectedMessageIds: string[]
 }>()
 const emit = defineEmits<{
   selectThread: [string]; respondServerRequest: [UiServerRequestReply]; selectNewThreadFolder: [string]
@@ -92,6 +99,8 @@ const emit = defineEmits<{
   updateScrollState: [{ threadId: string; state: ThreadScrollState }]; retryLoad: []; interrupt: []
   openCode: [location: { path?: string; line?: number; mode?: 'file' | 'diff' }]
   askCode: [attachment: UiComposerContextAttachment]
+  confirmShareSelection: [messageIds: string[]]
+  cancelShareSelection: []
 }>()
 const { t } = useLocale()
 </script>

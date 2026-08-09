@@ -4,6 +4,7 @@ import type {
   UiConversationShareMessage,
   UiConversationShareSnapshot,
   UiConversationShareSummary,
+  UiConversationShareThemeSnapshot,
   UiToolTimelineEntry,
 } from '../types/codex.js'
 import { localDatabasePath, openLocalDatabase } from './localDatabase.js'
@@ -15,6 +16,10 @@ const MAX_MESSAGES = 240
 const MAX_MESSAGE_TEXT_LENGTH = 240_000
 const MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{40,80}$/u
+const INLINE_IMAGE_PATTERN = /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+={0,2}$/iu
+const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/iu
+const RADIUS_PATTERN = /^\d{1,2}(?:\.\d{1,3})?(?:px|rem)$/u
+const FONT_PATTERN = /^[\p{L}\p{N}\s,.'"_()\-]{1,240}$/u
 
 type ConversationShareRow = {
   id: string
@@ -127,6 +132,96 @@ function normalizeTool(value: unknown, shouldRedactPaths: boolean): UiToolTimeli
   }
 }
 
+function normalizeInlineImage(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length > 1_250_000 || !INLINE_IMAGE_PATTERN.test(value)) return null
+  return value
+}
+
+function normalizeTheme(value: unknown): UiConversationShareThemeSnapshot | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const row = value as Record<string, unknown>
+  const colors = row.colors && typeof row.colors === 'object' && !Array.isArray(row.colors)
+    ? row.colors as Record<string, unknown>
+    : null
+  if (!colors) return null
+  const color = (key: string, fallback: string): string => (
+    typeof colors[key] === 'string' && HEX_COLOR_PATTERN.test(colors[key] as string) ? colors[key] as string : fallback
+  )
+  const fonts = row.fonts && typeof row.fonts === 'object' && !Array.isArray(row.fonts)
+    ? row.fonts as Record<string, unknown>
+    : {}
+  const font = (key: string, fallback: string): string => (
+    typeof fonts[key] === 'string' && FONT_PATTERN.test(fonts[key] as string) ? fonts[key] as string : fallback
+  )
+  const radii = row.radii && typeof row.radii === 'object' && !Array.isArray(row.radii)
+    ? row.radii as Record<string, unknown>
+    : {}
+  const radius = (key: string, fallback: string): string => (
+    typeof radii[key] === 'string' && RADIUS_PATTERN.test(radii[key] as string) ? radii[key] as string : fallback
+  )
+  const recipes = row.recipes && typeof row.recipes === 'object' && !Array.isArray(row.recipes)
+    ? row.recipes as Record<string, unknown>
+    : {}
+  const backgroundRow = row.background && typeof row.background === 'object' && !Array.isArray(row.background)
+    ? row.background as Record<string, unknown>
+    : null
+  const backgroundType = backgroundRow?.type === 'grid' || backgroundRow?.type === 'noise'
+    || backgroundRow?.type === 'image' || backgroundRow?.type === 'animated'
+    ? backgroundRow.type
+    : 'solid'
+  const clampNumber = (input: unknown, fallback: number, minimum: number, maximum: number): number => (
+    typeof input === 'number' && Number.isFinite(input) ? Math.max(minimum, Math.min(maximum, input)) : fallback
+  )
+  const assetsRow = row.assets && typeof row.assets === 'object' && !Array.isArray(row.assets)
+    ? row.assets as Record<string, unknown>
+    : {}
+  const assets: UiConversationShareThemeSnapshot['assets'] = {}
+  for (const key of ['background', 'assistantAvatar', 'userAvatar'] as const) {
+    const image = normalizeInlineImage(assetsRow[key])
+    if (image) assets[key] = image
+  }
+  return {
+    skinId: trimText(row.skinId, 120).replace(/[^a-z0-9._-]/giu, '') || 'shared-skin',
+    skinName: trimText(row.skinName, 160) || 'CodyWeb',
+    colorMode: row.colorMode === 'dark' ? 'dark' : 'light',
+    colors: {
+      background: color('background', '#0f1724'),
+      surface: color('surface', '#142033'),
+      panel: color('panel', '#142033'),
+      elevated: color('elevated', '#19263a'),
+      text: color('text', '#edf3fc'),
+      textMuted: color('textMuted', '#a6b3c8'),
+      border: color('border', '#2b3a50'),
+      accent: color('accent', '#72a7ff'),
+      codeBackground: color('codeBackground', '#090f1a'),
+    },
+    fonts: {
+      sans: font('sans', 'Inter, Arial, sans-serif'),
+      mono: font('mono', 'SFMono-Regular, Consolas, monospace'),
+    },
+    radii: { sm: radius('sm', '8px'), md: radius('md', '14px'), lg: radius('lg', '20px') },
+    recipes: {
+      message: recipes.message === 'bubble' || recipes.message === 'rail' ? recipes.message : 'native',
+      identity: recipes.identity === 'avatars' ? 'avatars' : 'none',
+      panel: recipes.panel === 'beveled' || recipes.panel === 'glass' ? recipes.panel : 'native',
+      backdrop: recipes.backdrop === 'aero-grid' || recipes.backdrop === 'grid' || recipes.backdrop === 'image'
+        ? recipes.backdrop
+        : 'solid',
+    },
+    background: backgroundRow ? {
+      type: backgroundType,
+      fit: backgroundRow.fit === 'contain' ? 'contain' : 'cover',
+      position: typeof backgroundRow.position === 'string' && /^[\w\s.%\-]{1,80}$/u.test(backgroundRow.position)
+        ? backgroundRow.position
+        : 'center',
+      blur: clampNumber(backgroundRow.blur, 0, 0, 48),
+      dim: clampNumber(backgroundRow.dim, 30, 0, 100),
+      saturation: clampNumber(backgroundRow.saturation, 100, 0, 200),
+    } : null,
+    assets,
+  }
+}
+
 function normalizeMessage(value: unknown, shouldRedactPaths: boolean): UiConversationShareMessage | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const row = value as Record<string, unknown>
@@ -137,6 +232,9 @@ function normalizeMessage(value: unknown, shouldRedactPaths: boolean): UiConvers
   const tool = normalizeTool(row.tool, shouldRedactPaths)
   const text = sanitizeText(row.text, shouldRedactPaths)
   const imageCount = Number.isInteger(row.imageCount) ? Math.max(0, Math.min(20, Number(row.imageCount))) : 0
+  const images = Array.isArray(row.images)
+    ? row.images.slice(0, 20).map(normalizeInlineImage).filter((image): image is string => Boolean(image))
+    : []
   if (!text.trim() && !tool && imageCount === 0) return null
   return {
     id,
@@ -144,7 +242,8 @@ function normalizeMessage(value: unknown, shouldRedactPaths: boolean): UiConvers
     role,
     text,
     messageType: trimText(row.messageType, 120),
-    imageCount,
+    imageCount: Math.max(imageCount, images.length),
+    images,
     tool,
   }
 }
@@ -164,10 +263,12 @@ export function normalizeConversationShareSnapshot(value: unknown, now = new Dat
   const messages = Array.isArray(row.messages)
     ? row.messages.slice(0, MAX_MESSAGES).map((message) => normalizeMessage(message, redactLocalPaths)).filter((message): message is UiConversationShareMessage => Boolean(message))
     : []
-  if (messages.length === 0) throw new Error('Select at least one conversation turn')
+  if (messages.length === 0) throw new Error('Select at least one conversation message')
   const selectedTurnIds = [...new Set(messages.map((message) => message.turnId))]
+  const selectedMessageIds = messages.map((message) => message.id)
+  const theme = normalizeTheme(row.theme)
   const snapshot: UiConversationShareSnapshot = {
-    version: 1,
+    version: row.version === 2 ? 2 : 1,
     locale: row.locale === 'en' ? 'en' : 'zh-CN',
     title,
     threadTitle: threadTitle || title,
@@ -175,6 +276,8 @@ export function normalizeConversationShareSnapshot(value: unknown, now = new Dat
     createdAtIso: now.toISOString(),
     messages,
     selectedTurnIds,
+    selectedMessageIds,
+    theme,
     options: { includeToolDetails, redactLocalPaths },
   }
   if (Buffer.byteLength(JSON.stringify(snapshot), 'utf8') > MAX_SNAPSHOT_BYTES) {

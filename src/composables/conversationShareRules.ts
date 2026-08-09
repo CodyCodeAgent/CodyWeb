@@ -1,11 +1,11 @@
-import type { UiConversationShareMessage, UiMessage } from '../types/codex'
+import type { UiConversationShareMessage, UiConversationShareThemeSnapshot, UiMessage } from '../types/codex'
+import type { ResolvedSkinPack, ThemeTokens } from '../theme/tokens'
 
-export type ConversationShareTurn = {
+export type ConversationShareItem = {
   id: string
   turnId: string
-  messages: UiMessage[]
-  userPreview: string
-  assistantPreview: string
+  message: UiMessage
+  preview: string
   imageCount: number
   hasToolDetails: boolean
 }
@@ -30,65 +30,92 @@ export function isConversationShareCandidate(message: UiMessage): boolean {
     || Boolean(message.tool)
 }
 
-export function buildConversationShareTurns(messages: UiMessage[]): ConversationShareTurn[] {
-  const groups: ConversationShareTurn[] = []
-  const byId = new Map<string, ConversationShareTurn>()
+export function buildConversationShareItems(messages: UiMessage[]): ConversationShareItem[] {
+  const items: ConversationShareItem[] = []
   let fallbackTurnId = ''
 
   for (const message of messages) {
     if (!isConversationShareCandidate(message)) continue
     if (!message.turnId && message.role === 'user') fallbackTurnId = `message:${message.id}`
     const turnId = message.turnId?.trim() || fallbackTurnId || `message:${message.id}`
-    let group = byId.get(turnId)
-    if (!group) {
-      group = {
-        id: turnId,
-        turnId,
-        messages: [],
-        userPreview: '',
-        assistantPreview: '',
-        imageCount: 0,
-        hasToolDetails: false,
-      }
-      byId.set(turnId, group)
-      groups.push(group)
-    }
-    group.messages.push(message)
-    group.imageCount += message.images?.length ?? 0
-    group.hasToolDetails ||= Boolean(message.tool)
-    if (!group.userPreview && message.role === 'user' && message.text.trim()) {
-      group.userPreview = compactPreview(message.text)
-    }
-    if (!group.assistantPreview && message.role === 'assistant' && message.text.trim()) {
-      group.assistantPreview = compactPreview(message.text)
-    }
+    items.push({
+      id: message.id,
+      turnId,
+      message,
+      preview: compactPreview(message.text || message.tool?.summary || message.tool?.title || ''),
+      imageCount: message.images?.length ?? 0,
+      hasToolDetails: Boolean(message.tool),
+    })
   }
 
-  return groups.filter((group) => group.userPreview || group.assistantPreview || group.imageCount > 0)
+  return items
 }
 
 export function buildConversationShareMessages(
-  turns: ConversationShareTurn[],
-  selectedTurnIds: Set<string>,
+  items: ConversationShareItem[],
+  selectedMessageIds: Set<string>,
   includeToolDetails: boolean,
 ): UiConversationShareMessage[] {
-  return turns.flatMap((turn) => {
-    if (!selectedTurnIds.has(turn.id)) return []
-    return turn.messages.flatMap((message) => {
-      if (message.tool && !includeToolDetails && message.text.trim().length === 0) return []
-      if (message.role === 'system' && !includeToolDetails) return []
-      return [{
-        id: message.id,
-        turnId: turn.turnId,
-        role: message.role,
-        text: message.text,
-        messageType: message.messageType ?? '',
-        imageCount: message.images?.length ?? 0,
-        tool: includeToolDetails && message.tool ? {
-          ...message.tool,
-          details: [...message.tool.details],
-        } : null,
-      }]
-    })
+  return items.flatMap((item) => {
+    if (!selectedMessageIds.has(item.id)) return []
+    const message = item.message
+    if (message.tool && !includeToolDetails && message.text.trim().length === 0) return []
+    if (message.role === 'system' && !includeToolDetails) return []
+    return [{
+      id: message.id,
+      turnId: item.turnId,
+      role: message.role,
+      text: message.text,
+      messageType: message.messageType ?? '',
+      imageCount: message.images?.length ?? 0,
+      images: [...(message.images ?? [])],
+      tool: includeToolDetails && message.tool ? {
+        ...message.tool,
+        details: [...message.tool.details],
+      } : null,
+    }]
   })
+}
+
+export function captureConversationShareTheme(
+  skin: ResolvedSkinPack,
+  tokens: ThemeTokens,
+): UiConversationShareThemeSnapshot {
+  return {
+    skinId: skin.id,
+    skinName: skin.name,
+    colorMode: skin.colorMode,
+    colors: {
+      background: tokens.color.background,
+      surface: tokens.color.surface,
+      panel: tokens.color.panel,
+      elevated: tokens.color.elevated,
+      text: tokens.color.text,
+      textMuted: tokens.color.textMuted,
+      border: tokens.color.border,
+      accent: tokens.color.accent,
+      codeBackground: tokens.color.codeBackground,
+    },
+    fonts: { sans: tokens.font.sans, mono: tokens.font.mono },
+    radii: { sm: tokens.radius.sm, md: tokens.radius.md, lg: tokens.radius.lg },
+    recipes: {
+      message: skin.recipes.message,
+      identity: skin.recipes.identity,
+      panel: skin.recipes.panel,
+      backdrop: skin.recipes.backdrop,
+    },
+    background: skin.background ? {
+      type: skin.background.type,
+      fit: skin.background.fit ?? 'cover',
+      position: skin.background.position ?? 'center',
+      blur: skin.background.blur ?? 0,
+      dim: skin.background.dim ?? 30,
+      saturation: skin.background.saturation ?? 100,
+    } : null,
+    assets: {
+      ...(skin.assets?.background ? { background: skin.assets.background } : {}),
+      ...(skin.assets?.assistantAvatar ? { assistantAvatar: skin.assets.assistantAvatar } : {}),
+      ...(skin.assets?.userAvatar ? { userAvatar: skin.assets.userAvatar } : {}),
+    },
+  }
 }

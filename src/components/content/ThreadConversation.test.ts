@@ -40,6 +40,8 @@ function mountConversation(input: {
     isAtBottom: boolean
     scrollRatio?: number
   } | null
+  shareSelectionActive?: boolean
+  initialShareSelectedMessageIds?: string[]
 } = {}) {
   return mount(ThreadConversation, {
     props: {
@@ -51,6 +53,8 @@ function mountConversation(input: {
       activeThreadId: 'thread-1',
       threadTitle: 'Loading state test',
       scrollState: input.scrollState ?? null,
+      shareSelectionActive: input.shareSelectionActive ?? false,
+      initialShareSelectedMessageIds: input.initialShareSelectedMessageIds ?? [],
     },
   })
 }
@@ -62,6 +66,29 @@ function waitForAnimationFrame(): Promise<void> {
 }
 
 describe('ThreadConversation', () => {
+  it('selects messages in the original conversation and emits them for the configuration step', async () => {
+    const wrapper = mountConversation({
+      shareSelectionActive: true,
+      messages: [
+        message(1, { role: 'user', text: 'First question' }),
+        message(2, { role: 'assistant', text: 'First answer' }),
+        message(3, { role: 'system', text: 'Internal marker' }),
+      ],
+    })
+
+    const checkboxes = wrapper.findAll('.conversation-share-checkbox')
+    expect(checkboxes).toHaveLength(2)
+    expect(wrapper.get('.conversation-share-selection-next').attributes('disabled')).toBeDefined()
+
+    await checkboxes[0]?.trigger('click')
+    expect(checkboxes[0]?.attributes('aria-checked')).toBe('true')
+    expect(wrapper.get('.conversation-share-selection-count').text()).toContain('1 selected')
+    expect(wrapper.get('.conversation-share-selection-next').attributes('disabled')).toBeUndefined()
+
+    await wrapper.get('.conversation-share-selection-next').trigger('click')
+    expect(wrapper.emitted('confirmShareSelection')).toEqual([[['message-1']]])
+  })
+
   it('renders one abstract identity avatar per consecutive speaker group for avatar skins', async () => {
     const theme = useTheme()
     theme.setSkin('qq-2007')
