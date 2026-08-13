@@ -20,6 +20,10 @@ const messages: UiConversationShareMessage[] = [{
   imageCount: 1, images: ['/codex-api/local-image?id=1'], tool: null,
 }]
 
+function inlinePng(bytes: number): string {
+  return `data:image/png;base64,${'A'.repeat(Math.ceil(bytes / 3) * 4)}`
+}
+
 describe('conversation share assets', () => {
   it('freezes theme and message images as portable data URLs', async () => {
     const fetcher = vi.fn(async (input: string | URL | Request) => new Response(
@@ -40,5 +44,21 @@ describe('conversation share assets', () => {
     expect(result.theme.assets.background).toBeUndefined()
     expect(result.messages[0]?.images).toEqual([])
     expect(result.omittedImageCount).toBe(1)
+  })
+
+  it('keeps several message images even when their combined size exceeds the old shared budget', async () => {
+    const multipleImages = Array.from({ length: 5 }, (_, index) => inlinePng(620_000 - index))
+    const result = await materializeConversationShareAssets([{
+      ...messages[0]!,
+      imageCount: multipleImages.length,
+      images: multipleImages,
+    }], {
+      ...theme,
+      assets: { background: inlinePng(300_000) },
+    })
+
+    expect(result.theme.assets.background).toBeTruthy()
+    expect(result.messages[0]?.images).toHaveLength(5)
+    expect(result.omittedImageCount).toBe(0)
   })
 })

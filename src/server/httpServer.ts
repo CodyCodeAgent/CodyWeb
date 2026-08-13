@@ -72,7 +72,7 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
     app.use(authMiddleware)
   }
 
-  const conversationShareJson = express.json({ limit: '4mb' })
+  const conversationShareJson = express.json({ limit: '8mb' })
   app.post('/codex-api/conversation-shares', conversationShareJson, (req, res) => {
     handleCreateConversationShare(req, res, options.authDatabasePath)
   })

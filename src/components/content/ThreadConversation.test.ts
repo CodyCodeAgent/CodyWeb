@@ -161,6 +161,8 @@ describe('ThreadConversation', () => {
       expect(cards[0].text()).toContain('2 updates')
       expect(cards[0].element.hasAttribute('open')).toBe(false)
       expect(cards[0].findAll('.file-change-group-update')).toHaveLength(2)
+      expect(cards[0].find('.file-change-group-details').attributes('tabindex')).toBe('0')
+      expect(cards[0].find('.file-change-group-output pre').attributes('tabindex')).toBe('0')
       expect(wrapper.findAll('[data-testid="conversation-message"]')).toHaveLength(3)
 
       const groupRow = wrapper.get('[data-message-id="change-one"] .message-row')

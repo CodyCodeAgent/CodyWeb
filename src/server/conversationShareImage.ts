@@ -158,7 +158,7 @@ export function renderConversationShareImage(share: ConversationShareRecord): st
     const omittedImages = Math.max(0, message.imageCount - (message.images?.length ?? 0))
     if (omittedImages > 0) chunks.push(`${String(omittedImages)} ${copy.imagesOmitted}`)
     const lines = wrapText(chunks.filter(Boolean).join('\n'), 35)
-    const imageSources = (message.images ?? []).slice(0, 4)
+    const imageSources = message.images ?? []
     const imageHeight = imageSources.length > 0 ? imageSources.length * 224 + 8 : 0
     const availableLines = Math.max(0, Math.floor((MAX_HEIGHT - y - imageHeight - 260) / BODY_LINE_HEIGHT))
     if (availableLines <= 0) {

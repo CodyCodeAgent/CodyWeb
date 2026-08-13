@@ -14,7 +14,7 @@ const MAX_THREAD_ID_LENGTH = 240
 const MAX_PROJECT_NAME_LENGTH = 160
 const MAX_MESSAGES = 240
 const MAX_MESSAGE_TEXT_LENGTH = 240_000
-const MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024
+const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{40,80}$/u
 const INLINE_IMAGE_PATTERN = /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+={0,2}$/iu
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/iu

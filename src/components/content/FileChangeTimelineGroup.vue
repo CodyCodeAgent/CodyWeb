@@ -30,7 +30,12 @@
             <strong>{{ fileChangeCountLabel(fileChangeMessageCount(message)) }}</strong>
           </header>
 
-          <ul v-if="fileChangeMessageDetails(message).length > 0">
+          <ul
+            v-if="fileChangeMessageDetails(message).length > 0"
+            class="file-change-group-details"
+            tabindex="0"
+            aria-label="Changed file paths"
+          >
             <li
               v-for="(detail, detailIndex) in fileChangeMessageDetails(message)"
               :key="`${message.id}:${detail}:${String(detailIndex)}`"
@@ -50,7 +55,7 @@
                 {{ toolOutputToggleLabel(isOutputExpanded(message.id)) }}
               </button>
             </div>
-            <pre><code>{{ renderedOutput(message) }}</code></pre>
+            <pre tabindex="0" aria-label="File change diff"><code>{{ renderedOutput(message) }}</code></pre>
           </section>
         </li>
       </ol>
@@ -111,6 +116,7 @@ function renderedOutput(message: UiMessage): string {
 <style scoped>
 .file-change-group-shell {
   position: relative;
+  min-width: 0;
   width: min(100%, 47.5rem);
 }
 
@@ -216,11 +222,13 @@ function renderedOutput(message: UiMessage): string {
 }
 
 .file-change-group-body {
+  min-width: 0;
   border-top: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
   padding: 0.25rem 0.75rem 0.75rem 2.6rem;
 }
 
 .file-change-group-updates {
+  min-width: 0;
   display: grid;
   gap: 0.625rem;
   margin: 0;
@@ -246,22 +254,32 @@ function renderedOutput(message: UiMessage): string {
 
 .file-change-group-update header strong { color: var(--color-text); font-weight: 650; }
 
-.file-change-group-update ul {
+.file-change-group-details {
   display: grid;
   gap: 0.2rem;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
   margin: 0.45rem 0 0;
   padding: 0;
   list-style: none;
+  scrollbar-width: thin;
 }
 
-.file-change-group-update > ul > li {
-  overflow: hidden;
+.file-change-group-details > li {
+  width: max-content;
+  min-width: 100%;
   color: var(--color-text-muted);
   font-family: var(--font-mono);
   font-size: 0.68rem;
   line-height: 1.2rem;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.file-change-group-details:focus-visible,
+.file-change-group-output pre:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
 .file-change-group-output { margin-top: 0.5rem; }
@@ -281,8 +299,11 @@ function renderedOutput(message: UiMessage): string {
 .file-change-group-output button:hover { background: var(--color-elevated); color: var(--color-text); }
 .file-change-group-output button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .file-change-group-output pre {
+  width: 100%;
+  max-width: 100%;
   max-height: 18rem;
   overflow: auto;
+  overscroll-behavior: contain;
   margin: 0.35rem 0 0;
   padding: 0.55rem;
   border: 1px solid var(--color-border);
@@ -290,8 +311,14 @@ function renderedOutput(message: UiMessage): string {
   background: var(--color-background);
   color: var(--color-text);
   font: 0.68rem/1.45 var(--font-mono);
+  scrollbar-width: thin;
 }
-.file-change-group-output code { white-space: pre; }
+.file-change-group-output code {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  white-space: pre;
+}
 
 @media (max-width: 700px) {
   .file-change-group-summary { min-height: 3rem; padding-inline: 0.625rem; }
