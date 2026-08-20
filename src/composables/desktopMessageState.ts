@@ -68,6 +68,12 @@ function areMessageToolsEqual(first: UiMessage['tool'], second: UiMessage['tool'
   return areStringArraysEqual(first.details, second.details)
 }
 
+function areMessageOutboxStatesEqual(first: UiMessage['outbox'], second: UiMessage['outbox']): boolean {
+  if (!first && !second) return true
+  if (!first || !second) return false
+  return first.status === second.status && first.lastError === second.lastError
+}
+
 function areMessageFieldsEqual(first: UiMessage, second: UiMessage): boolean {
   return (
     first.id === second.id &&
@@ -76,6 +82,7 @@ function areMessageFieldsEqual(first: UiMessage, second: UiMessage): boolean {
     first.text === second.text &&
     areStringArraysEqual(first.images, second.images) &&
     areMessageSkillsEqual(first.skills, second.skills) &&
+    areMessageOutboxStatesEqual(first.outbox, second.outbox) &&
     areMessageToolsEqual(first.tool, second.tool) &&
     first.messageType === second.messageType &&
     first.rawPayload === second.rawPayload &&
@@ -96,12 +103,15 @@ function isDuplicateAdjacentUserMessage(previous: UiMessage | undefined, next: U
   return isMatchingUserMessage(previous, next)
 }
 
-function isOptimisticUserMessage(message: UiMessage): boolean {
-  return message.role === 'user' && message.messageType === 'userMessage.optimistic'
+function isLocalPendingUserMessage(message: UiMessage): boolean {
+  return message.role === 'user' && (
+    message.messageType === 'userMessage.optimistic' ||
+    message.messageType?.startsWith('userMessage.outbox.') === true
+  )
 }
 
 function isPersistedUserMessage(message: UiMessage): boolean {
-  return message.role === 'user' && !isOptimisticUserMessage(message)
+  return message.role === 'user' && !isLocalPendingUserMessage(message)
 }
 
 function isMatchingUserMessage(first: UiMessage, second: UiMessage): boolean {
@@ -164,7 +174,7 @@ export function removeDuplicateAdjacentUserMessages(messages: UiMessage[]): UiMe
     const previous = next.at(-1)
     if (isDuplicateAdjacentUserMessage(previous, message)) {
       changed = true
-      if (previous && isOptimisticUserMessage(previous) && !isOptimisticUserMessage(message)) {
+      if (previous && isLocalPendingUserMessage(previous) && !isLocalPendingUserMessage(message)) {
         next.splice(next.length - 1, 1, message)
       }
       continue
@@ -220,7 +230,7 @@ function replaceOptimisticUserMessages(
   const consumedIncomingIds = new Set<string>()
   let changed = false
   const messages = previous.map((previousMessage) => {
-    if (!isOptimisticUserMessage(previousMessage)) return previousMessage
+    if (!isLocalPendingUserMessage(previousMessage)) return previousMessage
 
     const replacement = incoming.find((incomingMessage) => {
       if (consumedIncomingIds.has(incomingMessage.id)) return false
@@ -401,7 +411,7 @@ function removeSupersededOptimisticUserMessages(messages: UiMessage[]): UiMessag
       continue
     }
 
-    if (!isOptimisticUserMessage(message)) {
+    if (!isLocalPendingUserMessage(message)) {
       next.push(message)
       continue
     }

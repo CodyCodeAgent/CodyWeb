@@ -2,12 +2,37 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DESKTOP_SETTING_KEYS, DESKTOP_STORAGE_KEYS } from './desktopSettingsKeys'
 import { buildRollbackAuditMessage, useDesktopState } from './useDesktopState'
 import { buildThreadActivityEntries } from './useThreadActivity'
-import type { UiMessage, UiProjectGroup, UiRateLimitSnapshot, UiToolingRollbackFileResult } from '../types/codex'
+import { resetLocalMessageOutboxForTests } from './localMessageOutbox'
+import type { UiMessage, UiProjectGroup, UiRateLimitSnapshot, UiThreadMessagePage, UiToolingRollbackFileResult } from '../types/codex'
 import type { RpcNotification } from '../api/codexRealtimeClient'
 
 const codexApiMock = vi.hoisted(() => {
   let notificationListener: ((value: RpcNotification) => void) | null = null
   const getThreadGroups = vi.fn(async (): Promise<UiProjectGroup[]> => [])
+  const getThreadMessages = vi.fn(async (_threadId?: string): Promise<UiMessage[]> => [])
+  const getThreadMessagesPage = vi.fn(async (
+    threadId?: string,
+    options: { limit?: number; offset?: number } = {},
+  ): Promise<UiThreadMessagePage> => {
+    const messages = await getThreadMessages(threadId)
+    const limit = options.limit ?? 10
+    const offset = options.offset ?? 0
+    return {
+      threadId: threadId ?? '',
+      messages,
+      total: messages.length,
+      limit,
+      offset,
+      nextOffset: offset + messages.length,
+      hasMoreBefore: false,
+      cache: {
+        status: 'ready',
+        hydratedAtIso: '2026-07-07T00:00:00.000Z',
+        refreshedAtIso: '2026-07-07T00:00:00.000Z',
+        checkedAtIso: '2026-07-07T00:00:00.000Z',
+      },
+    }
+  })
 
   return {
     getNotificationListener: () => notificationListener,
@@ -41,7 +66,8 @@ const codexApiMock = vi.hoisted(() => {
     saveCatalogProjectOrder: vi.fn(),
     setProjectHidden: vi.fn(),
     setThreadHidden: vi.fn(),
-    getThreadMessages: vi.fn(async (_threadId?: string): Promise<UiMessage[]> => []),
+    getThreadMessages,
+    getThreadMessagesPage,
     interruptThreadTurn: vi.fn(),
     normalizeRateLimitSnapshot: vi.fn(() => null),
     renameThread: vi.fn(),
@@ -90,6 +116,7 @@ vi.mock('../api/codexThreadClient', () => ({
   compactThread: codexApiMock.compactThread,
   forkThread: codexApiMock.forkThread,
   getThreadMessages: codexApiMock.getThreadMessages,
+  getThreadMessagesPage: codexApiMock.getThreadMessagesPage,
   interruptThreadTurn: codexApiMock.interruptThreadTurn,
   renameThread: codexApiMock.renameThread,
   resumeThread: codexApiMock.resumeThread,
@@ -164,6 +191,30 @@ function buildRollbackResult(overrides: Partial<UiToolingRollbackFileResult> = {
   }
 }
 
+function buildMessagePage(
+  threadId: string,
+  messages: UiMessage[],
+  overrides: Partial<Omit<UiThreadMessagePage, 'threadId' | 'messages' | 'cache'>> = {},
+): UiThreadMessagePage {
+  const offset = overrides.offset ?? 0
+  const limit = overrides.limit ?? 10
+  return {
+    threadId,
+    messages,
+    total: overrides.total ?? messages.length,
+    limit,
+    offset,
+    nextOffset: overrides.nextOffset ?? offset + messages.length,
+    hasMoreBefore: overrides.hasMoreBefore ?? false,
+    cache: {
+      status: 'ready',
+      hydratedAtIso: '2026-07-07T00:00:00.000Z',
+      refreshedAtIso: '2026-07-07T00:00:00.000Z',
+      checkedAtIso: '2026-07-07T00:00:00.000Z',
+    },
+  }
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason?: unknown) => void
@@ -182,6 +233,7 @@ async function flushPromises(): Promise<void> {
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  resetLocalMessageOutboxForTests()
   vi.clearAllMocks()
 })
 
@@ -283,6 +335,7 @@ describe('useDesktopState realtime messages', () => {
         reasoningEffort: 'high',
         collaborationModeName: 'plan',
         permissionMode: 'yolo',
+        submitMode: 'guide',
       },
       updatedAtIso: '2026-07-07T00:00:00.000Z',
     })
@@ -296,6 +349,7 @@ describe('useDesktopState realtime messages', () => {
     expect(state.selectedReasoningEffort.value).toBe('high')
     expect(state.selectedCollaborationModeName.value).toBe('plan')
     expect(state.selectedPermissionMode.value).toBe('yolo')
+    expect(state.selectedSubmitMode.value).toBe('guide')
 
     state.setSelectedReasoningEffort('xhigh')
 
@@ -306,6 +360,7 @@ describe('useDesktopState realtime messages', () => {
         reasoningEffort: 'xhigh',
         collaborationModeName: 'plan',
         permissionMode: 'yolo',
+        submitMode: 'guide',
       },
     )
   })
@@ -751,6 +806,52 @@ describe('useDesktopState realtime messages', () => {
     expect(state.messages.value.map((message) => message.text)).toEqual(['new response'])
   })
 
+  it('prepends earlier cached pages without reloading the whole thread', async () => {
+    installBrowserGlobals('thread-a')
+    const latestMessages = Array.from({ length: 10 }, (_, index) => ({
+      id: `latest-${String(index + 1)}`,
+      role: 'assistant' as const,
+      text: `Latest ${String(index + 1)}`,
+    }))
+    const earlierMessages = Array.from({ length: 10 }, (_, index) => ({
+      id: `earlier-${String(index + 1)}`,
+      role: 'assistant' as const,
+      text: `Earlier ${String(index + 1)}`,
+    }))
+    codexApiMock.getThreadMessagesPage
+      .mockResolvedValueOnce(buildMessagePage('thread-a', latestMessages, {
+        total: 25,
+        offset: 0,
+        nextOffset: 10,
+        hasMoreBefore: true,
+      }))
+      .mockResolvedValueOnce(buildMessagePage('thread-a', earlierMessages, {
+        total: 25,
+        offset: 10,
+        nextOffset: 20,
+        hasMoreBefore: true,
+      }))
+
+    const state = useDesktopState()
+
+    await state.selectThread('thread-a')
+    expect(state.messages.value.map((message) => message.id)).toEqual(latestMessages.map((message) => message.id))
+    expect(state.selectedThreadHasMoreMessagesBefore.value).toBe(true)
+    expect(state.selectedThreadEarlierMessageCount.value).toBe(15)
+
+    await state.loadEarlierMessages('thread-a')
+
+    expect(codexApiMock.getThreadMessagesPage).toHaveBeenNthCalledWith(2, 'thread-a', {
+      limit: 10,
+      offset: 10,
+    })
+    expect(state.messages.value.map((message) => message.id)).toEqual([
+      ...earlierMessages.map((message) => message.id),
+      ...latestMessages.map((message) => message.id),
+    ])
+    expect(state.selectedThreadEarlierMessageCount.value).toBe(5)
+  })
+
   it('clears visible message loading when a silent refresh supersedes it', async () => {
     vi.useFakeTimers()
     installBrowserGlobals('thread-a')
@@ -881,7 +982,8 @@ describe('useDesktopState realtime messages', () => {
       expect.objectContaining({
         role: 'user',
         text: '我觉得可以，干吧',
-        messageType: 'userMessage.optimistic',
+        messageType: 'userMessage.outbox.queued',
+        outbox: expect.objectContaining({ status: 'queued' }),
       }),
     ])
 
@@ -898,7 +1000,7 @@ describe('useDesktopState realtime messages', () => {
     ])
   })
 
-  it('removes optimistic outgoing messages when selected thread turn start fails', async () => {
+  it('keeps queued outgoing messages when selected thread turn start fails', async () => {
     installBrowserGlobals('thread-a')
     codexApiMock.startThreadTurn.mockRejectedValue(new Error('turn start failed'))
 
@@ -927,12 +1029,91 @@ describe('useDesktopState realtime messages', () => {
       text: '这条应该失败后撤回',
       images: [],
       skills: [],
-    })).rejects.toThrow('turn start failed')
+    })).resolves.toBeUndefined()
 
-    expect(state.messages.value).toEqual([])
+    expect(state.messages.value).toEqual([
+      expect.objectContaining({
+        role: 'user',
+        text: '这条应该失败后撤回',
+        messageType: 'userMessage.outbox.failed',
+        outbox: expect.objectContaining({
+          status: 'failed',
+          lastError: 'turn start failed',
+        }),
+      }),
+    ])
     expect(state.error.value).toBe('turn start failed')
     expect(state.isSendingMessage.value).toBe(false)
     expect(state.projectGroups.value[0]?.threads[0]?.inProgress).not.toBe(true)
+  })
+
+  it('queues selected thread messages while a turn is already in progress', async () => {
+    installBrowserGlobals('thread-a')
+    const state = useDesktopState()
+    state.startRealtimeSync()
+    codexApiMock.getNotificationListener()?.({
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-a',
+        turn: {
+          id: 'turn-active',
+          startedAt: '2026-07-07T00:00:00.000Z',
+        },
+      },
+      atIso: '2026-07-07T00:00:00.000Z',
+    })
+
+    await state.sendMessageToSelectedThread({
+      text: '下一条排队处理',
+      images: [],
+      skills: [],
+    })
+
+    expect(codexApiMock.steerThreadTurn).not.toHaveBeenCalled()
+    expect(codexApiMock.startThreadTurn).not.toHaveBeenCalled()
+    expect(state.messages.value).toEqual([
+      expect.objectContaining({
+        text: '下一条排队处理',
+        messageType: 'userMessage.outbox.queued',
+        outbox: expect.objectContaining({ status: 'queued' }),
+      }),
+    ])
+    state.stopRealtimeSync()
+  })
+
+  it('guides the active turn when submit mode is guide', async () => {
+    installBrowserGlobals('thread-a')
+    const state = useDesktopState()
+    state.setSelectedSubmitMode('guide')
+    state.startRealtimeSync()
+    codexApiMock.getNotificationListener()?.({
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-a',
+        turn: {
+          id: 'turn-active',
+          startedAt: '2026-07-07T00:00:00.000Z',
+        },
+      },
+      atIso: '2026-07-07T00:00:00.000Z',
+    })
+
+    await state.sendMessageToSelectedThread({
+      text: '继续按这个方向做',
+      images: [],
+      skills: [],
+    })
+
+    expect(codexApiMock.steerThreadTurn).toHaveBeenCalledWith(
+      'thread-a',
+      'turn-active',
+      '继续按这个方向做',
+      [],
+      [],
+    )
+    expect(codexApiMock.startThreadTurn).not.toHaveBeenCalled()
+    expect(state.messages.value.some((message) => message.messageType?.startsWith('userMessage.outbox.'))).toBe(false)
+    state.stopRealtimeSync()
   })
 
   it('replaces a turn-linked optimistic skill message even when the item event arrives before turn/start returns', async () => {

@@ -22,6 +22,7 @@ function mountComposer(overrides = {}) {
       ],
       selectedCollaborationMode: 'default',
       selectedPermissionMode: 'current',
+      selectedSubmitMode: 'queue',
       cwd: '/repo',
       ...overrides,
     },
@@ -51,16 +52,17 @@ describe('ThreadComposer', () => {
 
     await wrapper.get('[data-testid="thread-composer"]').trigger('submit')
 
-    expect(wrapper.emitted('submit')).toEqual([
-      [
-        {
-          text: 'hello from composer',
-          images: [],
-          skills: [],
-          contexts: [],
-        },
-      ],
-    ])
+    const emittedSubmit = wrapper.emitted('submit')
+    expect(emittedSubmit?.[0]?.[0]).toEqual({
+      text: 'hello from composer',
+      images: [],
+      skills: [],
+      contexts: [],
+    })
+    expect((input.element as HTMLTextAreaElement).value).toBe('  hello from composer  ')
+    const ack = emittedSubmit?.[0]?.[1] as { onAccepted: () => void }
+    ack.onAccepted()
+    await wrapper.vm.$nextTick()
     expect((input.element as HTMLTextAreaElement).value).toBe('')
     expect((submit.element as HTMLButtonElement).disabled).toBe(true)
   })
@@ -72,12 +74,14 @@ describe('ThreadComposer', () => {
     expect((wrapper.get('[data-testid="thread-composer-submit"]').element as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('emits permission mode changes from the composer controls', async () => {
+  it('emits submit and permission mode changes from the composer controls', async () => {
     const wrapper = mountComposer()
     const dropdowns = wrapper.findAllComponents({ name: 'ComposerDropdown' })
 
-    await dropdowns[3]?.vm.$emit('update:modelValue', 'yolo')
+    await dropdowns[1]?.vm.$emit('update:modelValue', 'guide')
+    await dropdowns[4]?.vm.$emit('update:modelValue', 'yolo')
 
+    expect(wrapper.emitted('update:selected-submit-mode')).toEqual([['guide']])
     expect(wrapper.emitted('update:selected-permission-mode')).toEqual([['yolo']])
   })
 

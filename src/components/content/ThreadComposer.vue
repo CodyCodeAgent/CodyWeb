@@ -140,7 +140,7 @@
           @click="isMobileOptionsOpen = true"
         >
           <span>{{ t('composer.runSettings') }}</span>
-          <small>{{ selectedModel }} · {{ selectedPermissionMode }}</small>
+          <small>{{ selectedModel }} · {{ submitModeLabel }} · {{ selectedPermissionMode }}</small>
         </button>
 
         <ComposerDropdown
@@ -151,6 +151,16 @@
           open-direction="up"
           :disabled="disabled || !activeThreadId || collaborationModes.length === 0 || isTurnInProgress"
           @update:model-value="onCollaborationModeSelect"
+        />
+
+        <ComposerDropdown
+          class="thread-composer-control"
+          :model-value="selectedSubmitMode"
+          :options="submitModeOptions"
+          :placeholder="t('composer.submitMode')"
+          open-direction="up"
+          :disabled="disabled || !activeThreadId"
+          @update:model-value="onSubmitModeSelect"
         />
 
         <ComposerDropdown
@@ -238,6 +248,13 @@
             <small>{{ t('composer.collaborationHint') }}</small>
           </label>
           <label>
+            <span>{{ t('composer.submitMode') }}</span>
+            <select :value="selectedSubmitMode" @change="onMobileSubmitModeChange">
+              <option v-for="option in submitModeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+            <small>{{ t('composer.submitModeHint') }}</small>
+          </label>
+          <label>
             <span>{{ t('composer.model') }}</span>
             <select :value="selectedModel" :disabled="isTurnInProgress" @change="onMobileModelChange">
               <option v-for="option in modelOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
@@ -278,6 +295,8 @@ import type {
   UiComposerPermissionMode,
   UiComposerContextAttachment,
   UiComposerSkill,
+  UiComposerSubmitAck,
+  UiComposerSubmitMode,
   UiComposerSubmitPayload,
 } from '../../types/codex'
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
@@ -296,6 +315,7 @@ const props = defineProps<{
   collaborationModes: UiCollaborationModeOption[]
   selectedCollaborationMode: string
   selectedPermissionMode: UiComposerPermissionMode
+  selectedSubmitMode: UiComposerSubmitMode
   cwd: string
   isTurnInProgress?: boolean
   isInterruptingTurn?: boolean
@@ -306,12 +326,13 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  submit: [payload: UiComposerSubmitPayload]
+  submit: [payload: UiComposerSubmitPayload, ack: UiComposerSubmitAck]
   interrupt: []
   'update:selected-model': [modelId: string]
   'update:selected-reasoning-effort': [effort: ReasoningEffort | '']
   'update:selected-collaboration-mode': [name: string]
   'update:selected-permission-mode': [mode: UiComposerPermissionMode]
+  'update:selected-submit-mode': [mode: UiComposerSubmitMode]
 }>()
 const { t } = useLocale()
 
@@ -368,6 +389,13 @@ const collaborationModeOptions = computed(() =>
   props.collaborationModes.map((mode) => ({ value: mode.name, label: mode.label })),
 )
 const permissionModeOptions = COMPOSER_PERMISSION_MODE_OPTIONS
+const submitModeOptions = computed<Array<{ value: UiComposerSubmitMode; label: string }>>(() => [
+  { value: 'queue', label: t('composer.submitMode.queue') },
+  { value: 'guide', label: t('composer.submitMode.guide') },
+])
+const submitModeLabel = computed(() =>
+  props.selectedSubmitMode === 'guide' ? t('composer.submitMode.guide') : t('composer.submitMode.queue'),
+)
 const canSubmit = computed(() => {
   if (props.disabled) return false
   if (!props.activeThreadId) return false
@@ -383,12 +411,18 @@ const canSubmit = computed(() => {
 const placeholderText = computed(() =>
   props.activeThreadId
     ? props.isTurnInProgress
-      ? t('composer.placeholder.guide')
+      ? props.selectedSubmitMode === 'guide'
+        ? t('composer.placeholder.guide')
+        : t('composer.placeholder.queue')
       : t('composer.placeholder.message')
     : t('composer.placeholder.selectThread'),
 )
 const submitButtonLabel = computed(() =>
-  props.isTurnInProgress ? t('composer.submit.guidance') : t('composer.submit.message'),
+  props.isTurnInProgress
+    ? props.selectedSubmitMode === 'guide'
+      ? t('composer.submit.guidance')
+      : t('composer.submit.queue')
+    : t('composer.submit.message'),
 )
 const canAttachImages = computed(() => !props.disabled && Boolean(props.activeThreadId))
 const isDraggingImages = computed(() => canAttachImages.value && dragDepth.value > 0)
@@ -421,17 +455,27 @@ watch(() => props.contextInsertion?.id, () => {
 function onSubmit(): void {
   const text = materializeComposerContextText(draft.value, selectedContexts.value)
   if (!canSubmit.value) return
-  emit('submit', {
+  const submittedDraft = draft.value
+  const payload: UiComposerSubmitPayload = {
     text,
-    images: attachedImages.value,
-    skills: selectedSkills.value,
-    contexts: selectedContexts.value,
+    images: attachedImages.value.map((image) => ({ ...image })),
+    skills: selectedSkills.value.map((skill) => ({ ...skill })),
+    contexts: selectedContexts.value.map((context) => ({ ...context, metadata: { ...context.metadata } })),
+  }
+  let accepted = false
+  emit('submit', payload, {
+    onAccepted: () => {
+      if (accepted) return
+      accepted = true
+      if (draft.value === submittedDraft) {
+        draft.value = ''
+      }
+      resetImages()
+      resetSkills()
+      resetContexts()
+      void nextTick(resizeDraftInput)
+    },
   })
-  draft.value = ''
-  resetImages()
-  resetSkills()
-  resetContexts()
-  void nextTick(resizeDraftInput)
 }
 
 function getDraftCursor(): number {
@@ -511,11 +555,16 @@ function onPermissionModeSelect(value: string): void {
   emit('update:selected-permission-mode', value === 'yolo' ? 'yolo' : 'current')
 }
 
+function onSubmitModeSelect(value: string): void {
+  emit('update:selected-submit-mode', value === 'guide' ? 'guide' : 'queue')
+}
+
 function eventValue(event: Event): string {
   return (event.target as HTMLSelectElement).value
 }
 
 function onMobileCollaborationChange(event: Event): void { onCollaborationModeSelect(eventValue(event)) }
+function onMobileSubmitModeChange(event: Event): void { onSubmitModeSelect(eventValue(event)) }
 function onMobileModelChange(event: Event): void { onModelSelect(eventValue(event)) }
 function onMobileReasoningChange(event: Event): void { onReasoningEffortSelect(eventValue(event)) }
 function onMobilePermissionChange(event: Event): void { onPermissionModeSelect(eventValue(event)) }
