@@ -978,18 +978,17 @@ describe('useDesktopState realtime messages', () => {
       skills: [],
     })
 
-    expect(state.messages.value).toEqual([
+    expect(state.selectedQueuedMessages.value).toEqual([
       expect.objectContaining({
-        role: 'user',
         text: '我觉得可以，干吧',
-        messageType: 'userMessage.outbox.queued',
-        outbox: expect.objectContaining({ status: 'queued' }),
+        status: 'queued',
       }),
     ])
 
     turnStart.resolve('turn-1')
     await sendPromise
 
+    expect(state.selectedQueuedMessages.value.some((message) => message.text === '我觉得可以，干吧')).toBe(false)
     expect(state.messages.value).toEqual([
       expect.objectContaining({
         id: 'server-user',
@@ -1031,15 +1030,12 @@ describe('useDesktopState realtime messages', () => {
       skills: [],
     })).resolves.toBeUndefined()
 
-    expect(state.messages.value).toEqual([
+    expect(state.messages.value).toEqual([])
+    expect(state.selectedQueuedMessages.value).toEqual([
       expect.objectContaining({
-        role: 'user',
         text: '这条应该失败后撤回',
-        messageType: 'userMessage.outbox.failed',
-        outbox: expect.objectContaining({
-          status: 'failed',
-          lastError: 'turn start failed',
-        }),
+        status: 'failed',
+        lastError: 'turn start failed',
       }),
     ])
     expect(state.error.value).toBe('turn start failed')
@@ -1071,13 +1067,50 @@ describe('useDesktopState realtime messages', () => {
 
     expect(codexApiMock.steerThreadTurn).not.toHaveBeenCalled()
     expect(codexApiMock.startThreadTurn).not.toHaveBeenCalled()
-    expect(state.messages.value).toEqual([
+    expect(state.messages.value).toEqual([])
+    expect(state.selectedQueuedMessages.value).toEqual([
       expect.objectContaining({
         text: '下一条排队处理',
-        messageType: 'userMessage.outbox.queued',
-        outbox: expect.objectContaining({ status: 'queued' }),
+        status: 'queued',
       }),
     ])
+    state.stopRealtimeSync()
+  })
+
+  it('sends a queued selected-thread message as guidance when requested during an active turn', async () => {
+    installBrowserGlobals('thread-a')
+    const state = useDesktopState()
+    state.startRealtimeSync()
+    codexApiMock.getNotificationListener()?.({
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-a',
+        turn: {
+          id: 'turn-active',
+          startedAt: '2026-07-07T00:00:00.000Z',
+        },
+      },
+      atIso: '2026-07-07T00:00:00.000Z',
+    })
+
+    await state.sendMessageToSelectedThread({
+      text: '马上插进去',
+      images: [],
+      skills: [],
+    })
+    const queuedMessage = state.selectedQueuedMessages.value[0]
+    expect(queuedMessage).toMatchObject({ text: '马上插进去', status: 'queued' })
+
+    await state.sendQueuedMessageNow('thread-a', queuedMessage.id)
+
+    expect(codexApiMock.steerThreadTurn).toHaveBeenCalledWith(
+      'thread-a',
+      'turn-active',
+      '马上插进去',
+      [],
+      [],
+    )
+    expect(state.selectedQueuedMessages.value).toEqual([])
     state.stopRealtimeSync()
   })
 

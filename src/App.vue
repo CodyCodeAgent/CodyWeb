@@ -294,7 +294,7 @@
             promptInsertion, availableModelIds, selectedModelId, selectedReasoningEffort, collaborationModeOptions,
             selectedCollaborationModeName, selectedPermissionMode, selectedSubmitMode, homeComposerBusyLabel, filteredMessages,
             isLoadingMessages, selectedThread, selectedMessageLoadError, selectedThreadScrollState, liveOverlay,
-            selectedThreadServerRequests, threadComposerBusyLabel,
+            selectedThreadServerRequests, selectedQueuedMessages, threadComposerBusyLabel,
             isSelectedThreadInProgress, isInterruptingTurn, isCodeView, contextInsertion,
             isLoadingEarlierMessages, selectedThreadHasMoreMessagesBefore, selectedThreadEarlierMessageCount,
             conversationShareSelecting: isConversationShareSelecting, conversationShareSelectedMessageIds }"
@@ -305,6 +305,7 @@
           @select-submit-mode="onSelectSubmitMode"
           @update-scroll-state="onUpdateThreadScrollState" @retry-load="onRetryLoadMessages" @interrupt="onInterruptTurn"
           @load-earlier-messages="onLoadEarlierMessages"
+          @send-queued-message-now="onSendQueuedMessageNow" @delete-queued-message="onDeleteQueuedMessage"
           @open-code="openCodeView" @ask-code="onAskCode" @confirm-share-selection="onConfirmConversationShareSelection"
           @cancel-share-selection="cancelConversationShareSelection"
         /></section>
@@ -425,6 +426,7 @@ const {
   selectedLiveOverlay,
   selectedStructuredPlan,
   selectedMessageLoadError,
+  selectedQueuedMessages,
   selectedThreadId,
   isHiddenView,
   rateLimitSnapshot,
@@ -462,6 +464,8 @@ const {
   setHiddenView,
   renameThreadById,
   sendMessageToSelectedThread,
+  sendQueuedMessageNow,
+  deleteQueuedMessage,
   sendMessageToNewThread,
   interruptSelectedThreadTurn,
   setSelectedModelId,
@@ -851,6 +855,14 @@ function onRetryLoadMessages(): void {
 function onLoadEarlierMessages(threadId: string): void {
   if (!threadId) return
   void loadEarlierMessages(threadId)
+}
+
+function onSendQueuedMessageNow(payload: { threadId: string; messageId: string }): void {
+  void sendQueuedMessageNow(payload.threadId, payload.messageId)
+}
+
+function onDeleteQueuedMessage(payload: { threadId: string; messageId: string }): void {
+  void deleteQueuedMessage(payload.threadId, payload.messageId)
 }
 
 function onHideThread(threadId: string): void {

@@ -100,6 +100,15 @@ export type UiMessage = {
   isUnhandled?: boolean
 }
 
+export type UiQueuedMessage = {
+  id: string
+  threadId: string
+  text: string
+  status: 'queued' | 'sending' | 'failed'
+  createdAtIso: string
+  lastError?: string
+}
+
 export type UiThreadMessagePage = {
   threadId: string
   messages: UiMessage[]

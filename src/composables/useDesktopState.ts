@@ -135,6 +135,7 @@ import type {
   UiComposerSubmitPayload,
   ThreadScrollState,
   UiMessage,
+  UiQueuedMessage,
   UiServerRequestReply,
   UiThread,
   UiThreadContextUsage,
@@ -244,10 +245,10 @@ export function useDesktopState() {
     if (!threadId) return []
 
     const persisted = persistedMessagesByThreadId.value[threadId] ?? []
-    const outbox = outboxMessagesForThread(threadId)
     const liveAgent = liveAgentMessagesByThreadId.value[threadId] ?? []
-    return buildDisplayedMessages([...persisted, ...outbox], liveAgent, turnSummaryByThreadId.value[threadId])
+    return buildDisplayedMessages(persisted, liveAgent, turnSummaryByThreadId.value[threadId])
   })
+  const selectedQueuedMessages = computed<UiQueuedMessage[]>(() => queuedMessagesForThread(selectedThreadId.value))
 
   function setSelectedThreadId(nextThreadId: string): void {
     if (selectedThreadId.value === nextThreadId) return
@@ -533,21 +534,16 @@ export function useDesktopState() {
     await deleteLocalMessageOutboxItem(item.id)
   }
 
-  function outboxMessagesForThread(threadId: string): UiMessage[] {
+  function queuedMessagesForThread(threadId: string): UiQueuedMessage[] {
     return (outboxItemsByThreadId.value[threadId] ?? [])
       .filter((item) => item.status === 'queued' || item.status === 'sending' || item.status === 'failed')
       .map((item) => ({
         id: item.id,
-        turnId: item.turnId,
-        role: 'user',
+        threadId: item.threadId,
         text: item.text,
-        images: item.images.map((image) => image.url).filter((url) => url.trim().length > 0),
-        skills: item.skills,
-        outbox: {
-          status: item.status,
-          lastError: item.lastError,
-        },
-        messageType: `userMessage.outbox.${item.status}`,
+        status: item.status,
+        createdAtIso: item.createdAtIso,
+        lastError: item.lastError,
       }))
   }
 
@@ -1361,14 +1357,16 @@ export function useDesktopState() {
     return item
   }
 
-  async function drainOutboxForThread(threadId: string): Promise<void> {
+  async function drainOutboxForThread(threadId: string, options: { itemId?: string } = {}): Promise<void> {
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) return
     if (drainingOutboxThreadIds.has(normalizedThreadId)) return
     if (inProgressById.value[normalizedThreadId] === true) return
 
-    const item = (outboxItemsByThreadId.value[normalizedThreadId] ?? [])
-      .find((row) => row.status === 'queued' || row.status === 'failed')
+    const rows = outboxItemsByThreadId.value[normalizedThreadId] ?? []
+    const item = options.itemId
+      ? rows.find((row) => row.id === options.itemId && (row.status === 'queued' || row.status === 'failed'))
+      : rows.find((row) => row.status === 'queued' || row.status === 'failed')
     if (!item) return
 
     drainingOutboxThreadIds.add(normalizedThreadId)
@@ -1453,6 +1451,36 @@ export function useDesktopState() {
     })
     if (!item) return
     await drainOutboxForThread(turnInput.threadId)
+  }
+
+  async function sendQueuedMessageNow(threadId: string, itemId: string): Promise<void> {
+    const normalizedThreadId = threadId.trim()
+    const normalizedItemId = itemId.trim()
+    if (!normalizedThreadId || !normalizedItemId) return
+
+    const item = (outboxItemsByThreadId.value[normalizedThreadId] ?? []).find((row) => row.id === normalizedItemId)
+    if (!item || item.status === 'sending') return
+
+    if (inProgressById.value[normalizedThreadId] === true) {
+      try {
+        await steerActiveTurn(normalizedThreadId, item.text, item.images, item.skills)
+        await deleteOutboxItem(item)
+      } catch {
+        // steerActiveTurn already surfaces the error in the selected thread state.
+      }
+      return
+    }
+
+    await drainOutboxForThread(normalizedThreadId, { itemId: normalizedItemId })
+  }
+
+  async function deleteQueuedMessage(threadId: string, itemId: string): Promise<void> {
+    const normalizedThreadId = threadId.trim()
+    const normalizedItemId = itemId.trim()
+    if (!normalizedThreadId || !normalizedItemId) return
+    const item = (outboxItemsByThreadId.value[normalizedThreadId] ?? []).find((row) => row.id === normalizedItemId)
+    if (!item || item.status === 'sending') return
+    await deleteOutboxItem(item)
   }
 
   async function steerActiveTurn(
@@ -1833,6 +1861,7 @@ export function useDesktopState() {
     selectedLiveOverlay,
     selectedStructuredPlan,
     selectedMessageLoadError,
+    selectedQueuedMessages,
     selectedThreadId,
     isHiddenView,
     rateLimitSnapshot,
@@ -1870,6 +1899,8 @@ export function useDesktopState() {
     setHiddenView,
     renameThreadById,
     sendMessageToSelectedThread,
+    sendQueuedMessageNow,
+    deleteQueuedMessage,
     sendTextToThreadById,
     sendMessageToNewThread,
     interruptSelectedThreadTurn,

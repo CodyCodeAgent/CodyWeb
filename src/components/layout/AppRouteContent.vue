@@ -64,13 +64,17 @@
       :models="availableModelIds" :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
       :collaboration-modes="collaborationModeOptions" :selected-collaboration-mode="selectedCollaborationModeName"
       :selected-permission-mode="selectedPermissionMode" :selected-submit-mode="selectedSubmitMode"
+      :queued-messages="selectedQueuedMessages"
       :busy-label="threadComposerBusyLabel" :cwd="selectedThread?.cwd ?? ''"
       :is-turn-in-progress="isSelectedThreadInProgress" :is-interrupting-turn="isInterruptingTurn"
       @submit="emitSubmitMessage" @update:selected-model="emit('selectModel', $event)"
       @update:selected-reasoning-effort="emit('selectReasoningEffort', $event)"
       @update:selected-collaboration-mode="emit('selectCollaborationMode', $event)"
       @update:selected-permission-mode="emit('selectPermissionMode', $event)"
-      @update:selected-submit-mode="emit('selectSubmitMode', $event)" @interrupt="emit('interrupt')" />
+      @update:selected-submit-mode="emit('selectSubmitMode', $event)"
+      @send-queued-message-now="emit('sendQueuedMessageNow', $event)"
+      @delete-queued-message="emit('deleteQueuedMessage', $event)"
+      @interrupt="emit('interrupt')" />
   </div>
 </template>
 
@@ -78,7 +82,7 @@
 import { defineAsyncComponent } from 'vue'
 import type { PromptInsertion } from '../../composables/promptLibraryRules'
 import { useLocale } from '../../composables/useLocale'
-import type { ReasoningEffort, ThreadScrollState, UiCollaborationModeOption, UiComposerContextAttachment, UiComposerPermissionMode, UiComposerSubmitAck, UiComposerSubmitMode, UiComposerSubmitPayload, UiLiveOverlay, UiMessage, UiServerRequest, UiServerRequestReply, UiThread } from '../../types/codex'
+import type { ReasoningEffort, ThreadScrollState, UiCollaborationModeOption, UiComposerContextAttachment, UiComposerPermissionMode, UiComposerSubmitAck, UiComposerSubmitMode, UiComposerSubmitPayload, UiLiveOverlay, UiMessage, UiQueuedMessage, UiServerRequest, UiServerRequestReply, UiThread } from '../../types/codex'
 import ComposerDropdown from '../content/ComposerDropdown.vue'
 import ThreadComposer from '../content/ThreadComposer.vue'
 import ThreadConversation from '../content/ThreadConversation.vue'
@@ -100,6 +104,7 @@ defineProps<{
   filteredMessages: UiMessage[]; isLoadingMessages: boolean; selectedThread: UiThread | null; selectedMessageLoadError: string
   isLoadingEarlierMessages: boolean; selectedThreadHasMoreMessagesBefore: boolean; selectedThreadEarlierMessageCount: number
   selectedThreadScrollState: ThreadScrollState | null; liveOverlay: UiLiveOverlay | null; selectedThreadServerRequests: UiServerRequest[]
+  selectedQueuedMessages: UiQueuedMessage[]
   threadComposerBusyLabel: string; isSelectedThreadInProgress: boolean; isInterruptingTurn: boolean
   conversationShareSelecting: boolean
   conversationShareSelectedMessageIds: string[]
@@ -111,6 +116,8 @@ const emit = defineEmits<{
   selectSubmitMode: [UiComposerSubmitMode]
   updateScrollState: [{ threadId: string; state: ThreadScrollState }]; retryLoad: []; interrupt: []
   loadEarlierMessages: [threadId: string]
+  sendQueuedMessageNow: [payload: { threadId: string; messageId: string }]
+  deleteQueuedMessage: [payload: { threadId: string; messageId: string }]
   openCode: [location: { path?: string; line?: number; mode?: 'file' | 'diff' }]
   askCode: [attachment: UiComposerContextAttachment]
   confirmShareSelection: [messageIds: string[]]
