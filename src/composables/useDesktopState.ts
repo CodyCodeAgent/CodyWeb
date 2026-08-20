@@ -184,7 +184,7 @@ export function useDesktopState() {
   const messageLoadErrorByThreadId = ref<Record<string, string>>({})
   const messagePageByThreadId = ref<Record<string, {
     total: number
-    nextOffset: number
+    loadedCount: number
     hasMoreBefore: boolean
   }>>({})
   const isSendingMessage = ref(false)
@@ -215,7 +215,7 @@ export function useDesktopState() {
   const selectedThreadEarlierMessageCount = computed(() => {
     const page = messagePageByThreadId.value[selectedThreadId.value]
     if (!page?.hasMoreBefore) return 0
-    return Math.max(page.total - page.nextOffset, 1)
+    return Math.max(page.total - page.loadedCount, 1)
   })
   const hasLoadedSelectedMessages = computed(
     () => loadedMessagesByThreadId.value[selectedThreadId.value] === true,
@@ -1092,15 +1092,15 @@ export function useDesktopState() {
       })
       setPersistedMessagesForThread(threadId, mergedMessages)
       const previousPage = messagePageByThreadId.value[threadId]
-      const nextOffset = options.silent === true && previousPage
-        ? Math.max(previousPage.nextOffset, page.nextOffset)
-        : page.nextOffset
+      const loadedCount = options.silent === true && previousPage
+        ? Math.max(previousPage.loadedCount, page.messages.length)
+        : page.messages.length
       messagePageByThreadId.value = {
         ...messagePageByThreadId.value,
         [threadId]: {
           total: page.total,
-          nextOffset,
-          hasMoreBefore: nextOffset < page.total,
+          loadedCount,
+          hasMoreBefore: loadedCount < page.total,
         },
       }
       void reconcileOutboxForThread(threadId)
@@ -1147,18 +1147,19 @@ export function useDesktopState() {
     try {
       const page = await getThreadMessagesPage(normalizedThreadId, {
         limit: 10,
-        offset: pageState.nextOffset,
+        offset: pageState.loadedCount,
       })
       const previousMessages = persistedMessagesByThreadId.value[normalizedThreadId] ?? []
       const previousIds = new Set(previousMessages.map((message) => message.id))
       const earlierMessages = page.messages.filter((message) => !previousIds.has(message.id))
       setPersistedMessagesForThread(normalizedThreadId, [...earlierMessages, ...previousMessages])
+      const loadedCount = Math.min(page.total, pageState.loadedCount + earlierMessages.length)
       messagePageByThreadId.value = {
         ...messagePageByThreadId.value,
         [normalizedThreadId]: {
           total: page.total,
-          nextOffset: page.nextOffset,
-          hasMoreBefore: page.hasMoreBefore,
+          loadedCount,
+          hasMoreBefore: loadedCount < page.total,
         },
       }
     } catch (unknownError) {

@@ -852,6 +852,68 @@ describe('useDesktopState realtime messages', () => {
     expect(state.selectedThreadEarlierMessageCount.value).toBe(5)
   })
 
+  it('keeps the earlier-page offset after a silent first-page refresh', async () => {
+    installBrowserGlobals('thread-a')
+    const latestMessages = Array.from({ length: 10 }, (_, index) => ({
+      id: `latest-${String(index + 1)}`,
+      role: 'assistant' as const,
+      text: `Latest ${String(index + 1)}`,
+    }))
+    const firstEarlierMessages = Array.from({ length: 10 }, (_, index) => ({
+      id: `earlier-a-${String(index + 1)}`,
+      role: 'assistant' as const,
+      text: `Earlier A ${String(index + 1)}`,
+    }))
+    const secondEarlierMessages = Array.from({ length: 10 }, (_, index) => ({
+      id: `earlier-b-${String(index + 1)}`,
+      role: 'assistant' as const,
+      text: `Earlier B ${String(index + 1)}`,
+    }))
+    codexApiMock.getThreadMessagesPage
+      .mockResolvedValueOnce(buildMessagePage('thread-a', latestMessages, {
+        total: 35,
+        offset: 0,
+        nextOffset: 10,
+        hasMoreBefore: true,
+      }))
+      .mockResolvedValueOnce(buildMessagePage('thread-a', firstEarlierMessages, {
+        total: 35,
+        offset: 10,
+        nextOffset: 20,
+        hasMoreBefore: true,
+      }))
+      .mockResolvedValueOnce(buildMessagePage('thread-a', latestMessages, {
+        total: 35,
+        offset: 0,
+        nextOffset: 10,
+        hasMoreBefore: true,
+      }))
+      .mockResolvedValueOnce(buildMessagePage('thread-a', secondEarlierMessages, {
+        total: 35,
+        offset: 20,
+        nextOffset: 30,
+        hasMoreBefore: true,
+      }))
+
+    const state = useDesktopState()
+
+    await state.selectThread('thread-a')
+    await state.loadEarlierMessages('thread-a')
+    await state.loadMessages('thread-a', { silent: true })
+    await state.loadEarlierMessages('thread-a')
+
+    expect(codexApiMock.getThreadMessagesPage).toHaveBeenNthCalledWith(4, 'thread-a', {
+      limit: 10,
+      offset: 20,
+    })
+    expect(state.messages.value.map((message) => message.id)).toEqual([
+      ...secondEarlierMessages.map((message) => message.id),
+      ...firstEarlierMessages.map((message) => message.id),
+      ...latestMessages.map((message) => message.id),
+    ])
+    expect(state.selectedThreadEarlierMessageCount.value).toBe(5)
+  })
+
   it('clears visible message loading when a silent refresh supersedes it', async () => {
     vi.useFakeTimers()
     installBrowserGlobals('thread-a')
