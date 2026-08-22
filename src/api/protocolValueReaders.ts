@@ -1,7 +1,7 @@
+import { asRecord as coreAsRecord } from '@codycodeagent/cody-web-core/protocol'
+
 export function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null
+  return coreAsRecord(value)
 }
 
 export function readString(value: unknown): string {

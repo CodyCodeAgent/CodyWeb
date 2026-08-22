@@ -33,5 +33,7 @@ export const DATA_AUTHORITY_POLICIES: Record<string, DataAuthorityPolicy> = {
 }
 
 export function dataAuthorityPolicy(method: string): DataAuthorityPolicy | null {
+  if (dataAuthorityFor(method) === 'ignore') return null
   return DATA_AUTHORITY_POLICIES[method] ?? null
 }
+import { dataAuthorityFor } from '@codycodeagent/cody-web-core/conversation'
