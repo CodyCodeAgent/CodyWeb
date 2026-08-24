@@ -1,5 +1,6 @@
 import type { TurnActivityState } from './realtimeNotificationReaders'
 import type { UiLiveOverlay, UiMessage, UiToolingRollbackFileResult } from '../types/codex'
+import { mergeMessages as coreMergeMessages } from '@codycodeagent/cody-web-core/conversation'
 
 const WORKED_MESSAGE_TYPE = 'worked'
 
@@ -264,7 +265,7 @@ export function mergeMessages(
   })
 
   if (options.preserveMissing !== true) {
-    const compacted = removeDuplicateAdjacentUserMessages(mergedIncoming)
+    const compacted = removeDuplicateAdjacentUserMessages(coreMergeMessages([], mergedIncoming))
     return areMessageArraysEqual(previous, compacted) ? previous : compacted
   }
 

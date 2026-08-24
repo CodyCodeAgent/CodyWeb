@@ -1,4 +1,5 @@
 import type { UiMessage, UiToolTimelineEntry } from '../types/codex'
+import { previewToolOutput, toolStatusTone as coreToolStatusTone } from '@codycodeagent/cody-web-core/conversation'
 
 export type ToolStatusTone = 'success' | 'danger' | 'working' | 'neutral'
 
@@ -112,6 +113,9 @@ export function formatToolStatus(status: string): string {
 }
 
 export function toolStatusTone(status: string): ToolStatusTone {
+  const coreTone = coreToolStatusTone(status)
+  if (coreTone === 'running') return 'working'
+  if (coreTone === 'success' || coreTone === 'danger') return coreTone
   const normalized = status.trim().toLowerCase()
   if (!normalized) return 'neutral'
   if (isToolFailureStatus(normalized)) return 'danger'
@@ -153,12 +157,7 @@ export function buildToolOutputPreview(
   lineLimit = TOOL_OUTPUT_PREVIEW_LINE_COUNT,
   charLimit = TOOL_OUTPUT_PREVIEW_MAX_CHARS,
 ): string {
-  const normalizedLineLimit = Math.max(Math.trunc(lineLimit), 1)
-  const normalizedCharLimit = Math.max(Math.trunc(charLimit), 1)
-  const lines = output.split(/\r\n|\r|\n/u)
-  const linePreview = lines.slice(0, normalizedLineLimit).join('\n')
-  if (linePreview.length <= normalizedCharLimit) return linePreview
-  return linePreview.slice(0, normalizedCharLimit)
+  return previewToolOutput(output, lineLimit, charLimit).text
 }
 
 export function toolOutputToggleLabel(isExpanded: boolean): string {
