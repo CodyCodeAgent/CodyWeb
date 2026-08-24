@@ -90,10 +90,40 @@ export type UiMessage = {
   text: string
   images?: string[]
   skills?: UiComposerSkill[]
+  outbox?: {
+    status: 'queued' | 'sending' | 'failed'
+    lastError?: string
+  }
   tool?: UiToolTimelineEntry
   messageType?: string
   rawPayload?: string
   isUnhandled?: boolean
+}
+
+export type UiQueuedMessage = {
+  id: string
+  threadId: string
+  text: string
+  status: 'queued' | 'sending' | 'failed'
+  createdAtIso: string
+  lastError?: string
+}
+
+export type UiThreadMessagePage = {
+  threadId: string
+  messages: UiMessage[]
+  total: number
+  limit: number
+  offset: number
+  nextOffset: number
+  hasMoreBefore: boolean
+  cache: {
+    status: 'loading' | 'ready' | 'refreshing' | 'failed'
+    hydratedAtIso: string | null
+    refreshedAtIso: string | null
+    checkedAtIso: string | null
+    lastError?: string
+  }
 }
 
 export type UiConversationShareMessage = {
@@ -246,12 +276,17 @@ export type UiCollaborationModeOption = {
 }
 
 export type UiComposerPermissionMode = 'current' | 'yolo'
+export type UiComposerSubmitMode = 'queue' | 'guide'
 
 export type UiComposerSubmitPayload = {
   text: string
   images: UiComposerImage[]
   skills: UiComposerSkill[]
   contexts?: UiComposerContextAttachment[]
+}
+
+export type UiComposerSubmitAck = {
+  onAccepted: () => void
 }
 
 export type UiDirectoryEntry = {

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildTurnInput,
   getThreadGroups,
+  getThreadMessagesPage,
   startThread,
   startThreadTurn,
 } from './codexThreadClient'
@@ -10,8 +11,18 @@ import type { ThreadListResponse } from './appServerDtos'
 const rpcMock = vi.hoisted(() => ({
   rpcCall: vi.fn(),
 }))
+const httpMock = vi.hoisted(() => ({
+  fetchCodexJson: vi.fn(),
+}))
 
 vi.mock('./codexRpcClient', () => rpcMock)
+vi.mock('./codexHttpClient', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./codexHttpClient')>()
+  return {
+    ...actual,
+    fetchCodexJson: httpMock.fetchCodexJson,
+  }
+})
 
 afterEach(() => {
   vi.clearAllMocks()
@@ -92,6 +103,40 @@ describe('codex thread client', () => {
       sortKey: 'updated_at',
       cursor: 'cursor-2',
     })
+  })
+
+  it('loads thread messages from the paged server cache endpoint', async () => {
+    httpMock.fetchCodexJson.mockResolvedValue({
+      status: 200,
+      payload: {
+        result: {
+          threadId: 'thread-1',
+          messages: [{ id: 'message-1', role: 'assistant', text: 'cached' }],
+          total: 1,
+          limit: 10,
+          offset: 0,
+          nextOffset: 1,
+          hasMoreBefore: false,
+          cache: {
+            status: 'ready',
+            hydratedAtIso: '2026-08-20T00:00:00.000Z',
+            refreshedAtIso: '2026-08-20T00:00:00.000Z',
+            checkedAtIso: '2026-08-20T00:00:00.000Z',
+          },
+        },
+      },
+    })
+
+    await expect(getThreadMessagesPage(' thread-1 ')).resolves.toMatchObject({
+      threadId: 'thread-1',
+      messages: [{ id: 'message-1', role: 'assistant', text: 'cached' }],
+      total: 1,
+    })
+
+    expect(httpMock.fetchCodexJson).toHaveBeenCalledWith(
+      '/codex-api/thread-cache/messages?threadId=thread-1&limit=10&offset=0',
+      expect.objectContaining({ method: 'thread-cache/messages' }),
+    )
   })
 
   it('starts threads with normalized optional params', async () => {

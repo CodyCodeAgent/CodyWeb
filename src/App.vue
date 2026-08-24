@@ -292,16 +292,20 @@
           v-bind="{ isSettingsRoute, isSkillsRoute, isHomeRoute, newThreadProjectOptions, skillsCwd, skillsProjectLabel,
             newThreadCwd, newThreadFolderOptions, composerThreadContextId, isSendingMessage,
             promptInsertion, availableModelIds, selectedModelId, selectedReasoningEffort, collaborationModeOptions,
-            selectedCollaborationModeName, selectedPermissionMode, homeComposerBusyLabel, filteredMessages,
+            selectedCollaborationModeName, selectedPermissionMode, selectedSubmitMode, homeComposerBusyLabel, filteredMessages,
             isLoadingMessages, selectedThread, selectedMessageLoadError, selectedThreadScrollState, liveOverlay,
-            selectedThreadServerRequests, threadComposerBusyLabel,
+            selectedThreadServerRequests, selectedQueuedMessages, threadComposerBusyLabel,
             isSelectedThreadInProgress, isInterruptingTurn, isCodeView, contextInsertion,
+            isLoadingEarlierMessages, selectedThreadHasMoreMessagesBefore, selectedThreadEarlierMessageCount,
             conversationShareSelecting: isConversationShareSelecting, conversationShareSelectedMessageIds }"
           @select-thread="onSelectThread" @respond-server-request="onRespondServerRequest"
           @select-new-thread-folder="onSelectNewThreadFolder" @submit-message="onSubmitThreadMessage"
           @select-model="onSelectModel" @select-reasoning-effort="onSelectReasoningEffort"
           @select-collaboration-mode="onSelectCollaborationMode" @select-permission-mode="onSelectPermissionMode"
+          @select-submit-mode="onSelectSubmitMode"
           @update-scroll-state="onUpdateThreadScrollState" @retry-load="onRetryLoadMessages" @interrupt="onInterruptTurn"
+          @load-earlier-messages="onLoadEarlierMessages"
+          @send-queued-message-now="onSendQueuedMessageNow" @delete-queued-message="onDeleteQueuedMessage"
           @open-code="openCodeView" @ask-code="onAskCode" @confirm-share-selection="onConfirmConversationShareSelection"
           @cancel-share-selection="cancelConversationShareSelection"
         /></section>
@@ -402,6 +406,8 @@ import type {
   ThreadScrollState,
   UiComposerPermissionMode,
   UiComposerContextAttachment,
+  UiComposerSubmitAck,
+  UiComposerSubmitMode,
   UiComposerSubmitPayload,
   UiServerRequestReply,
   UiToolingRollbackFileResult,
@@ -420,6 +426,7 @@ const {
   selectedLiveOverlay,
   selectedStructuredPlan,
   selectedMessageLoadError,
+  selectedQueuedMessages,
   selectedThreadId,
   isHiddenView,
   rateLimitSnapshot,
@@ -427,11 +434,15 @@ const {
   selectedModelId,
   selectedReasoningEffort,
   selectedPermissionMode,
+  selectedSubmitMode,
   collaborationModeOptions,
   selectedCollaborationModeName,
   messages,
   isLoadingThreads,
   isLoadingMessages,
+  isLoadingEarlierMessages,
+  selectedThreadHasMoreMessagesBefore,
+  selectedThreadEarlierMessageCount,
   hasLoadedSelectedMessages,
   isSendingMessage,
   isInterruptingTurn,
@@ -444,6 +455,7 @@ const {
   refreshRateLimits,
   selectThread,
   loadMessages,
+  loadEarlierMessages,
   setThreadScrollState,
   hideThreadById,
   restoreThreadById,
@@ -452,12 +464,15 @@ const {
   setHiddenView,
   renameThreadById,
   sendMessageToSelectedThread,
+  sendQueuedMessageNow,
+  deleteQueuedMessage,
   sendMessageToNewThread,
   interruptSelectedThreadTurn,
   setSelectedModelId,
   setSelectedReasoningEffort,
   setSelectedCollaborationModeName,
   setSelectedPermissionMode,
+  setSelectedSubmitMode,
   respondToPendingServerRequest,
   renameProject,
   hideProject,
@@ -837,6 +852,19 @@ function onRetryLoadMessages(): void {
   void loadMessages(threadId)
 }
 
+function onLoadEarlierMessages(threadId: string): void {
+  if (!threadId) return
+  void loadEarlierMessages(threadId)
+}
+
+function onSendQueuedMessageNow(payload: { threadId: string; messageId: string }): void {
+  void sendQueuedMessageNow(payload.threadId, payload.messageId)
+}
+
+function onDeleteQueuedMessage(payload: { threadId: string; messageId: string }): void {
+  void deleteQueuedMessage(payload.threadId, payload.messageId)
+}
+
 function onHideThread(threadId: string): void {
   void hideThreadById(threadId)
 }
@@ -943,12 +971,14 @@ function onWindowKeyDown(event: KeyboardEvent): void {
   setSidebarCollapsed(!isSidebarCollapsed.value)
 }
 
-function onSubmitThreadMessage(payload: UiComposerSubmitPayload): void {
+function onSubmitThreadMessage(payload: UiComposerSubmitPayload, ack: UiComposerSubmitAck): void {
   if (isHomeRoute.value) {
-    void submitFirstMessageForNewThread(payload)
+    void submitFirstMessageForNewThread(payload, ack)
     return
   }
-  void sendMessageToSelectedThread(payload)
+  void sendMessageToSelectedThread(payload, { onAccepted: ack.onAccepted }).catch(() => {
+    // The draft stays in the composer until it is safely accepted into the local queue.
+  })
 }
 
 function onSelectNewThreadFolder(cwd: string): void {
@@ -969,6 +999,10 @@ function onSelectCollaborationMode(name: string): void {
 
 function onSelectPermissionMode(mode: UiComposerPermissionMode): void {
   setSelectedPermissionMode(mode)
+}
+
+function onSelectSubmitMode(mode: UiComposerSubmitMode): void {
+  setSelectedSubmitMode(mode)
 }
 
 function onInterruptTurn(): void {
@@ -1145,11 +1179,12 @@ watch(
   { immediate: true },
 )
 
-async function submitFirstMessageForNewThread(payload: UiComposerSubmitPayload): Promise<void> {
+async function submitFirstMessageForNewThread(payload: UiComposerSubmitPayload, ack: UiComposerSubmitAck): Promise<void> {
   try {
     const threadName = pendingNewThreadName.value.trim()
     const threadId = await sendMessageToNewThread(payload, newThreadCwd.value)
     if (!threadId) return
+    ack.onAccepted()
     pendingNewThreadName.value = ''
     if (threadName) {
       void renameThreadById(threadId, threadName).catch(() => {

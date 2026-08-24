@@ -22,6 +22,7 @@ function mountComposer(overrides = {}) {
       ],
       selectedCollaborationMode: 'default',
       selectedPermissionMode: 'current',
+      selectedSubmitMode: 'queue',
       cwd: '/repo',
       ...overrides,
     },
@@ -51,16 +52,17 @@ describe('ThreadComposer', () => {
 
     await wrapper.get('[data-testid="thread-composer"]').trigger('submit')
 
-    expect(wrapper.emitted('submit')).toEqual([
-      [
-        {
-          text: 'hello from composer',
-          images: [],
-          skills: [],
-          contexts: [],
-        },
-      ],
-    ])
+    const emittedSubmit = wrapper.emitted('submit')
+    expect(emittedSubmit?.[0]?.[0]).toEqual({
+      text: 'hello from composer',
+      images: [],
+      skills: [],
+      contexts: [],
+    })
+    expect((input.element as HTMLTextAreaElement).value).toBe('  hello from composer  ')
+    const ack = emittedSubmit?.[0]?.[1] as { onAccepted: () => void }
+    ack.onAccepted()
+    await wrapper.vm.$nextTick()
     expect((input.element as HTMLTextAreaElement).value).toBe('')
     expect((submit.element as HTMLButtonElement).disabled).toBe(true)
   })
@@ -72,13 +74,41 @@ describe('ThreadComposer', () => {
     expect((wrapper.get('[data-testid="thread-composer-submit"]').element as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('emits permission mode changes from the composer controls', async () => {
+  it('emits submit and permission mode changes from the composer controls', async () => {
     const wrapper = mountComposer()
     const dropdowns = wrapper.findAllComponents({ name: 'ComposerDropdown' })
 
-    await dropdowns[3]?.vm.$emit('update:modelValue', 'yolo')
+    await dropdowns[1]?.vm.$emit('update:modelValue', 'guide')
+    await dropdowns[4]?.vm.$emit('update:modelValue', 'yolo')
 
+    expect(wrapper.emitted('update:selected-submit-mode')).toEqual([['guide']])
     expect(wrapper.emitted('update:selected-permission-mode')).toEqual([['yolo']])
+  })
+
+  it('renders queued messages above the draft and emits queue actions', async () => {
+    const wrapper = mountComposer({
+      isTurnInProgress: true,
+      queuedMessages: [
+        {
+          id: 'queued-1',
+          threadId: 'thread-1',
+          text: '比如这样',
+          status: 'queued',
+          createdAtIso: '2026-08-20T00:00:00.000Z',
+        },
+      ],
+    })
+
+    const item = wrapper.get('[data-testid="thread-composer-outbox-item"]')
+    expect(item.text()).toContain('比如这样')
+    expect(item.text()).toContain('Queued locally')
+    expect(item.text()).toContain('Guide now')
+
+    await item.find('.thread-composer-outbox-send').trigger('click')
+    await item.find('.thread-composer-outbox-delete').trigger('click')
+
+    expect(wrapper.emitted('sendQueuedMessageNow')).toEqual([[{ threadId: 'thread-1', messageId: 'queued-1' }]])
+    expect(wrapper.emitted('deleteQueuedMessage')).toEqual([[{ threadId: 'thread-1', messageId: 'queued-1' }]])
   })
 
   it('places prompt library content into the draft without sending it', async () => {

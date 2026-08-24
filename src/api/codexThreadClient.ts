@@ -3,19 +3,20 @@ import type {
   ThreadCompactStartResponse,
   ThreadForkResponse,
   ThreadListResponse,
-  ThreadReadResponse,
   ThreadSetNameResponse,
   TurnStartResponse,
 } from './appServerDtos'
 import { normalizeCodexApiError } from './codexErrors'
+import { fetchCodexJson, queryPath, readRpcResult } from './codexHttpClient'
 import { rpcCall } from './codexRpcClient'
-import { normalizeThreadGroupsV2, normalizeThreadMessagesV2 } from './normalizers/v2'
+import { normalizeThreadGroupsV2 } from './normalizers/v2'
 import type {
   UiCollaborationModeOption,
   UiComposerImage,
   UiComposerSkill,
   UiMessage,
   UiProjectGroup,
+  UiThreadMessagePage,
 } from '../types/codex'
 import type { TurnPermissionOverride } from '../composables/desktopTurnPermissions'
 
@@ -59,11 +60,7 @@ async function getThreadGroupsV2(archived = false): Promise<UiProjectGroup[]> {
 }
 
 async function getThreadMessagesV2(threadId: string): Promise<UiMessage[]> {
-  const payload = await callRpc<ThreadReadResponse>('thread/read', {
-    threadId,
-    includeTurns: true,
-  })
-  return normalizeThreadMessagesV2(payload)
+  return (await getThreadMessagesPage(threadId)).messages
 }
 
 export async function getThreadGroups(archived = false): Promise<UiProjectGroup[]> {
@@ -79,6 +76,32 @@ export async function getThreadMessages(threadId: string): Promise<UiMessage[]> 
     return await getThreadMessagesV2(threadId)
   } catch (error) {
     throw normalizeCodexApiError(error, `Failed to load thread ${threadId}`, 'thread/read')
+  }
+}
+
+export async function getThreadMessagesPage(
+  threadId: string,
+  options: { limit?: number; offset?: number } = {},
+): Promise<UiThreadMessagePage> {
+  const normalizedThreadId = threadId.trim()
+  try {
+    const { payload, status } = await fetchCodexJson(queryPath('/codex-api/thread-cache/messages', {
+      threadId: normalizedThreadId,
+      limit: options.limit ?? 10,
+      offset: options.offset ?? 0,
+    }), {
+      method: 'thread-cache/messages',
+      networkErrorMessage: `Thread cache failed before request was sent`,
+      httpErrorMessage: `Thread cache failed`,
+    })
+    return readRpcResult<UiThreadMessagePage>(
+      payload,
+      status,
+      'thread-cache/messages',
+      'Thread cache returned malformed envelope',
+    )
+  } catch (error) {
+    throw normalizeCodexApiError(error, `Failed to load thread ${normalizedThreadId}`, 'thread-cache/messages')
   }
 }
 

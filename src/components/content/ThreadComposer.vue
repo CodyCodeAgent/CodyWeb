@@ -9,6 +9,42 @@
       @dragleave="onDragLeave"
       @drop="onDrop"
     >
+      <ul v-if="visibleQueuedMessages.length > 0" class="thread-composer-outbox-list" aria-label="Queued messages">
+        <li
+          v-for="message in visibleQueuedMessages"
+          :key="message.id"
+          class="thread-composer-outbox-item"
+          :data-status="message.status"
+          data-testid="thread-composer-outbox-item"
+        >
+          <span class="thread-composer-outbox-status">{{ queuedStatusLabel(message) }}</span>
+          <p class="thread-composer-outbox-text">{{ message.text }}</p>
+          <p v-if="message.lastError" class="thread-composer-outbox-error">{{ message.lastError }}</p>
+          <div class="thread-composer-outbox-actions">
+            <button
+              class="thread-composer-outbox-send"
+              type="button"
+              :disabled="disabled || message.status === 'sending'"
+              :title="queuedActionLabel"
+              @click="onSendQueuedMessageNow(message)"
+            >
+              <IconTablerArrowUp class="thread-composer-outbox-action-icon" />
+              <span>{{ queuedActionLabel }}</span>
+            </button>
+            <button
+              class="thread-composer-outbox-delete"
+              type="button"
+              :disabled="disabled || message.status === 'sending'"
+              :aria-label="t('composer.outbox.delete')"
+              :title="t('composer.outbox.delete')"
+              @click="onDeleteQueuedMessage(message)"
+            >
+              <IconTablerX class="thread-composer-outbox-action-icon" />
+            </button>
+          </div>
+        </li>
+      </ul>
+
       <ul v-if="attachedImages.length > 0" class="thread-composer-image-list">
         <li v-for="image in attachedImages" :key="image.id" class="thread-composer-image-item">
           <img class="thread-composer-image-preview" :src="image.url" :alt="image.name" />
@@ -140,7 +176,7 @@
           @click="isMobileOptionsOpen = true"
         >
           <span>{{ t('composer.runSettings') }}</span>
-          <small>{{ selectedModel }} · {{ selectedPermissionMode }}</small>
+          <small>{{ selectedModel }} · {{ submitModeLabel }} · {{ selectedPermissionMode }}</small>
         </button>
 
         <ComposerDropdown
@@ -151,6 +187,16 @@
           open-direction="up"
           :disabled="disabled || !activeThreadId || collaborationModes.length === 0 || isTurnInProgress"
           @update:model-value="onCollaborationModeSelect"
+        />
+
+        <ComposerDropdown
+          class="thread-composer-control"
+          :model-value="selectedSubmitMode"
+          :options="submitModeOptions"
+          :placeholder="t('composer.submitMode')"
+          open-direction="up"
+          :disabled="disabled || !activeThreadId"
+          @update:model-value="onSubmitModeSelect"
         />
 
         <ComposerDropdown
@@ -238,6 +284,13 @@
             <small>{{ t('composer.collaborationHint') }}</small>
           </label>
           <label>
+            <span>{{ t('composer.submitMode') }}</span>
+            <select :value="selectedSubmitMode" @change="onMobileSubmitModeChange">
+              <option v-for="option in submitModeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+            <small>{{ t('composer.submitModeHint') }}</small>
+          </label>
+          <label>
             <span>{{ t('composer.model') }}</span>
             <select :value="selectedModel" :disabled="isTurnInProgress" @change="onMobileModelChange">
               <option v-for="option in modelOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
@@ -278,7 +331,10 @@ import type {
   UiComposerPermissionMode,
   UiComposerContextAttachment,
   UiComposerSkill,
+  UiComposerSubmitAck,
+  UiComposerSubmitMode,
   UiComposerSubmitPayload,
+  UiQueuedMessage,
 } from '../../types/codex'
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
 import IconTablerPhoto from '../icons/IconTablerPhoto.vue'
@@ -296,6 +352,7 @@ const props = defineProps<{
   collaborationModes: UiCollaborationModeOption[]
   selectedCollaborationMode: string
   selectedPermissionMode: UiComposerPermissionMode
+  selectedSubmitMode: UiComposerSubmitMode
   cwd: string
   isTurnInProgress?: boolean
   isInterruptingTurn?: boolean
@@ -303,15 +360,19 @@ const props = defineProps<{
   busyLabel?: string
   promptInsertion?: PromptInsertion | null
   contextInsertion?: UiComposerContextAttachment | null
+  queuedMessages?: UiQueuedMessage[]
 }>()
 
 const emit = defineEmits<{
-  submit: [payload: UiComposerSubmitPayload]
+  submit: [payload: UiComposerSubmitPayload, ack: UiComposerSubmitAck]
   interrupt: []
   'update:selected-model': [modelId: string]
   'update:selected-reasoning-effort': [effort: ReasoningEffort | '']
   'update:selected-collaboration-mode': [name: string]
   'update:selected-permission-mode': [mode: UiComposerPermissionMode]
+  'update:selected-submit-mode': [mode: UiComposerSubmitMode]
+  sendQueuedMessageNow: [payload: { threadId: string; messageId: string }]
+  deleteQueuedMessage: [payload: { threadId: string; messageId: string }]
 }>()
 const { t } = useLocale()
 
@@ -368,6 +429,17 @@ const collaborationModeOptions = computed(() =>
   props.collaborationModes.map((mode) => ({ value: mode.name, label: mode.label })),
 )
 const permissionModeOptions = COMPOSER_PERMISSION_MODE_OPTIONS
+const submitModeOptions = computed<Array<{ value: UiComposerSubmitMode; label: string }>>(() => [
+  { value: 'queue', label: t('composer.submitMode.queue') },
+  { value: 'guide', label: t('composer.submitMode.guide') },
+])
+const submitModeLabel = computed(() =>
+  props.selectedSubmitMode === 'guide' ? t('composer.submitMode.guide') : t('composer.submitMode.queue'),
+)
+const visibleQueuedMessages = computed(() => props.queuedMessages ?? [])
+const queuedActionLabel = computed(() => props.isTurnInProgress
+  ? t('composer.outbox.guideNow')
+  : t('composer.outbox.sendNow'))
 const canSubmit = computed(() => {
   if (props.disabled) return false
   if (!props.activeThreadId) return false
@@ -383,12 +455,18 @@ const canSubmit = computed(() => {
 const placeholderText = computed(() =>
   props.activeThreadId
     ? props.isTurnInProgress
-      ? t('composer.placeholder.guide')
+      ? props.selectedSubmitMode === 'guide'
+        ? t('composer.placeholder.guide')
+        : t('composer.placeholder.queue')
       : t('composer.placeholder.message')
     : t('composer.placeholder.selectThread'),
 )
 const submitButtonLabel = computed(() =>
-  props.isTurnInProgress ? t('composer.submit.guidance') : t('composer.submit.message'),
+  props.isTurnInProgress
+    ? props.selectedSubmitMode === 'guide'
+      ? t('composer.submit.guidance')
+      : t('composer.submit.queue')
+    : t('composer.submit.message'),
 )
 const canAttachImages = computed(() => !props.disabled && Boolean(props.activeThreadId))
 const isDraggingImages = computed(() => canAttachImages.value && dragDepth.value > 0)
@@ -421,17 +499,27 @@ watch(() => props.contextInsertion?.id, () => {
 function onSubmit(): void {
   const text = materializeComposerContextText(draft.value, selectedContexts.value)
   if (!canSubmit.value) return
-  emit('submit', {
+  const submittedDraft = draft.value
+  const payload: UiComposerSubmitPayload = {
     text,
-    images: attachedImages.value,
-    skills: selectedSkills.value,
-    contexts: selectedContexts.value,
+    images: attachedImages.value.map((image) => ({ ...image })),
+    skills: selectedSkills.value.map((skill) => ({ ...skill })),
+    contexts: selectedContexts.value.map((context) => ({ ...context, metadata: { ...context.metadata } })),
+  }
+  let accepted = false
+  emit('submit', payload, {
+    onAccepted: () => {
+      if (accepted) return
+      accepted = true
+      if (draft.value === submittedDraft) {
+        draft.value = ''
+      }
+      resetImages()
+      resetSkills()
+      resetContexts()
+      void nextTick(resizeDraftInput)
+    },
   })
-  draft.value = ''
-  resetImages()
-  resetSkills()
-  resetContexts()
-  void nextTick(resizeDraftInput)
 }
 
 function getDraftCursor(): number {
@@ -495,6 +583,20 @@ function onInterrupt(): void {
   emit('interrupt')
 }
 
+function queuedStatusLabel(message: UiQueuedMessage): string {
+  if (message.status === 'sending') return t('conversation.outbox.sending')
+  if (message.status === 'failed') return t('conversation.outbox.failed')
+  return t('conversation.outbox.queued')
+}
+
+function onSendQueuedMessageNow(message: UiQueuedMessage): void {
+  emit('sendQueuedMessageNow', { threadId: message.threadId, messageId: message.id })
+}
+
+function onDeleteQueuedMessage(message: UiQueuedMessage): void {
+  emit('deleteQueuedMessage', { threadId: message.threadId, messageId: message.id })
+}
+
 function onModelSelect(value: string): void {
   emit('update:selected-model', value)
 }
@@ -511,11 +613,16 @@ function onPermissionModeSelect(value: string): void {
   emit('update:selected-permission-mode', value === 'yolo' ? 'yolo' : 'current')
 }
 
+function onSubmitModeSelect(value: string): void {
+  emit('update:selected-submit-mode', value === 'guide' ? 'guide' : 'queue')
+}
+
 function eventValue(event: Event): string {
   return (event.target as HTMLSelectElement).value
 }
 
 function onMobileCollaborationChange(event: Event): void { onCollaborationModeSelect(eventValue(event)) }
+function onMobileSubmitModeChange(event: Event): void { onSubmitModeSelect(eventValue(event)) }
 function onMobileModelChange(event: Event): void { onModelSelect(eventValue(event)) }
 function onMobileReasoningChange(event: Event): void { onReasoningEffortSelect(eventValue(event)) }
 function onMobilePermissionChange(event: Event): void { onPermissionModeSelect(eventValue(event)) }
@@ -610,6 +717,60 @@ watch(
 
 .thread-composer-shell[data-drag-active='true'] {
   @apply border-zinc-700 theme-bg-subtle ring-2 ring-zinc-300;
+}
+
+.thread-composer-outbox-list {
+  @apply mb-3 flex max-h-28 flex-col gap-2 overflow-y-auto px-0;
+  list-style: none;
+}
+
+.thread-composer-outbox-item {
+  @apply flex min-h-11 min-w-0 items-center gap-2 rounded-xl border theme-border theme-bg-subtle px-3 py-2 shadow-sm;
+}
+
+.thread-composer-outbox-item[data-status='failed'] {
+  border-color: color-mix(in srgb, var(--color-warning) 32%, var(--color-border));
+  background: color-mix(in srgb, var(--color-warning) 8%, var(--color-panel));
+}
+
+.thread-composer-outbox-status {
+  @apply shrink-0 rounded-full border px-2 py-0.5 text-[0.62rem] font-semibold;
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-panel));
+  border-color: color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
+  color: var(--color-text-muted);
+}
+
+.thread-composer-outbox-item[data-status='sending'] .thread-composer-outbox-status {
+  color: var(--color-accent);
+}
+
+.thread-composer-outbox-item[data-status='failed'] .thread-composer-outbox-status {
+  color: var(--color-warning);
+}
+
+.thread-composer-outbox-text {
+  @apply m-0 min-w-0 flex-1 truncate text-sm font-medium theme-text;
+}
+
+.thread-composer-outbox-error {
+  @apply m-0 hidden min-w-0 max-w-60 truncate text-xs;
+  color: var(--color-warning);
+}
+
+.thread-composer-outbox-actions {
+  @apply ml-auto flex shrink-0 items-center gap-1;
+}
+
+.thread-composer-outbox-send {
+  @apply inline-flex h-8 items-center gap-1 rounded-md border theme-border theme-bg-control px-2.5 text-xs font-semibold theme-text transition hover:theme-bg-panel disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.thread-composer-outbox-delete {
+  @apply inline-flex h-8 w-8 items-center justify-center rounded-md border theme-border theme-bg-control theme-muted transition hover:theme-bg-panel hover:theme-text disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.thread-composer-outbox-action-icon {
+  @apply h-3.5 w-3.5;
 }
 
 .thread-composer-image-list {
@@ -818,6 +979,19 @@ watch(
 @media (max-width: 720px) {
   .thread-composer-control {
     display: none;
+  }
+
+  .thread-composer-outbox-item {
+    @apply flex-wrap gap-1.5;
+  }
+
+  .thread-composer-outbox-text {
+    flex-basis: calc(100% - 7rem);
+  }
+
+  .thread-composer-outbox-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 
   .thread-composer-mobile-options {

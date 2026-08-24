@@ -4,13 +4,14 @@ import {
   normalizeComposerPermissionMode,
 } from './desktopTurnPermissions'
 import { DESKTOP_STORAGE_KEYS } from './desktopSettingsKeys'
-import type { ReasoningEffort, ThreadScrollState, UiComposerPermissionMode } from '../types/codex'
+import type { ReasoningEffort, ThreadScrollState, UiComposerPermissionMode, UiComposerSubmitMode } from '../types/codex'
 
 export type DesktopTurnPreferences = {
   modelId: string
   reasoningEffort: ReasoningEffort | ''
   collaborationModeName: string
   permissionMode: UiComposerPermissionMode
+  submitMode: UiComposerSubmitMode
 }
 
 export const DEFAULT_DESKTOP_TURN_PREFERENCES: DesktopTurnPreferences = {
@@ -18,6 +19,11 @@ export const DEFAULT_DESKTOP_TURN_PREFERENCES: DesktopTurnPreferences = {
   reasoningEffort: 'medium',
   collaborationModeName: 'default',
   permissionMode: DEFAULT_COMPOSER_PERMISSION_MODE,
+  submitMode: 'queue',
+}
+
+function normalizeComposerSubmitMode(value: unknown): UiComposerSubmitMode {
+  return value === 'guide' ? 'guide' : 'queue'
 }
 
 function getLocalStorage(): Storage | null {
@@ -73,12 +79,14 @@ export function normalizeDesktopTurnPreferences(value: unknown): DesktopTurnPref
     ? row.collaborationModeName.trim()
     : DEFAULT_DESKTOP_TURN_PREFERENCES.collaborationModeName
   const permissionMode = normalizeComposerPermissionMode(row.permissionMode)
+  const submitMode = normalizeComposerSubmitMode(row.submitMode)
 
   return {
     modelId,
     reasoningEffort,
     collaborationModeName,
     permissionMode,
+    submitMode,
   }
 }
 

@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import {
   compactThread,
   forkThread,
-  getThreadMessages,
+  getThreadMessagesPage,
   interruptThreadTurn,
   renameThread,
   resumeThread,
@@ -104,6 +104,13 @@ import {
   setActiveTurnForThread,
   shouldClearUnreadForStartedTurn,
 } from './desktopTurnState'
+import {
+  buildLocalMessageOutboxItem,
+  deleteLocalMessageOutboxItem,
+  loadLocalMessageOutboxItems,
+  saveLocalMessageOutboxItem,
+  type LocalMessageOutboxItem,
+} from './localMessageOutbox'
 import { normalizeThreadScrollState, saveProjectDisplayNames, saveProjectOrder, saveReadStateMap, saveThreadScrollStateMap } from './desktopStateStorage'
 import {
   areStringArraysEqual,
@@ -128,6 +135,7 @@ import type {
   UiComposerSubmitPayload,
   ThreadScrollState,
   UiMessage,
+  UiQueuedMessage,
   UiServerRequestReply,
   UiThread,
   UiThreadContextUsage,
@@ -148,14 +156,16 @@ export function useDesktopState() {
     resumedThreadById, allThreads, selectedThread, selectedThreadScrollState,
   } = threadState
   const composerState = useDesktopComposerState()
-  const { availableModelIds, selectedModelId, selectedReasoningEffort, selectedPermissionMode,
+  const { availableModelIds, selectedModelId, selectedReasoningEffort, selectedPermissionMode, selectedSubmitMode,
     modelContextWindow, autoCompactTokenLimit,
     collaborationModeOptions, selectedCollaborationModeName, selectedCollaborationMode,
     hydrate: hydrateTurnPreferencesFromSettingsStore, refreshCollaborationModes, refreshModelPreferences,
-    setSelectedModelId, setSelectedReasoningEffort, setSelectedCollaborationModeName, setSelectedPermissionMode } = composerState
+    setSelectedModelId, setSelectedReasoningEffort, setSelectedCollaborationModeName, setSelectedPermissionMode,
+    setSelectedSubmitMode } = composerState
   const turnSummaryByThreadId = ref<Record<string, TurnSummaryState>>({})
   const turnActivityByThreadId = ref<Record<string, TurnActivityState>>({})
   const contextUsageByThreadId = ref<Record<string, UiThreadContextUsage>>({})
+  const outboxItemsByThreadId = ref<Record<string, LocalMessageOutboxItem[]>>({})
   const structuredPlanState = useStructuredPlanState(selectedThreadId)
   const turnErrorByThreadId = ref<Record<string, TurnErrorState>>({})
   const activeTurnIdByThreadId = ref<Record<string, string>>({})
@@ -170,7 +180,13 @@ export function useDesktopState() {
 
   const isLoadingThreads = ref(false)
   const loadingMessagesByThreadId = ref<Record<string, boolean>>({})
+  const loadingEarlierMessagesByThreadId = ref<Record<string, boolean>>({})
   const messageLoadErrorByThreadId = ref<Record<string, string>>({})
+  const messagePageByThreadId = ref<Record<string, {
+    total: number
+    loadedCount: number
+    hasMoreBefore: boolean
+  }>>({})
   const isSendingMessage = ref(false)
   const isInterruptingTurn = ref(false)
   const error = ref('')
@@ -188,9 +204,19 @@ export function useDesktopState() {
   let nextMessageLoadRequestId = 0
   let latestThreadsRequestId = 0
   let nextOptimisticUserMessageId = 0
+  let hasHydratedOutbox = false
+  const drainingOutboxThreadIds = new Set<string>()
+  const outboxRetryTimersByThreadId = new Map<string, number>()
 
   const selectedThreadServerRequests = serverRequestState.selected
   const isLoadingMessages = computed(() => loadingMessagesByThreadId.value[selectedThreadId.value] === true)
+  const isLoadingEarlierMessages = computed(() => loadingEarlierMessagesByThreadId.value[selectedThreadId.value] === true)
+  const selectedThreadHasMoreMessagesBefore = computed(() => messagePageByThreadId.value[selectedThreadId.value]?.hasMoreBefore === true)
+  const selectedThreadEarlierMessageCount = computed(() => {
+    const page = messagePageByThreadId.value[selectedThreadId.value]
+    if (!page?.hasMoreBefore) return 0
+    return Math.max(page.total - page.loadedCount, 1)
+  })
   const hasLoadedSelectedMessages = computed(
     () => loadedMessagesByThreadId.value[selectedThreadId.value] === true,
   )
@@ -222,6 +248,7 @@ export function useDesktopState() {
     const liveAgent = liveAgentMessagesByThreadId.value[threadId] ?? []
     return buildDisplayedMessages(persisted, liveAgent, turnSummaryByThreadId.value[threadId])
   })
+  const selectedQueuedMessages = computed<UiQueuedMessage[]>(() => queuedMessagesForThread(selectedThreadId.value))
 
   function setSelectedThreadId(nextThreadId: string): void {
     if (selectedThreadId.value === nextThreadId) return
@@ -241,6 +268,18 @@ export function useDesktopState() {
 
     loadingMessagesByThreadId.value = {
       ...loadingMessagesByThreadId.value,
+      [threadId]: true,
+    }
+  }
+
+  function setEarlierMessagesLoadingForThread(threadId: string, isLoading: boolean): void {
+    if (!threadId) return
+    if (!isLoading) {
+      loadingEarlierMessagesByThreadId.value = omitKey(loadingEarlierMessagesByThreadId.value, threadId)
+      return
+    }
+    loadingEarlierMessagesByThreadId.value = {
+      ...loadingEarlierMessagesByThreadId.value,
       [threadId]: true,
     }
   }
@@ -334,6 +373,9 @@ export function useDesktopState() {
     messageLoadErrorByThreadId.value = Object.fromEntries(
       Object.entries(messageLoadErrorByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
     )
+    messagePageByThreadId.value = Object.fromEntries(
+      Object.entries(messagePageByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
+    )
     activeTurnIdByThreadId.value = pruned.activeTurnIdByThreadId
     eventUnreadByThreadId.value = pruned.eventUnreadByThreadId
     inProgressById.value = pruned.inProgressById
@@ -341,6 +383,9 @@ export function useDesktopState() {
     contextUsageByThreadId.value = pruneThreadStateMap(contextUsageByThreadId.value, activeThreadIds)
     loadingMessagesByThreadId.value = Object.fromEntries(
       Object.entries(loadingMessagesByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
+    )
+    loadingEarlierMessagesByThreadId.value = Object.fromEntries(
+      Object.entries(loadingEarlierMessagesByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
     )
     for (const threadId of latestMessageLoadRequestIdByThreadId.keys()) {
       if (!activeThreadIds.has(threadId)) {
@@ -446,6 +491,92 @@ export function useDesktopState() {
       liveAgentMessagesByThreadId.value,
       threadId,
       nextMessages,
+    )
+  }
+
+  function sortOutboxItems(items: LocalMessageOutboxItem[]): LocalMessageOutboxItem[] {
+    return [...items].sort((a, b) => a.createdAtIso.localeCompare(b.createdAtIso))
+  }
+
+  function setOutboxItemsForThread(threadId: string, items: LocalMessageOutboxItem[]): void {
+    if (!threadId) return
+    const nextItems = sortOutboxItems(items)
+    if (nextItems.length === 0) {
+      outboxItemsByThreadId.value = omitKey(outboxItemsByThreadId.value, threadId)
+      return
+    }
+    outboxItemsByThreadId.value = {
+      ...outboxItemsByThreadId.value,
+      [threadId]: nextItems,
+    }
+  }
+
+  function upsertOutboxItem(item: LocalMessageOutboxItem): void {
+    const previous = outboxItemsByThreadId.value[item.threadId] ?? []
+    setOutboxItemsForThread(item.threadId, [
+      ...previous.filter((row) => row.id !== item.id),
+      item,
+    ])
+  }
+
+  function removeOutboxItemFromState(threadId: string, itemId: string): void {
+    const previous = outboxItemsByThreadId.value[threadId] ?? []
+    setOutboxItemsForThread(threadId, previous.filter((row) => row.id !== itemId))
+  }
+
+  async function persistOutboxItem(item: LocalMessageOutboxItem): Promise<void> {
+    upsertOutboxItem(item)
+    await saveLocalMessageOutboxItem(item)
+  }
+
+  async function deleteOutboxItem(item: LocalMessageOutboxItem): Promise<void> {
+    removeOutboxItemFromState(item.threadId, item.id)
+    await deleteLocalMessageOutboxItem(item.id)
+  }
+
+  function queuedMessagesForThread(threadId: string): UiQueuedMessage[] {
+    return (outboxItemsByThreadId.value[threadId] ?? [])
+      .filter((item) => item.status === 'queued' || item.status === 'sending' || item.status === 'failed')
+      .map((item) => ({
+        id: item.id,
+        threadId: item.threadId,
+        text: item.text,
+        status: item.status,
+        createdAtIso: item.createdAtIso,
+        lastError: item.lastError,
+      }))
+  }
+
+  function isMatchingOutboxMessage(item: LocalMessageOutboxItem, message: UiMessage): boolean {
+    if (message.role !== 'user') return false
+    if (item.turnId && message.turnId === item.turnId) return true
+    if (item.text.replace(/\s+/gu, ' ').trim() !== message.text.replace(/\s+/gu, ' ').trim()) return false
+    const itemSkills = item.skills.map((skill) => `${skill.name}:${skill.path}`).join('|')
+    const messageSkills = (message.skills ?? []).map((skill) => `${skill.name}:${skill.path}`).join('|')
+    return itemSkills === messageSkills
+  }
+
+  async function reconcileOutboxForThread(threadId: string): Promise<void> {
+    const items = outboxItemsByThreadId.value[threadId] ?? []
+    if (items.length === 0) return
+    const messages = persistedMessagesByThreadId.value[threadId] ?? []
+    const removable = items.filter((item) => messages.some((message) => isMatchingOutboxMessage(item, message)))
+    await Promise.all(removable.map((item) => deleteOutboxItem(item)))
+  }
+
+  async function hydrateOutboxFromStore(): Promise<void> {
+    if (hasHydratedOutbox) return
+    hasHydratedOutbox = true
+    const items = await loadLocalMessageOutboxItems()
+    const byThread: Record<string, LocalMessageOutboxItem[]> = {}
+    for (const item of items) {
+      if (!item.threadId) continue
+      const rows = byThread[item.threadId] ?? []
+      rows.push(item.status === 'sending' ? { ...item, status: 'queued' } : item)
+      byThread[item.threadId] = rows
+    }
+    outboxItemsByThreadId.value = Object.fromEntries(
+      Object.entries(byThread).map(([threadId, itemsForThread]) => [threadId, sortOutboxItems(itemsForThread)]),
     )
   }
 
@@ -689,6 +820,7 @@ export function useDesktopState() {
       setTurnActivityForThread(completedTurn.threadId, null)
       markThreadUnreadByEvent(completedTurn.threadId)
       structuredPlanState.end(completedTurn.threadId, completedTurn.turnId)
+      void drainOutboxForThread(completedTurn.threadId)
     }
 
     const turnErrorMessage = readTurnErrorMessage(notification)
@@ -745,6 +877,7 @@ export function useDesktopState() {
         notificationThreadId,
         mergeMessages(messagesWithFormalUser, completedUserMessages, { preserveMissing: true }),
       )
+      void reconcileOutboxForThread(notificationThreadId)
     }
 
     const startedAgentMessageId = readAgentMessageStartedId(notification)
@@ -948,15 +1081,29 @@ export function useDesktopState() {
         resumedThreadById.value = markThreadResumed(resumedThreadById.value, threadId)
       }
 
-      const nextMessages = await getThreadMessages(threadId)
+      const page = await getThreadMessagesPage(threadId, { limit: 10, offset: 0 })
       if (latestMessageLoadRequestIdByThreadId.get(threadId) !== requestId) {
         return
       }
+      const nextMessages = page.messages
       const previousPersisted = persistedMessagesByThreadId.value[threadId] ?? []
       const mergedMessages = mergeMessages(previousPersisted, nextMessages, {
         preserveMissing: options.silent === true,
       })
       setPersistedMessagesForThread(threadId, mergedMessages)
+      const previousPage = messagePageByThreadId.value[threadId]
+      const loadedCount = options.silent === true && previousPage
+        ? Math.max(previousPage.loadedCount, page.messages.length)
+        : page.messages.length
+      messagePageByThreadId.value = {
+        ...messagePageByThreadId.value,
+        [threadId]: {
+          total: page.total,
+          loadedCount,
+          hasMoreBefore: loadedCount < page.total,
+        },
+      }
+      void reconcileOutboxForThread(threadId)
 
       const previousLiveAgent = liveAgentMessagesByThreadId.value[threadId] ?? []
       const nextLiveAgent = removeRedundantLiveAgentMessages(previousLiveAgent, nextMessages)
@@ -986,10 +1133,50 @@ export function useDesktopState() {
     }
   }
 
+  async function loadEarlierMessages(threadId: string): Promise<void> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) return
+    if (loadingEarlierMessagesByThreadId.value[normalizedThreadId] === true) return
+
+    const pageState = messagePageByThreadId.value[normalizedThreadId]
+    if (!pageState?.hasMoreBefore) return
+
+    setEarlierMessagesLoadingForThread(normalizedThreadId, true)
+    setMessageLoadErrorForThread(normalizedThreadId, '')
+
+    try {
+      const page = await getThreadMessagesPage(normalizedThreadId, {
+        limit: 10,
+        offset: pageState.loadedCount,
+      })
+      const previousMessages = persistedMessagesByThreadId.value[normalizedThreadId] ?? []
+      const previousIds = new Set(previousMessages.map((message) => message.id))
+      const earlierMessages = page.messages.filter((message) => !previousIds.has(message.id))
+      setPersistedMessagesForThread(normalizedThreadId, [...earlierMessages, ...previousMessages])
+      const loadedCount = Math.min(page.total, pageState.loadedCount + earlierMessages.length)
+      messagePageByThreadId.value = {
+        ...messagePageByThreadId.value,
+        [normalizedThreadId]: {
+          total: page.total,
+          loadedCount,
+          hasMoreBefore: loadedCount < page.total,
+        },
+      }
+    } catch (unknownError) {
+      const message = unknownError instanceof Error && unknownError.message
+        ? unknownError.message
+        : 'Failed to load earlier messages.'
+      setMessageLoadErrorForThread(normalizedThreadId, message)
+    } finally {
+      setEarlierMessagesLoadingForThread(normalizedThreadId, false)
+    }
+  }
+
   async function refreshAll(options: { loadSelectedMessages?: boolean } = {}) {
     error.value = ''
 
     try {
+      await hydrateOutboxFromStore()
       await hydrateTurnPreferencesFromSettingsStore()
       await Promise.all([
         loadThreads(),
@@ -999,6 +1186,9 @@ export function useDesktopState() {
       ])
       if (options.loadSelectedMessages !== false) {
         await loadMessages(selectedThreadId.value)
+      }
+      if (selectedThreadId.value) {
+        void drainOutboxForThread(selectedThreadId.value)
       }
     } catch (unknownError) {
       error.value = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
@@ -1139,30 +1329,112 @@ export function useDesktopState() {
     }
   }
 
-  async function sendMessageToSelectedThread(payload: UiComposerSubmitPayload): Promise<void> {
+  function scheduleOutboxRetry(threadId: string): void {
+    if (typeof window === 'undefined' || outboxRetryTimersByThreadId.has(threadId)) return
+    const timerId = window.setTimeout(() => {
+      outboxRetryTimersByThreadId.delete(threadId)
+      void drainOutboxForThread(threadId)
+    }, 5_000)
+    outboxRetryTimersByThreadId.set(threadId, timerId)
+  }
+
+  async function enqueueMessageForThread(
+    threadId: string,
+    payload: UiComposerSubmitPayload,
+  ): Promise<LocalMessageOutboxItem | null> {
+    const turnInput = normalizeComposerTurnInput(payload)
+    if (!threadId || !turnInput.hasContent) return null
+
+    const item = buildLocalMessageOutboxItem({
+      threadId,
+      payload: {
+        text: turnInput.text,
+        images: turnInput.images,
+        skills: turnInput.skills,
+        contexts: payload.contexts,
+      },
+    })
+    await persistOutboxItem(item)
+    return item
+  }
+
+  async function drainOutboxForThread(threadId: string, options: { itemId?: string } = {}): Promise<void> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) return
+    if (drainingOutboxThreadIds.has(normalizedThreadId)) return
+    if (inProgressById.value[normalizedThreadId] === true) return
+
+    const rows = outboxItemsByThreadId.value[normalizedThreadId] ?? []
+    const item = options.itemId
+      ? rows.find((row) => row.id === options.itemId && (row.status === 'queued' || row.status === 'failed'))
+      : rows.find((row) => row.status === 'queued' || row.status === 'failed')
+    if (!item) return
+
+    drainingOutboxThreadIds.add(normalizedThreadId)
+    const sendingItem: LocalMessageOutboxItem = {
+      ...item,
+      status: 'sending',
+      attempts: item.attempts + 1,
+      updatedAtIso: new Date().toISOString(),
+      lastError: undefined,
+    }
+    await persistOutboxItem(sendingItem)
+
+    isSendingMessage.value = true
+    error.value = ''
+    beginPendingTurnForThread(normalizedThreadId)
+
+    try {
+      const turnId = await startTurnForThread(
+        normalizedThreadId,
+        sendingItem.text,
+        sendingItem.images,
+        sendingItem.skills,
+      )
+      await persistOutboxItem({
+        ...sendingItem,
+        turnId,
+        updatedAtIso: new Date().toISOString(),
+      })
+      await reconcileOutboxForThread(normalizedThreadId)
+    } catch (unknownError) {
+      const errorMessage = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
+      shouldAutoScrollOnNextAgentEvent = false
+      setThreadInProgress(normalizedThreadId, false)
+      setTurnActivityForThread(normalizedThreadId, null)
+      setTurnErrorForThread(normalizedThreadId, errorMessage)
+      error.value = errorMessage
+      await persistOutboxItem({
+        ...sendingItem,
+        status: 'failed',
+        updatedAtIso: new Date().toISOString(),
+        lastError: errorMessage,
+      })
+      scheduleOutboxRetry(normalizedThreadId)
+    } finally {
+      drainingOutboxThreadIds.delete(normalizedThreadId)
+      isSendingMessage.value = false
+    }
+  }
+
+  async function sendMessageToSelectedThread(
+    payload: UiComposerSubmitPayload,
+    options: { onAccepted?: () => void } = {},
+  ): Promise<void> {
     const threadId = selectedThreadId.value
     const turnInput = normalizeComposerTurnInput(payload)
     if (!threadId || !turnInput.hasContent) return
 
-    if (inProgressById.value[threadId] === true) {
+    if (selectedSubmitMode.value === 'guide' && inProgressById.value[threadId] === true) {
       await steerActiveTurn(threadId, turnInput.text, turnInput.images, turnInput.skills)
+      options.onAccepted?.()
       return
     }
 
-    isSendingMessage.value = true
-    error.value = ''
-    beginPendingTurnForThread(threadId)
-    const optimisticMessageId = addOptimisticUserMessage(threadId, turnInput)
-
-    try {
-      const turnId = await startTurnForThread(threadId, turnInput.text, turnInput.images, turnInput.skills)
-      bindOptimisticUserMessageToTurn(threadId, turnId, optimisticMessageId)
-    } catch (unknownError) {
-      removeOptimisticUserMessage(threadId, optimisticMessageId)
-      throw failPendingTurnForThread(threadId, unknownError, 'Unknown application error')
-    } finally {
-      isSendingMessage.value = false
-    }
+    const item = await enqueueMessageForThread(threadId, payload)
+    if (!item) return
+    options.onAccepted?.()
+    await drainOutboxForThread(threadId)
   }
 
   async function sendTextToThreadById(threadId: string, text: string): Promise<void> {
@@ -1173,25 +1445,43 @@ export function useDesktopState() {
       throw new Error('Thread was not found')
     }
 
-    if (inProgressById.value[turnInput.threadId] === true) {
-      await steerActiveTurn(turnInput.threadId, turnInput.text, turnInput.images, turnInput.skills)
+    const item = await enqueueMessageForThread(turnInput.threadId, {
+      text: turnInput.text,
+      images: turnInput.images,
+      skills: turnInput.skills,
+    })
+    if (!item) return
+    await drainOutboxForThread(turnInput.threadId)
+  }
+
+  async function sendQueuedMessageNow(threadId: string, itemId: string): Promise<void> {
+    const normalizedThreadId = threadId.trim()
+    const normalizedItemId = itemId.trim()
+    if (!normalizedThreadId || !normalizedItemId) return
+
+    const item = (outboxItemsByThreadId.value[normalizedThreadId] ?? []).find((row) => row.id === normalizedItemId)
+    if (!item || item.status === 'sending') return
+
+    if (inProgressById.value[normalizedThreadId] === true) {
+      try {
+        await steerActiveTurn(normalizedThreadId, item.text, item.images, item.skills)
+        await deleteOutboxItem(item)
+      } catch {
+        // steerActiveTurn already surfaces the error in the selected thread state.
+      }
       return
     }
 
-    isSendingMessage.value = true
-    error.value = ''
-    beginPendingTurnForThread(turnInput.threadId)
-    const optimisticMessageId = addOptimisticUserMessage(turnInput.threadId, turnInput)
+    await drainOutboxForThread(normalizedThreadId, { itemId: normalizedItemId })
+  }
 
-    try {
-      const turnId = await startTurnForThread(turnInput.threadId, turnInput.text, turnInput.images, turnInput.skills)
-      bindOptimisticUserMessageToTurn(turnInput.threadId, turnId, optimisticMessageId)
-    } catch (unknownError) {
-      removeOptimisticUserMessage(turnInput.threadId, optimisticMessageId)
-      throw failPendingTurnForThread(turnInput.threadId, unknownError, 'Unknown application error')
-    } finally {
-      isSendingMessage.value = false
-    }
+  async function deleteQueuedMessage(threadId: string, itemId: string): Promise<void> {
+    const normalizedThreadId = threadId.trim()
+    const normalizedItemId = itemId.trim()
+    if (!normalizedThreadId || !normalizedItemId) return
+    const item = (outboxItemsByThreadId.value[normalizedThreadId] ?? []).find((row) => row.id === normalizedItemId)
+    if (!item || item.status === 'sending') return
+    await deleteOutboxItem(item)
   }
 
   async function steerActiveTurn(
@@ -1531,6 +1821,7 @@ export function useDesktopState() {
     activeReasoningItemIdByThreadId.clear()
     shouldAutoScrollOnNextAgentEvent = false
     loadingMessagesByThreadId.value = {}
+    loadingEarlierMessagesByThreadId.value = {}
     persistedMessagesByThreadId.value = {}
     liveAgentMessagesByThreadId.value = {}
     liveReasoningTextByThreadId.value = {}
@@ -1540,7 +1831,13 @@ export function useDesktopState() {
     turnSummaryByThreadId.value = {}
     turnErrorByThreadId.value = {}
     messageLoadErrorByThreadId.value = {}
+    messagePageByThreadId.value = {}
     activeTurnIdByThreadId.value = {}
+    for (const timerId of outboxRetryTimersByThreadId.values()) {
+      if (typeof window !== 'undefined') window.clearTimeout(timerId)
+    }
+    outboxRetryTimersByThreadId.clear()
+    drainingOutboxThreadIds.clear()
   }
 
   const realtimeState = useDesktopRealtimeState({
@@ -1565,6 +1862,7 @@ export function useDesktopState() {
     selectedLiveOverlay,
     selectedStructuredPlan,
     selectedMessageLoadError,
+    selectedQueuedMessages,
     selectedThreadId,
     isHiddenView,
     rateLimitSnapshot,
@@ -1572,11 +1870,15 @@ export function useDesktopState() {
     selectedModelId,
     selectedReasoningEffort,
     selectedPermissionMode,
+    selectedSubmitMode,
     collaborationModeOptions,
     selectedCollaborationModeName,
     messages,
     isLoadingThreads,
     isLoadingMessages,
+    isLoadingEarlierMessages,
+    selectedThreadHasMoreMessagesBefore,
+    selectedThreadEarlierMessageCount,
     hasLoadedSelectedMessages,
     isSendingMessage,
     isInterruptingTurn,
@@ -1589,6 +1891,7 @@ export function useDesktopState() {
     refreshRateLimits,
     selectThread,
     loadMessages,
+    loadEarlierMessages,
     setThreadScrollState,
     hideThreadById,
     restoreThreadById,
@@ -1597,6 +1900,8 @@ export function useDesktopState() {
     setHiddenView,
     renameThreadById,
     sendMessageToSelectedThread,
+    sendQueuedMessageNow,
+    deleteQueuedMessage,
     sendTextToThreadById,
     sendMessageToNewThread,
     interruptSelectedThreadTurn,
@@ -1605,6 +1910,7 @@ export function useDesktopState() {
     setSelectedReasoningEffort,
     setSelectedCollaborationModeName,
     setSelectedPermissionMode,
+    setSelectedSubmitMode,
     respondToPendingServerRequest,
     recordRollbackAudit,
     renameProject,

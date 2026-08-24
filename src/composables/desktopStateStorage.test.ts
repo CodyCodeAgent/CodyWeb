@@ -78,6 +78,7 @@ describe('desktopStateStorage', () => {
       reasoningEffort: 'medium',
       collaborationModeName: 'default',
       permissionMode: 'current',
+      submitMode: 'queue',
     })
   })
 
@@ -106,11 +107,13 @@ describe('desktopStateStorage', () => {
       reasoningEffort: 'high',
       collaborationModeName: ' plan ',
       permissionMode: 'yolo',
+      submitMode: 'guide',
     })).toEqual({
       modelId: 'gpt-5.5',
       reasoningEffort: 'high',
       collaborationModeName: 'plan',
       permissionMode: 'yolo',
+      submitMode: 'guide',
     })
 
     expect(normalizeDesktopTurnPreferences({
@@ -118,11 +121,13 @@ describe('desktopStateStorage', () => {
       reasoningEffort: 'invalid',
       collaborationModeName: '',
       permissionMode: 'invalid',
+      submitMode: 'invalid',
     })).toEqual({
       modelId: '',
       reasoningEffort: 'medium',
       collaborationModeName: 'default',
       permissionMode: 'current',
+      submitMode: 'queue',
     })
 
     saveDesktopTurnPreferences({
@@ -130,12 +135,14 @@ describe('desktopStateStorage', () => {
       reasoningEffort: 'xhigh',
       collaborationModeName: 'plan',
       permissionMode: 'yolo',
+      submitMode: 'guide',
     })
     expect(loadDesktopTurnPreferences()).toEqual({
       modelId: 'gpt-5.5',
       reasoningEffort: 'xhigh',
       collaborationModeName: 'plan',
       permissionMode: 'yolo',
+      submitMode: 'guide',
     })
 
     storage.setItem(DESKTOP_STORAGE_KEYS.turnPreferences, '{bad json')
@@ -144,6 +151,7 @@ describe('desktopStateStorage', () => {
       reasoningEffort: 'medium',
       collaborationModeName: 'default',
       permissionMode: 'current',
+      submitMode: 'queue',
     })
   })
 

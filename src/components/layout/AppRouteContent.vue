@@ -14,11 +14,13 @@
       <ThreadComposer :active-thread-id="composerThreadContextId" :disabled="isSendingMessage" :prompt-insertion="promptInsertion"
         :models="availableModelIds" :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
         :collaboration-modes="collaborationModeOptions" :selected-collaboration-mode="selectedCollaborationModeName"
-        :selected-permission-mode="selectedPermissionMode" :busy-label="homeComposerBusyLabel" :is-turn-in-progress="false"
-        :is-interrupting-turn="false" :cwd="newThreadCwd" @submit="emit('submitMessage', $event)"
+        :selected-permission-mode="selectedPermissionMode" :selected-submit-mode="selectedSubmitMode"
+        :busy-label="homeComposerBusyLabel" :is-turn-in-progress="false"
+        :is-interrupting-turn="false" :cwd="newThreadCwd" @submit="emitSubmitMessage"
         @update:selected-model="emit('selectModel', $event)" @update:selected-reasoning-effort="emit('selectReasoningEffort', $event)"
         @update:selected-collaboration-mode="emit('selectCollaborationMode', $event)"
-        @update:selected-permission-mode="emit('selectPermissionMode', $event)" />
+        @update:selected-permission-mode="emit('selectPermissionMode', $event)"
+        @update:selected-submit-mode="emit('selectSubmitMode', $event)" />
     </div>
   </template>
   <div v-else class="content-grid" :data-view="isCodeView ? 'code' : 'chat'">
@@ -28,9 +30,12 @@
         <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages" :cwd="selectedThread?.cwd ?? ''"
           :thread-title="selectedThread?.title ?? ''" :load-error="selectedMessageLoadError" :active-thread-id="composerThreadContextId"
           :scroll-state="selectedThreadScrollState" :live-overlay="liveOverlay" :pending-requests="selectedThreadServerRequests"
+          :is-loading-earlier-messages="isLoadingEarlierMessages" :has-more-messages-before="selectedThreadHasMoreMessagesBefore"
+          :earlier-message-count="selectedThreadEarlierMessageCount"
           :share-selection-active="conversationShareSelecting"
           :initial-share-selected-message-ids="conversationShareSelectedMessageIds"
           @update-scroll-state="emit('updateScrollState', $event)" @respond-server-request="emit('respondServerRequest', $event)"
+          @load-earlier-messages="emit('loadEarlierMessages', $event)"
           @retry-load="emit('retryLoad')" @open-code="emit('openCode', $event)"
           @confirm-share-selection="emit('confirmShareSelection', $event)" @cancel-share-selection="emit('cancelShareSelection')" />
       </template>
@@ -47,20 +52,29 @@
         :thread-title="selectedThread?.title ?? ''"
         :load-error="selectedMessageLoadError" :active-thread-id="composerThreadContextId" :scroll-state="selectedThreadScrollState"
         :live-overlay="liveOverlay" :pending-requests="selectedThreadServerRequests" :share-selection-active="conversationShareSelecting"
+        :is-loading-earlier-messages="isLoadingEarlierMessages" :has-more-messages-before="selectedThreadHasMoreMessagesBefore"
+        :earlier-message-count="selectedThreadEarlierMessageCount"
         :initial-share-selected-message-ids="conversationShareSelectedMessageIds"
         @update-scroll-state="emit('updateScrollState', $event)" @respond-server-request="emit('respondServerRequest', $event)"
+        @load-earlier-messages="emit('loadEarlierMessages', $event)"
         @retry-load="emit('retryLoad')" @open-code="emit('openCode', $event)"
         @confirm-share-selection="emit('confirmShareSelection', $event)" @cancel-share-selection="emit('cancelShareSelection')" />
     </div></div>
     <ThreadComposer :active-thread-id="composerThreadContextId" :prompt-insertion="promptInsertion" :context-insertion="contextInsertion" :disabled="isSendingMessage"
       :models="availableModelIds" :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
       :collaboration-modes="collaborationModeOptions" :selected-collaboration-mode="selectedCollaborationModeName"
-      :selected-permission-mode="selectedPermissionMode" :busy-label="threadComposerBusyLabel" :cwd="selectedThread?.cwd ?? ''"
+      :selected-permission-mode="selectedPermissionMode" :selected-submit-mode="selectedSubmitMode"
+      :queued-messages="selectedQueuedMessages"
+      :busy-label="threadComposerBusyLabel" :cwd="selectedThread?.cwd ?? ''"
       :is-turn-in-progress="isSelectedThreadInProgress" :is-interrupting-turn="isInterruptingTurn"
-      @submit="emit('submitMessage', $event)" @update:selected-model="emit('selectModel', $event)"
+      @submit="emitSubmitMessage" @update:selected-model="emit('selectModel', $event)"
       @update:selected-reasoning-effort="emit('selectReasoningEffort', $event)"
       @update:selected-collaboration-mode="emit('selectCollaborationMode', $event)"
-      @update:selected-permission-mode="emit('selectPermissionMode', $event)" @interrupt="emit('interrupt')" />
+      @update:selected-permission-mode="emit('selectPermissionMode', $event)"
+      @update:selected-submit-mode="emit('selectSubmitMode', $event)"
+      @send-queued-message-now="emit('sendQueuedMessageNow', $event)"
+      @delete-queued-message="emit('deleteQueuedMessage', $event)"
+      @interrupt="emit('interrupt')" />
   </div>
 </template>
 
@@ -68,7 +82,7 @@
 import { defineAsyncComponent } from 'vue'
 import type { PromptInsertion } from '../../composables/promptLibraryRules'
 import { useLocale } from '../../composables/useLocale'
-import type { ReasoningEffort, ThreadScrollState, UiCollaborationModeOption, UiComposerContextAttachment, UiComposerPermissionMode, UiComposerSubmitPayload, UiLiveOverlay, UiMessage, UiServerRequest, UiServerRequestReply, UiThread } from '../../types/codex'
+import type { ReasoningEffort, ThreadScrollState, UiCollaborationModeOption, UiComposerContextAttachment, UiComposerPermissionMode, UiComposerSubmitAck, UiComposerSubmitMode, UiComposerSubmitPayload, UiLiveOverlay, UiMessage, UiQueuedMessage, UiServerRequest, UiServerRequestReply, UiThread } from '../../types/codex'
 import ComposerDropdown from '../content/ComposerDropdown.vue'
 import ThreadComposer from '../content/ThreadComposer.vue'
 import ThreadConversation from '../content/ThreadConversation.vue'
@@ -85,24 +99,35 @@ defineProps<{
   composerThreadContextId: string; isSendingMessage: boolean; promptInsertion: PromptInsertion | null; availableModelIds: string[]
   contextInsertion: UiComposerContextAttachment | null
   selectedModelId: string; selectedReasoningEffort: ReasoningEffort | ''; collaborationModeOptions: UiCollaborationModeOption[]
-  selectedCollaborationModeName: string; selectedPermissionMode: UiComposerPermissionMode; homeComposerBusyLabel: string
+  selectedCollaborationModeName: string; selectedPermissionMode: UiComposerPermissionMode; selectedSubmitMode: UiComposerSubmitMode
+  homeComposerBusyLabel: string
   filteredMessages: UiMessage[]; isLoadingMessages: boolean; selectedThread: UiThread | null; selectedMessageLoadError: string
+  isLoadingEarlierMessages: boolean; selectedThreadHasMoreMessagesBefore: boolean; selectedThreadEarlierMessageCount: number
   selectedThreadScrollState: ThreadScrollState | null; liveOverlay: UiLiveOverlay | null; selectedThreadServerRequests: UiServerRequest[]
+  selectedQueuedMessages: UiQueuedMessage[]
   threadComposerBusyLabel: string; isSelectedThreadInProgress: boolean; isInterruptingTurn: boolean
   conversationShareSelecting: boolean
   conversationShareSelectedMessageIds: string[]
 }>()
 const emit = defineEmits<{
   selectThread: [string]; respondServerRequest: [UiServerRequestReply]; selectNewThreadFolder: [string]
-  submitMessage: [UiComposerSubmitPayload]; selectModel: [string]; selectReasoningEffort: [ReasoningEffort | '']
+  submitMessage: [UiComposerSubmitPayload, UiComposerSubmitAck]; selectModel: [string]; selectReasoningEffort: [ReasoningEffort | '']
   selectCollaborationMode: [string]; selectPermissionMode: [UiComposerPermissionMode]
+  selectSubmitMode: [UiComposerSubmitMode]
   updateScrollState: [{ threadId: string; state: ThreadScrollState }]; retryLoad: []; interrupt: []
+  loadEarlierMessages: [threadId: string]
+  sendQueuedMessageNow: [payload: { threadId: string; messageId: string }]
+  deleteQueuedMessage: [payload: { threadId: string; messageId: string }]
   openCode: [location: { path?: string; line?: number; mode?: 'file' | 'diff' }]
   askCode: [attachment: UiComposerContextAttachment]
   confirmShareSelection: [messageIds: string[]]
   cancelShareSelection: []
 }>()
 const { t } = useLocale()
+
+function emitSubmitMessage(payload: UiComposerSubmitPayload, ack: UiComposerSubmitAck): void {
+  emit('submitMessage', payload, ack)
+}
 </script>
 
 <style scoped>
