@@ -22,6 +22,7 @@ export function createThreadCacheRoutes(cache: ThreadMessageCache): DomainRoute 
       threadId,
       limit: readIntegerParam(url.searchParams.get('limit'), 10),
       offset: readIntegerParam(url.searchParams.get('offset'), 0),
+      beforeMessageId: url.searchParams.get('beforeMessageId')?.trim() ?? '',
     })
     setJson(res, 200, { result })
     return true

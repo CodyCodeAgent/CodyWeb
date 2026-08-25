@@ -612,7 +612,13 @@ let bottomLockFrame = 0
 let bottomLockFramesLeft = 0
 let copiedMessageTimer: number | null = null
 let hasAppliedInitialScroll = false
-let pendingEarlierScrollHeight: number | null = null
+let pendingEarlierScrollAnchor: {
+  messageId: string
+  viewportOffset: number
+  scrollHeight: number
+  earlierMessageCount: number
+} | null = null
+let isRestoringEarlierMessages = false
 const trackedPendingImages = new WeakSet<HTMLImageElement>()
 const CACHED_MESSAGE_PAGE_SIZE = 10
 
@@ -956,7 +962,22 @@ function onScrollToBottomClick(): void {
 async function revealEarlierMessages(): Promise<void> {
   if (!props.activeThreadId || hiddenMessagesCount.value <= 0 || props.isLoadingEarlierMessages === true) return
   const container = conversationListRef.value
-  pendingEarlierScrollHeight = container?.scrollHeight ?? null
+  if (!container) return
+  const containerRect = container.getBoundingClientRect()
+  const visibleAnchor = [...container.querySelectorAll<HTMLElement>('[data-message-id]')]
+    .find((element) => {
+      const rect = element.getBoundingClientRect()
+      return rect.height > 0 && rect.bottom > containerRect.top && rect.top < containerRect.bottom
+    })
+  pendingEarlierScrollAnchor = {
+    messageId: visibleAnchor?.dataset.messageId ?? '',
+    viewportOffset: visibleAnchor
+      ? visibleAnchor.getBoundingClientRect().top - containerRect.top
+      : 0,
+    scrollHeight: container.scrollHeight,
+    earlierMessageCount: hiddenMessagesCount.value,
+  }
+  isRestoringEarlierMessages = true
   isFollowingBottom.value = false
   emit('loadEarlierMessages', props.activeThreadId)
 }
@@ -1011,7 +1032,7 @@ function enforceBottomState(): void {
 }
 
 function shouldLockToBottom(): boolean {
-  return isFollowingBottom.value
+  return isFollowingBottom.value && !isRestoringEarlierMessages
 }
 
 function runBottomLockFrame(): void {
@@ -1083,25 +1104,42 @@ watch(
   () => props.messages,
   async () => {
     if (props.isLoading) return
-    if (pendingEarlierScrollHeight !== null) {
-      await nextTick()
-      const container = conversationListRef.value
-      if (container) {
-        container.scrollTop += container.scrollHeight - pendingEarlierScrollHeight
-        emitScrollState(container)
-      }
-      pendingEarlierScrollHeight = null
-      bindPendingImageHandlers()
-      return
-    }
     await scheduleScrollRestore()
   },
 )
 
 watch(
-  () => props.isLoadingEarlierMessages,
-  (isLoading) => {
-    if (!isLoading) pendingEarlierScrollHeight = null
+  () => props.earlierMessageCount,
+  async (nextCount) => {
+    const pending = pendingEarlierScrollAnchor
+    if (!pending || Math.max(Math.trunc(nextCount ?? 0), 0) >= pending.earlierMessageCount) return
+    pendingEarlierScrollAnchor = null
+    await nextTick()
+    const container = conversationListRef.value
+    if (container) {
+      const anchor = [...container.querySelectorAll<HTMLElement>('[data-message-id]')]
+        .find((element) => element.dataset.messageId === pending.messageId)
+      if (anchor && pending.messageId) {
+        const containerTop = container.getBoundingClientRect().top
+        const nextViewportOffset = anchor.getBoundingClientRect().top - containerTop
+        container.scrollTop += nextViewportOffset - pending.viewportOffset
+      } else {
+        container.scrollTop += container.scrollHeight - pending.scrollHeight
+      }
+      emitScrollState(container)
+    }
+    isRestoringEarlierMessages = false
+    bindPendingImageHandlers()
+  },
+)
+
+watch(
+  () => props.loadError,
+  (loadError) => {
+    if (loadError && pendingEarlierScrollAnchor) {
+      pendingEarlierScrollAnchor = null
+      isRestoringEarlierMessages = false
+    }
   },
 )
 
@@ -1138,7 +1176,8 @@ watch(
     isLiveOverlayExpanded.value = false
     openToolMessageIds.value = {}
     expandedToolOutputIds.value = {}
-    pendingEarlierScrollHeight = null
+    pendingEarlierScrollAnchor = null
+    isRestoringEarlierMessages = false
     hasAppliedInitialScroll = false
     isFollowingBottom.value = props.scrollState?.isAtBottom !== false
     if (bottomLockFrame) {

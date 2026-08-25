@@ -43,10 +43,20 @@ function normalizeOffset(value: number): number {
   return Math.max(Math.trunc(value), 0)
 }
 
-function pageMessages(messages: UiMessage[], limit: number, offset: number): UiMessage[] {
-  const end = Math.max(messages.length - offset, 0)
+function pageMessagesBefore(
+  messages: UiMessage[],
+  limit: number,
+  offset: number,
+  beforeMessageId: string,
+): { messages: UiMessage[]; start: number } {
+  const matchedIndex = beforeMessageId
+    ? messages.findIndex((message) => message.id === beforeMessageId)
+    : -1
+  const end = matchedIndex >= 0
+    ? matchedIndex
+    : Math.max(messages.length - offset, 0)
   const start = Math.max(end - limit, 0)
-  return messages.slice(start, end)
+  return { messages: messages.slice(start, end), start }
 }
 
 export class ThreadMessageCache {
@@ -91,6 +101,7 @@ export class ThreadMessageCache {
     threadId: string
     limit?: number
     offset?: number
+    beforeMessageId?: string
   }): Promise<UiThreadMessagePage> {
     const threadId = input.threadId.trim()
     if (!threadId) throw new Error('threadId is required')
@@ -105,7 +116,7 @@ export class ThreadMessageCache {
       await this.refresh(entry, { forceFull: true })
     }
 
-    return this.buildPage(entry, limit, offset)
+    return this.buildPage(entry, limit, offset, input.beforeMessageId?.trim() ?? '')
   }
 
   async refreshDueEntries(): Promise<void> {
@@ -216,9 +227,16 @@ export class ThreadMessageCache {
     }
   }
 
-  private buildPage(entry: ThreadMessageCacheEntry, limit: number, offset: number): UiThreadMessagePage {
-    const messages = pageMessages(entry.messages, limit, offset)
-    const nextOffset = offset + messages.length
+  private buildPage(
+    entry: ThreadMessageCacheEntry,
+    limit: number,
+    offset: number,
+    beforeMessageId: string,
+  ): UiThreadMessagePage {
+    const page = pageMessagesBefore(entry.messages, limit, offset, beforeMessageId)
+    const messages = page.messages
+    const nextOffset = entry.messages.length - page.start
+    const remainingBefore = page.start
     return {
       threadId: entry.threadId,
       messages,
@@ -226,7 +244,9 @@ export class ThreadMessageCache {
       limit,
       offset,
       nextOffset,
-      hasMoreBefore: nextOffset < entry.total,
+      nextBeforeMessageId: messages[0]?.id ?? null,
+      remainingBefore,
+      hasMoreBefore: remainingBefore > 0,
       cache: {
         status: entry.status,
         hydratedAtIso: entry.hydratedAtIso,

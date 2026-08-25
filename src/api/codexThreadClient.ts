@@ -81,7 +81,7 @@ export async function getThreadMessages(threadId: string): Promise<UiMessage[]> 
 
 export async function getThreadMessagesPage(
   threadId: string,
-  options: { limit?: number; offset?: number } = {},
+  options: { limit?: number; offset?: number; beforeMessageId?: string } = {},
 ): Promise<UiThreadMessagePage> {
   const normalizedThreadId = threadId.trim()
   try {
@@ -89,6 +89,7 @@ export async function getThreadMessagesPage(
       threadId: normalizedThreadId,
       limit: options.limit ?? 10,
       offset: options.offset ?? 0,
+      beforeMessageId: options.beforeMessageId,
     }), {
       method: 'thread-cache/messages',
       networkErrorMessage: `Thread cache failed before request was sent`,

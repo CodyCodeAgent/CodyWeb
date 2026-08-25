@@ -372,6 +372,7 @@ describe('ThreadConversation', () => {
 
     await wrapper.get('[data-testid="conversation-list"]').trigger('scroll')
     expect(wrapper.emitted('loadEarlierMessages')).toEqual([['thread-1']])
+    await wrapper.setProps({ isLoadingEarlierMessages: true })
     Object.defineProperty(list, 'scrollHeight', {
       configurable: true,
       value: 3200,
@@ -379,6 +380,7 @@ describe('ThreadConversation', () => {
     await wrapper.setProps({
       messages: [...earlierMessages, ...messages],
       earlierMessageCount: 180,
+      isLoadingEarlierMessages: false,
     })
     await nextTick()
     await nextTick()
@@ -388,6 +390,39 @@ describe('ThreadConversation', () => {
     expect(renderedMessages[0].attributes('data-message-id')).toBe('message-181')
     expect(wrapper.get('[data-testid="conversation-history-button"]').text()).toContain('180 hidden')
     expect(list.scrollTop).toBe(1200)
+  })
+
+  it('restores the same visible message anchor after prepending history', async () => {
+    const messages = Array.from({ length: 10 }, (_, index) => message(index + 191))
+    const earlierMessages = Array.from({ length: 10 }, (_, index) => message(index + 181))
+    const wrapper = mountConversation({
+      messages,
+      hasMoreMessagesBefore: true,
+      earlierMessageCount: 190,
+    })
+    const list = wrapper.get('[data-testid="conversation-list"]').element as HTMLElement
+    const anchor = wrapper.get('[data-message-id="message-191"]').element as HTMLElement
+    let anchorTop = 100
+    vi.spyOn(list, 'getBoundingClientRect').mockReturnValue({
+      top: 0, bottom: 600, left: 0, right: 800, width: 800, height: 600, x: 0, y: 0, toJSON: () => ({}),
+    })
+    vi.spyOn(anchor, 'getBoundingClientRect').mockImplementation(() => ({
+      top: anchorTop, bottom: anchorTop + 80, left: 0, right: 800, width: 800, height: 80, x: 0, y: anchorTop, toJSON: () => ({}),
+    }))
+    list.scrollTop = 40
+
+    await wrapper.get('[data-testid="conversation-history-button"]').trigger('click')
+    await wrapper.setProps({ isLoadingEarlierMessages: true })
+    anchorTop = 460
+    await wrapper.setProps({
+      messages: [...earlierMessages, ...messages],
+      earlierMessageCount: 180,
+      isLoadingEarlierMessages: false,
+    })
+    await nextTick()
+    await nextTick()
+
+    expect(list.scrollTop).toBe(400)
   })
 
   it('resets pending earlier-load scroll restoration when switching threads', async () => {

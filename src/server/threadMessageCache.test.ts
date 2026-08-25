@@ -66,6 +66,31 @@ describe('ThreadMessageCache', () => {
     expect(secondPage.hasMoreBefore).toBe(true)
   })
 
+  it('keeps the earlier-page boundary stable when newer messages arrive', async () => {
+    let messageCount = 25
+    const rpc = vi.fn(async () => threadReadResponse('thread-1', messageCount))
+    const cache = new ThreadMessageCache({ rpc })
+
+    const latestPage = await cache.getMessagesPage({ threadId: 'thread-1', limit: 10 })
+    expect(latestPage.nextBeforeMessageId).toBe('message-16')
+
+    messageCount = 27
+    cache.markDirty('thread-1')
+    const earlierPage = await cache.getMessagesPage({
+      threadId: 'thread-1',
+      limit: 10,
+      offset: latestPage.nextOffset,
+      beforeMessageId: latestPage.nextBeforeMessageId ?? '',
+    })
+
+    expect(earlierPage.messages.map((message) => message.id)).toEqual([
+      'message-6', 'message-7', 'message-8', 'message-9', 'message-10',
+      'message-11', 'message-12', 'message-13', 'message-14', 'message-15',
+    ])
+    expect(earlierPage.remainingBefore).toBe(5)
+    expect(earlierPage.nextBeforeMessageId).toBe('message-6')
+  })
+
   it('shares one hydration promise for concurrent requests to the same thread', async () => {
     const hydration = deferred<ThreadReadResponse>()
     const rpc = vi.fn(async () => hydration.promise)

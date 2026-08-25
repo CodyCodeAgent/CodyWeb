@@ -67,6 +67,7 @@ import {
   buildLiveOverlay,
   buildRollbackAuditMessage,
   clearLiveReasoningTextForThread,
+  finalizeLiveMessagesForTurn,
   mergeMessages,
   removeMessageById,
   replaceMessageById,
@@ -184,7 +185,9 @@ export function useDesktopState() {
   const messageLoadErrorByThreadId = ref<Record<string, string>>({})
   const messagePageByThreadId = ref<Record<string, {
     total: number
-    loadedCount: number
+    nextOffset: number
+    nextBeforeMessageId: string | null
+    remainingBefore: number
     hasMoreBefore: boolean
   }>>({})
   const isSendingMessage = ref(false)
@@ -215,7 +218,7 @@ export function useDesktopState() {
   const selectedThreadEarlierMessageCount = computed(() => {
     const page = messagePageByThreadId.value[selectedThreadId.value]
     if (!page?.hasMoreBefore) return 0
-    return Math.max(page.total - page.loadedCount, 1)
+    return Math.max(page.remainingBefore, 1)
   })
   const hasLoadedSelectedMessages = computed(
     () => loadedMessagesByThreadId.value[selectedThreadId.value] === true,
@@ -803,14 +806,17 @@ export function useDesktopState() {
         explicitDurationMs: durationHints.explicitDurationMs,
         turnDurationMs: durationHints.turnDurationMs,
       }))
-      setLiveAgentMessagesForThread(
-        completedTurn.threadId,
+      const finalizedMessages = finalizeLiveMessagesForTurn(
+        persistedMessagesByThreadId.value[completedTurn.threadId] ?? [],
         removeLivePlanMessagesForTurn(
           liveAgentMessagesByThreadId.value[completedTurn.threadId] ?? [],
           completedTurn.turnId,
           livePlanMessageIdByTurnId.get(completedTurn.turnId),
         ),
+        completedTurn.turnId,
       )
+      setPersistedMessagesForThread(completedTurn.threadId, finalizedMessages.persistedMessages)
+      setLiveAgentMessagesForThread(completedTurn.threadId, finalizedMessages.liveMessages)
       activeTurnIdByThreadId.value = clearActiveTurnForThread(
         activeTurnIdByThreadId.value,
         completedTurn.threadId,
@@ -901,7 +907,23 @@ export function useDesktopState() {
 
     const completedAgentMessage = readAgentMessageCompleted(notification)
     if (completedAgentMessage) {
-      upsertLiveAgentMessage(notificationThreadId, completedAgentMessage)
+      const activeTurnId = activeTurnIdByThreadId.value[notificationThreadId]
+      if (completedAgentMessage.turnId && completedAgentMessage.turnId !== activeTurnId) {
+        const persistedMessage: UiMessage = {
+          ...completedAgentMessage,
+          messageType: 'agentMessage',
+        }
+        setPersistedMessagesForThread(
+          notificationThreadId,
+          mergeMessages(
+            persistedMessagesByThreadId.value[notificationThreadId] ?? [],
+            [persistedMessage],
+            { preserveMissing: true },
+          ),
+        )
+      } else {
+        upsertLiveAgentMessage(notificationThreadId, completedAgentMessage)
+      }
     }
 
     const livePlanMessageDelta = readPlanMessageDelta(notification)
@@ -1087,20 +1109,28 @@ export function useDesktopState() {
       }
       const nextMessages = page.messages
       const previousPersisted = persistedMessagesByThreadId.value[threadId] ?? []
+      const previousPage = messagePageByThreadId.value[threadId]
+      const preservePreviousWindow = options.silent === true
+        && previousPage !== undefined
+        && page.total >= previousPage.total
       const mergedMessages = mergeMessages(previousPersisted, nextMessages, {
-        preserveMissing: options.silent === true,
+        preserveMissing: preservePreviousWindow,
       })
       setPersistedMessagesForThread(threadId, mergedMessages)
-      const previousPage = messagePageByThreadId.value[threadId]
-      const loadedCount = options.silent === true && previousPage
-        ? Math.max(previousPage.loadedCount, page.messages.length)
-        : page.messages.length
       messagePageByThreadId.value = {
         ...messagePageByThreadId.value,
         [threadId]: {
           total: page.total,
-          loadedCount,
-          hasMoreBefore: loadedCount < page.total,
+          nextOffset: preservePreviousWindow ? previousPage.nextOffset : page.nextOffset,
+          nextBeforeMessageId: preservePreviousWindow
+            ? previousPage.nextBeforeMessageId
+            : page.nextBeforeMessageId,
+          remainingBefore: preservePreviousWindow
+            ? previousPage.remainingBefore
+            : page.remainingBefore,
+          hasMoreBefore: preservePreviousWindow
+            ? previousPage.hasMoreBefore
+            : page.hasMoreBefore,
         },
       }
       void reconcileOutboxForThread(threadId)
@@ -1147,19 +1177,21 @@ export function useDesktopState() {
     try {
       const page = await getThreadMessagesPage(normalizedThreadId, {
         limit: 10,
-        offset: pageState.loadedCount,
+        offset: pageState.nextOffset,
+        beforeMessageId: pageState.nextBeforeMessageId ?? undefined,
       })
       const previousMessages = persistedMessagesByThreadId.value[normalizedThreadId] ?? []
       const previousIds = new Set(previousMessages.map((message) => message.id))
       const earlierMessages = page.messages.filter((message) => !previousIds.has(message.id))
       setPersistedMessagesForThread(normalizedThreadId, [...earlierMessages, ...previousMessages])
-      const loadedCount = Math.min(page.total, pageState.loadedCount + earlierMessages.length)
       messagePageByThreadId.value = {
         ...messagePageByThreadId.value,
         [normalizedThreadId]: {
           total: page.total,
-          loadedCount,
-          hasMoreBefore: loadedCount < page.total,
+          nextOffset: page.nextOffset,
+          nextBeforeMessageId: page.nextBeforeMessageId,
+          remainingBefore: page.remainingBefore,
+          hasMoreBefore: page.hasMoreBefore,
         },
       }
     } catch (unknownError) {

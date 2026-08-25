@@ -12,7 +12,7 @@ const codexApiMock = vi.hoisted(() => {
   const getThreadMessages = vi.fn(async (_threadId?: string): Promise<UiMessage[]> => [])
   const getThreadMessagesPage = vi.fn(async (
     threadId?: string,
-    options: { limit?: number; offset?: number } = {},
+    options: { limit?: number; offset?: number; beforeMessageId?: string } = {},
   ): Promise<UiThreadMessagePage> => {
     const messages = await getThreadMessages(threadId)
     const limit = options.limit ?? 10
@@ -24,6 +24,8 @@ const codexApiMock = vi.hoisted(() => {
       limit,
       offset,
       nextOffset: offset + messages.length,
+      nextBeforeMessageId: messages[0]?.id ?? null,
+      remainingBefore: 0,
       hasMoreBefore: false,
       cache: {
         status: 'ready',
@@ -198,13 +200,17 @@ function buildMessagePage(
 ): UiThreadMessagePage {
   const offset = overrides.offset ?? 0
   const limit = overrides.limit ?? 10
+  const total = overrides.total ?? messages.length
+  const nextOffset = overrides.nextOffset ?? offset + messages.length
   return {
     threadId,
     messages,
-    total: overrides.total ?? messages.length,
+    total,
     limit,
     offset,
-    nextOffset: overrides.nextOffset ?? offset + messages.length,
+    nextOffset,
+    nextBeforeMessageId: overrides.nextBeforeMessageId ?? messages[0]?.id ?? null,
+    remainingBefore: overrides.remainingBefore ?? Math.max(total - nextOffset, 0),
     hasMoreBefore: overrides.hasMoreBefore ?? false,
     cache: {
       status: 'ready',
@@ -737,7 +743,7 @@ describe('useDesktopState realtime messages', () => {
         turnId: 'turn-b',
         role: 'assistant',
         text: '后台最终输出',
-        messageType: 'agentMessage.live',
+        messageType: 'agentMessage',
       },
       {
         id: 'turn-summary:turn-b',
@@ -844,6 +850,7 @@ describe('useDesktopState realtime messages', () => {
     expect(codexApiMock.getThreadMessagesPage).toHaveBeenNthCalledWith(2, 'thread-a', {
       limit: 10,
       offset: 10,
+      beforeMessageId: 'latest-1',
     })
     expect(state.messages.value.map((message) => message.id)).toEqual([
       ...earlierMessages.map((message) => message.id),
@@ -905,6 +912,7 @@ describe('useDesktopState realtime messages', () => {
     expect(codexApiMock.getThreadMessagesPage).toHaveBeenNthCalledWith(4, 'thread-a', {
       limit: 10,
       offset: 20,
+      beforeMessageId: 'earlier-a-1',
     })
     expect(state.messages.value.map((message) => message.id)).toEqual([
       ...secondEarlierMessages.map((message) => message.id),
@@ -912,6 +920,62 @@ describe('useDesktopState realtime messages', () => {
       ...latestMessages.map((message) => message.id),
     ])
     expect(state.selectedThreadEarlierMessageCount.value).toBe(5)
+  })
+
+  it('keeps a stable history boundary while silent refreshes append newer messages', async () => {
+    installBrowserGlobals('thread-a')
+    const latestMessages = Array.from({ length: 10 }, (_, index) => ({
+      id: `message-${String(index + 91)}`,
+      role: 'assistant' as const,
+      text: `Message ${String(index + 91)}`,
+    }))
+    const refreshedLatestMessages = Array.from({ length: 10 }, (_, index) => ({
+      id: `message-${String(index + 96)}`,
+      role: 'assistant' as const,
+      text: `Message ${String(index + 96)}`,
+    }))
+    const earlierMessages = Array.from({ length: 10 }, (_, index) => ({
+      id: `message-${String(index + 81)}`,
+      role: 'assistant' as const,
+      text: `Message ${String(index + 81)}`,
+    }))
+    codexApiMock.getThreadMessagesPage
+      .mockResolvedValueOnce(buildMessagePage('thread-a', latestMessages, {
+        total: 100,
+        nextOffset: 10,
+        nextBeforeMessageId: 'message-91',
+        remainingBefore: 90,
+        hasMoreBefore: true,
+      }))
+      .mockResolvedValueOnce(buildMessagePage('thread-a', refreshedLatestMessages, {
+        total: 105,
+        nextOffset: 10,
+        nextBeforeMessageId: 'message-96',
+        remainingBefore: 95,
+        hasMoreBefore: true,
+      }))
+      .mockResolvedValueOnce(buildMessagePage('thread-a', earlierMessages, {
+        total: 105,
+        nextOffset: 25,
+        nextBeforeMessageId: 'message-81',
+        remainingBefore: 80,
+        hasMoreBefore: true,
+      }))
+
+    const state = useDesktopState()
+    await state.selectThread('thread-a')
+    await state.loadMessages('thread-a', { silent: true })
+
+    expect(state.selectedThreadEarlierMessageCount.value).toBe(90)
+    await state.loadEarlierMessages('thread-a')
+
+    expect(codexApiMock.getThreadMessagesPage).toHaveBeenNthCalledWith(3, 'thread-a', {
+      limit: 10,
+      offset: 10,
+      beforeMessageId: 'message-91',
+    })
+    expect(state.selectedThreadEarlierMessageCount.value).toBe(80)
+    expect(state.messages.value.map((message) => message.id)).toContain('message-81')
   })
 
   it('clears visible message loading when a silent refresh supersedes it', async () => {

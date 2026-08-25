@@ -116,6 +116,8 @@ describe('codex thread client', () => {
           limit: 10,
           offset: 0,
           nextOffset: 1,
+          nextBeforeMessageId: null,
+          remainingBefore: 0,
           hasMoreBefore: false,
           cache: {
             status: 'ready',

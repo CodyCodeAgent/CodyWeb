@@ -116,6 +116,8 @@ export type UiThreadMessagePage = {
   limit: number
   offset: number
   nextOffset: number
+  nextBeforeMessageId: string | null
+  remainingBefore: number
   hasMoreBefore: boolean
   cache: {
     status: 'loading' | 'ready' | 'refreshing' | 'failed'

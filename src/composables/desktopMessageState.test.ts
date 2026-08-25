@@ -11,6 +11,7 @@ import {
   buildLiveOverlay,
   buildTurnSummaryMessage,
   clearLiveReasoningTextForThread,
+  finalizeLiveMessagesForTurn,
   formatTurnDuration,
   insertTurnSummaryMessage,
   mergeMessages,
@@ -464,6 +465,29 @@ describe('desktopMessageState', () => {
       message({ id: 'persisted-plan', text: 'persisted', messageType: 'plan' }),
     ])
     expect(removeLivePlanMessagesForTurn(messages, '', 'plan-live')).toBe(messages)
+  })
+
+  it('promotes the completed answer and clears stale live rows for the thread', () => {
+    const persisted = [
+      message({ id: 'user-1', turnId: 'turn-1', role: 'user', text: 'first', messageType: 'userMessage' }),
+      message({ id: 'agent-1', turnId: 'turn-1', text: 'first answer', messageType: 'agentMessage' }),
+      message({ id: 'user-2', turnId: 'turn-2', role: 'user', text: 'second', messageType: 'userMessage' }),
+    ]
+    const live = [
+      message({ id: 'agent-1-live-copy', turnId: 'turn-1', text: 'first answer', messageType: 'agentMessage.live' }),
+      message({ id: 'agent-2', turnId: 'turn-2', text: 'second answer', messageType: 'agentMessage.live' }),
+      message({ id: 'plan:turn-2:live', turnId: 'turn-2', text: 'plan', messageType: 'plan.live' }),
+    ]
+
+    const finalized = finalizeLiveMessagesForTurn(persisted, live, 'turn-2')
+
+    expect(finalized.liveMessages).toEqual([])
+    expect(finalized.persistedMessages.map((row) => [row.id, row.messageType])).toEqual([
+      ['user-1', 'userMessage'],
+      ['agent-1', 'agentMessage'],
+      ['user-2', 'userMessage'],
+      ['agent-2', 'agentMessage'],
+    ])
   })
 
   it('preserves live reasoning whitespace until display time', () => {

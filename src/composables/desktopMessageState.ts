@@ -221,6 +221,41 @@ export function removeLivePlanMessagesForTurn(
   return next.length === messages.length ? messages : next
 }
 
+export function finalizeLiveMessagesForTurn(
+  persistedMessages: UiMessage[],
+  liveMessages: UiMessage[],
+  turnId: string,
+): { persistedMessages: UiMessage[]; liveMessages: UiMessage[] } {
+  if (!turnId) {
+    return { persistedMessages, liveMessages }
+  }
+
+  // The live layer is only an overlay for the currently running turn. A
+  // history refresh may contain the final answer already, so reconcile against
+  // the complete loaded window before promoting anything. This avoids relying
+  // on the newest (small) server page to clean up realtime copies.
+  const unreconciledLiveMessages = removeRedundantLiveAgentMessages(liveMessages, persistedMessages)
+  const completedAgentMessages = unreconciledLiveMessages
+    .filter((message) => {
+      return message.messageType === 'agentMessage.live'
+        && (!message.turnId || message.turnId === turnId)
+    })
+    .map((message): UiMessage => ({
+      ...message,
+      messageType: 'agentMessage',
+    }))
+
+  return {
+    persistedMessages: completedAgentMessages.length > 0
+      ? mergeMessages(persistedMessages, completedAgentMessages, { preserveMissing: true })
+      : persistedMessages,
+    // A thread can only have one active turn. Once it completes, any remaining
+    // live rows belong either to that turn or to an older stale overlay and
+    // must not be appended to the end of the conversation forever.
+    liveMessages: [],
+  }
+}
+
 function replaceOptimisticUserMessages(
   previous: UiMessage[],
   incoming: UiMessage[],
