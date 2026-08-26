@@ -124,13 +124,17 @@ describe('feishuMessageResolver', () => {
       messageId: 'om_new', messageType: 'text', content: JSON.stringify({ text: '继续' }), parentId: 'om_card',
     }, {
       getMessage: async (_id, options) => response([{
-        message_id: 'om_card', msg_type: 'interactive', body: { content: options?.userCardContent
+        message_id: 'om_card', msg_type: 'interactive',
+        sender: { sender_type: 'app', sender_id: { open_id: 'ou_scoped_alert', union_id: 'on_alert_bot' }, sender_name: 'Alert Bot' },
+        body: { content: options?.userCardContent
           ? JSON.stringify({ header: { title: { content: '发布审批' } }, elements: [{ tag: 'markdown', content: '状态：待确认' }] })
           : JSON.stringify({ title: '审批摘要', elements: [[{ tag: 'text', text: '审批卡片摘要' }]] }) },
       }]),
     })
 
-    expect(resolved.quote).toMatchObject({ status: 'resolved', messageType: 'interactive' })
+    expect(resolved.quote).toMatchObject({
+      status: 'resolved', messageType: 'interactive', senderId: 'on_alert_bot', senderType: 'app', senderName: 'Alert Bot',
+    })
     expect(resolved.quote?.text).toContain('发布审批')
     expect(resolved.quote?.text).toContain('审批卡片摘要')
   })

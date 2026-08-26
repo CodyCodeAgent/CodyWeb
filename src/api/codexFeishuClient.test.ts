@@ -8,6 +8,7 @@ import {
   deleteFeishuBot,
   diagnoseFeishuBot,
   fetchFeishuDiagnostics,
+  fetchFeishuAutoRoutes,
   fetchFeishuBindings,
   fetchFeishuBots,
   fetchFeishuQrSetup,
@@ -16,9 +17,11 @@ import {
   fetchFeishuOpenPlatformApps,
   reconnectFeishuBot,
   removeFeishuBinding,
+  removeFeishuAutoRoute,
   retryFeishuQrSetup,
   retryFeishuDelivery,
   startFeishuQrSetup,
+  setFeishuAutoRouteEnabled,
   updateFeishuBot,
 } from './codexFeishuClient'
 
@@ -172,6 +175,27 @@ describe('Feishu client', () => {
     httpMock.fetchCodexResultRecord.mockResolvedValueOnce({ result: { removed: true }, status: 200 })
     await removeFeishuBinding('binding-1')
     expect(httpMock.fetchCodexResultRecord).toHaveBeenLastCalledWith('/codex-api/feishu/bindings/binding-1', expect.objectContaining({ init: { method: 'DELETE' } }))
+  })
+
+  it('lists, pauses, and removes card auto routes', async () => {
+    const route = {
+      id: 'route-1', botId: 'bot-1', chatId: 'oc_alerts', name: '差异播报', enabled: true,
+      sourceSenderId: 'on_alert_bot', sourceSenderType: 'app', cardTitle: '【平台】差异播报',
+      requiredKeywords: ['任务ID', '校验结果'], instruction: '分析根因', projectCwd: '/repo',
+      projectName: 'Repo', sessionId: 'thread-1', sessionTitle: 'Alert triage',
+      createdAtIso: '', updatedAtIso: '', lastMatchedAtIso: null, matchCount: 0,
+    }
+    httpMock.fetchCodexResultRecord.mockResolvedValueOnce({ result: { routes: [route] }, status: 200 })
+    await expect(fetchFeishuAutoRoutes('bot-1')).resolves.toMatchObject([{ id: 'route-1', enabled: true }])
+    expect(httpMock.fetchCodexResultRecord).toHaveBeenLastCalledWith('/codex-api/feishu/auto-routes?botId=bot-1', expect.anything())
+    httpMock.fetchCodexResultRecord.mockResolvedValueOnce({ result: { route: { ...route, enabled: false } }, status: 200 })
+    await expect(setFeishuAutoRouteEnabled('route / 1', false)).resolves.toMatchObject({ enabled: false })
+    expect(httpMock.fetchCodexResultRecord).toHaveBeenLastCalledWith('/codex-api/feishu/auto-routes/route%20%2F%201', expect.objectContaining({
+      init: expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: false }) }),
+    }))
+    httpMock.fetchCodexResultRecord.mockResolvedValueOnce({ result: { removed: true }, status: 200 })
+    await removeFeishuAutoRoute('route / 1')
+    expect(httpMock.fetchCodexResultRecord).toHaveBeenLastCalledWith('/codex-api/feishu/auto-routes/route%20%2F%201', expect.objectContaining({ init: { method: 'DELETE' } }))
   })
 
   it('rejects malformed collection responses', async () => {

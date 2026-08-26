@@ -14,7 +14,7 @@ import {
   type FeishuTransportHandlers,
   type FeishuTransportState,
 } from './feishuBotService'
-import type { FeishuCard, FeishuTurn } from './feishuBotStore'
+import type { FeishuAutoRoute, FeishuCard, FeishuTurn } from './feishuBotStore'
 import type { FeishuMessageResource } from './feishuMessageParser'
 import { FeishuPermanentDeliveryError } from './feishuReliableTransport'
 
@@ -43,6 +43,7 @@ class MemoryStore implements FeishuBotStorePort {
   completedEvents: string[] = []
   failedEvents: Array<{ key: string; error: string }> = []
   pendingClaims = new Map<string, string>()
+  autoRoutes = new Map<string, FeishuAutoRoute>()
   constructor(private readonly configuredBot: FeishuBotDefinition = bot) {}
   async listBots() { return [this.configuredBot] }
   async updateRuntime(_botId: string, update: FeishuRuntimeUpdate) { this.runtime.push(update) }
@@ -67,6 +68,40 @@ class MemoryStore implements FeishuBotStorePort {
   }
   async releasePendingMessageClaim(_botId: string, claimToken: string) {
     for (const [bindingKey, token] of this.pendingClaims) if (token === claimToken) this.pendingClaims.delete(bindingKey)
+  }
+  async listAutoRoutes(input: { botId?: string; chatId?: string; enabled?: boolean }) {
+    return [...this.autoRoutes.values()].filter((route) =>
+      (!input.botId || route.botId === input.botId)
+      && (!input.chatId || route.chatId === input.chatId)
+      && (input.enabled === undefined || route.enabled === input.enabled))
+  }
+  async touchAutoRoute(id: string) {
+    const route = this.autoRoutes.get(id)
+    if (route) this.autoRoutes.set(id, { ...route, matchCount: route.matchCount + 1, lastMatchedAtIso: new Date().toISOString() })
+  }
+  async upsertAutoRoute(input: Parameters<NonNullable<FeishuBotStorePort['upsertAutoRoute']>>[0]) {
+    const existing = [...this.autoRoutes.values()].find((route) => route.botId === input.botId && route.chatId === input.chatId && route.fingerprintKey === input.fingerprintKey)
+    const id = existing?.id ?? `route-${String(this.autoRoutes.size + 1)}`
+    const now = new Date().toISOString()
+    const route: FeishuAutoRoute = {
+      id, botId: input.botId, bindingKey: existing?.bindingKey ?? `${input.botId}:auto-route:${id}`,
+      chatId: input.chatId, name: input.name, enabled: true, sourceSenderId: input.sourceSenderId,
+      sourceSenderType: input.sourceSenderType, messageType: 'interactive', cardTitle: input.cardTitle,
+      requiredKeywords: input.requiredKeywords, fingerprintKey: input.fingerprintKey, instruction: input.instruction,
+      projectKey: input.projectKey, projectCwd: input.projectCwd, projectName: input.projectName,
+      sessionId: input.sessionId, sessionTitle: input.sessionTitle, createdByOpenId: input.createdByOpenId,
+      createdAtIso: existing?.createdAtIso ?? now, updatedAtIso: now,
+      lastMatchedAtIso: existing?.lastMatchedAtIso ?? null, matchCount: existing?.matchCount ?? 0,
+    }
+    this.autoRoutes.set(id, route)
+    return route
+  }
+  async updateAutoRouteDefinition(input: Parameters<NonNullable<FeishuBotStorePort['updateAutoRouteDefinition']>>[0]) {
+    const current = this.autoRoutes.get(input.id)
+    if (!current) return null
+    const updated = { ...current, ...input, updatedAtIso: new Date().toISOString() }
+    this.autoRoutes.set(input.id, updated)
+    return updated
   }
 }
 
@@ -205,6 +240,9 @@ function harness(binding?: FeishuSessionBinding, options: {
     responseText?: string
     error?: string
   }>
+  analyzeAutoRoute?: (input: {
+    cwd: string; cardTitle: string; cardText: string; candidateKeywords: string[]; requestedInstruction: string
+  }) => Promise<{ requiredKeywords: string[]; instruction: string; reason: string }>
 } = {}) {
   const store = new MemoryStore(options.bot)
   if (binding) store.bindings.set(binding.bindingKey, binding)
@@ -242,6 +280,7 @@ function harness(binding?: FeishuSessionBinding, options: {
     approvals: { resolve: approvalResolve },
     access: { grantUser },
     serverRequests: { respond: respondServerRequest },
+    ...(options.analyzeAutoRoute ? { autoRouteAnalyzer: { analyze: options.analyzeAutoRoute } } : {}),
     ...(options.lifecycle ? { lifecycle: options.lifecycle } : {}),
     transportFactory: () => transport,
     schedule: (work) => work(),
@@ -1242,6 +1281,73 @@ describe('FeishuBotService', () => {
     await service.stop()
   })
 
+  it('creates a fixed-session card route and safely applies Codex tool refinement', async () => {
+    const analyzeAutoRoute = vi.fn(async () => ({
+      requiredKeywords: ['任务ID', '不存在的字段', '校验结果'],
+      instruction: '定位差异根因并给出处理建议',
+      reason: '任务ID和校验结果是稳定结构',
+    }))
+    const { service, store } = harness(undefined, { analyzeAutoRoute })
+    await service.start()
+    const current = binding()
+    await store.savePendingMessage({
+      botId: 'bot-1', bindingKey: current.bindingKey, messageId: 'om_config_route',
+      prompt: '请分析告警', chatId: 'oc_1', rootId: '', chatType: 'group', senderOpenId: 'ou_user',
+      createdAtIso: new Date().toISOString(),
+      autoRouteDraft: {
+        sourceSenderId: 'on_alert_bot', sourceSenderType: 'app', messageType: 'interactive',
+        cardTitle: '【平台】差异播报', requiredKeywords: ['任务ID', '校验结果', '校验时间'],
+        fingerprintKey: 'initial-fingerprint', instruction: '请分析告警',
+        preview: '[卡片: 【平台】差异播报]\n任务ID：T1\n校验结果：不一致',
+      },
+    })
+    await service.handleCardAction('bot-1', {
+      operator: { open_id: 'ou_user' }, context: { open_message_id: 'route-picker-card' },
+      action: { option: 'thread-1', value: {
+        action: 'cody_feishu_select_session', binding_key: current.bindingKey,
+        project_key: '/repo', pending_message_id: 'om_config_route',
+      } },
+    })
+    await vi.waitFor(() => expect(analyzeAutoRoute).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect([...store.autoRoutes.values()][0]).toMatchObject({
+      sessionId: 'thread-1', requiredKeywords: ['任务ID', '校验结果'],
+      instruction: '定位差异根因并给出处理建议',
+    }))
+    expect([...store.bindings.values()]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ bindingKey: expect.stringContaining(':auto-route:'), threadId: 'thread-1' }),
+    ]))
+    await service.stop()
+  })
+
+  it('turns an explicitly quoted foreign-bot card into the route project picker', async () => {
+    const { service, store, transport, startTurn } = harness()
+    transport.getMessage = async (messageId, options) => ({ data: { items: messageId === 'om_source_card'
+      ? [{
+          message_id: messageId, msg_type: 'interactive',
+          sender: { id: 'on_alert_bot', id_type: 'union_id', sender_type: 'app', name: 'Alert bot' },
+          body: { content: JSON.stringify({
+            header: { title: { tag: 'plain_text', content: '【平台】差异播报' } },
+            elements: [{ tag: 'div', text: { tag: 'lark_md', content: '任务ID：T1\n校验结果：不一致' } }],
+          }) },
+        }]
+      : [{
+          message_id: messageId, msg_type: 'text',
+          body: { content: JSON.stringify({ text: '@_user_1 帮我分析根因' }) },
+        }] } })
+    await service.start()
+    transport.handlers?.onMessage(inbound({
+      message_id: 'om_config', parent_id: 'om_source_card',
+      content: JSON.stringify({ text: '@_user_1 帮我分析根因' }),
+    }))
+    await vi.waitFor(() => expect(store.pending.get(binding().bindingKey)?.autoRouteDraft).toMatchObject({
+      sourceSenderId: 'on_alert_bot', cardTitle: '【平台】差异播报',
+      requiredKeywords: ['任务ID', '校验结果'], instruction: '帮我分析根因',
+    }))
+    expect(transport.cards.some((row) => JSON.stringify(row.card).includes('配置卡片自动路由'))).toBe(true)
+    expect(startTurn).not.toHaveBeenCalled()
+    await service.stop()
+  })
+
   it('rejects a stale Session card instead of consuming a newer pending message', async () => {
     const { service, store, transport } = harness()
     await service.start()
@@ -1599,6 +1705,81 @@ describe('FeishuBotService', () => {
     await new Promise((resolve) => setImmediate(resolve))
     expect(bound.startTurn).not.toHaveBeenCalled()
     await bound.service.stop()
+  })
+
+  it('routes only matching top-level cards from another bot into the configured fixed session', async () => {
+    const { service, store, transport, startTurn } = harness()
+    store.autoRoutes.set('route-1', {
+      id: 'route-1', botId: 'bot-1', bindingKey: 'bot-1:auto-route:route-1', chatId: 'oc_1',
+      name: '差异播报', enabled: true, sourceSenderId: 'on_alert_bot', sourceSenderType: 'app',
+      messageType: 'interactive', cardTitle: '【平台】差异播报', requiredKeywords: ['任务ID', '校验结果'],
+      fingerprintKey: 'fingerprint-1', instruction: '分析根因', projectKey: '/repo', projectCwd: '/repo',
+      projectName: 'Repo', sessionId: 'thread-1', sessionTitle: 'Alert triage', createdByOpenId: 'ou_user',
+      createdAtIso: '', updatedAtIso: '', lastMatchedAtIso: null, matchCount: 0,
+    })
+    await service.start()
+    transport.handlers?.onMessage({
+      event_id: 'event-auto-route',
+      message: {
+        message_id: 'om_alert', chat_id: 'oc_1', chat_type: 'group', message_type: 'interactive',
+        content: JSON.stringify({
+          header: { title: { tag: 'plain_text', content: '【平台】差异播报' } },
+          elements: [{ tag: 'div', text: { tag: 'lark_md', content: '任务ID：T1\n校验结果：不一致' } }],
+        }),
+        mentions: [],
+      },
+      sender: { sender_type: 'app', sender_id: { open_id: 'ou_scoped_alert_bot', union_id: 'on_alert_bot' } },
+    })
+    await vi.waitFor(() => expect(startTurn).toHaveBeenCalledOnce())
+    expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'thread-1', permissionMode: 'yolo',
+      prompt: expect.stringContaining('固定处理指令：分析根因'),
+    }))
+    expect(store.autoRoutes.get('route-1')?.matchCount).toBe(1)
+    expect(store.bindings.get('bot-1:auto-route:route-1')).toMatchObject({ threadId: 'thread-1' })
+
+    transport.handlers?.onMessage({
+      event_id: 'event-auto-route-other',
+      message: {
+        message_id: 'om_other', chat_id: 'oc_1', chat_type: 'group', message_type: 'interactive',
+        content: JSON.stringify({ header: { title: { content: '【平台】差异播报' } }, elements: [{ tag: 'div', text: { content: '任务ID：T2\n校验结果：不一致' } }] }),
+        mentions: [],
+      },
+      sender: { sender_type: 'app', sender_id: { open_id: 'ou_other_bot', union_id: 'on_other_bot' } },
+    })
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(startTurn).toHaveBeenCalledOnce()
+    await service.stop()
+  })
+
+  it('does not run a saved card route after its group is removed from the allowlist', async () => {
+    const restrictedBot = { ...bot, allowedChatIds: ['oc_allowed'] }
+    const { service, store, transport, startTurn } = harness(undefined, { bot: restrictedBot })
+    store.autoRoutes.set('route-1', {
+      id: 'route-1', botId: 'bot-1', bindingKey: 'bot-1:auto-route:route-1', chatId: 'oc_1',
+      name: '差异播报', enabled: true, sourceSenderId: 'on_alert_bot', sourceSenderType: 'app',
+      messageType: 'interactive', cardTitle: '【平台】差异播报', requiredKeywords: ['任务ID'],
+      fingerprintKey: 'fingerprint-1', instruction: '分析根因', projectKey: '/repo', projectCwd: '/repo',
+      projectName: 'Repo', sessionId: 'thread-1', sessionTitle: 'Alert triage', createdByOpenId: 'ou_user',
+      createdAtIso: '', updatedAtIso: '', lastMatchedAtIso: null, matchCount: 0,
+    })
+    await service.start()
+    transport.handlers?.onMessage({
+      event_id: 'event-disallowed-auto-route',
+      message: {
+        message_id: 'om_alert', chat_id: 'oc_1', chat_type: 'group', message_type: 'interactive',
+        content: JSON.stringify({
+          header: { title: { content: '【平台】差异播报' } },
+          elements: [{ tag: 'div', text: { content: '任务ID：T1' } }],
+        }),
+        mentions: [],
+      },
+      sender: { sender_type: 'app', sender_id: { union_id: 'on_alert_bot' } },
+    })
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(startTurn).not.toHaveBeenCalled()
+    expect(store.autoRoutes.get('route-1')?.matchCount).toBe(0)
+    await service.stop()
   })
 
   it('falls back to chat delivery when a reply source is permanently unavailable', async () => {

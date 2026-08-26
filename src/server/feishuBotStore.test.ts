@@ -13,6 +13,7 @@ import {
   createFeishuTurn,
   deleteFeishuBot,
   deleteFeishuBinding,
+  deleteFeishuAutoRoute,
   deletePendingFeishuMessage,
   enqueueFeishuOutbox,
   failFeishuInboundEvent,
@@ -23,6 +24,7 @@ import {
   findFeishuTurn,
   listFeishuAuditLogs,
   listFeishuBindings,
+  listFeishuAutoRoutes,
   listFeishuBots,
   listFeishuCards,
   listFeishuOutbox,
@@ -36,9 +38,12 @@ import {
   savePendingFeishuMessage,
   takePendingFeishuMessage,
   touchFeishuBinding,
+  touchFeishuAutoRoute,
+  updateFeishuAutoRouteDefinition,
   updateFeishuBotRuntime,
   updateFeishuTurn,
   upsertFeishuBinding,
+  upsertFeishuAutoRoute,
   upsertFeishuBot,
   upsertFeishuCard,
 } from './feishuBotStore'
@@ -155,6 +160,34 @@ describe('feishuBotStore bots', () => {
 })
 
 describe('feishuBotStore bindings and pending messages', () => {
+  it('persists one idempotent fixed-session auto route and cleans up its synthetic binding', async () => {
+    await bot('routes')
+    const input = {
+      botId: 'routes', chatId: 'oc_alerts', name: '差异播报', sourceSenderId: 'ou_alert_bot',
+      sourceSenderType: 'app' as const, cardTitle: '【平台】差异播报', requiredKeywords: ['任务ID', '校验结果'],
+      fingerprintKey: 'fingerprint-1', instruction: '分析根因', projectKey: '/repo', projectCwd: '/repo',
+      projectName: 'Repo', sessionId: 'session-1', sessionTitle: 'Alert triage', createdByOpenId: 'ou_owner',
+    }
+    const first = await upsertFeishuAutoRoute(input)
+    const updated = await upsertFeishuAutoRoute({ ...input, sessionId: 'session-2', sessionTitle: 'Persistent triage' })
+    expect(updated.id).toBe(first.id)
+    expect(updated.bindingKey).toBe(first.bindingKey)
+    expect(await listFeishuAutoRoutes({ botId: 'routes', chatId: 'oc_alerts', enabled: true })).toMatchObject([
+      { sessionId: 'session-2', matchCount: 0, requiredKeywords: ['任务ID', '校验结果'] },
+    ])
+    await expect(updateFeishuAutoRouteDefinition({
+      id: updated.id, requiredKeywords: ['任务ID'], instruction: '仅定位差异根因',
+    })).resolves.toMatchObject({ requiredKeywords: ['任务ID'], instruction: '仅定位差异根因', fingerprintKey: 'fingerprint-1' })
+    await upsertFeishuBinding({
+      botId: 'routes', bindingKey: updated.bindingKey, chatId: 'oc_alerts', chatType: 'group',
+      projectCwd: '/repo', projectName: 'Repo', sessionId: 'session-2', sessionTitle: 'Persistent triage',
+    })
+    await expect(touchFeishuAutoRoute(updated.id)).resolves.toBe(true)
+    expect((await listFeishuAutoRoutes({ botId: 'routes' }))[0]).toMatchObject({ matchCount: 1 })
+    await expect(deleteFeishuAutoRoute(updated.id)).resolves.toBe(true)
+    await expect(findFeishuBinding(updated.bindingKey, 'routes')).resolves.toBeNull()
+  })
+
   it('isolates the same conversation key by bot and maps to shared Codex sessions', async () => {
     await bot('alpha')
     await bot('beta')

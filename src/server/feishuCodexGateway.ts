@@ -2,6 +2,7 @@ import type { CatalogProject, CatalogSnapshot, CatalogThread } from './catalogSt
 
 type Rpc = (method: string, params: unknown) => Promise<unknown>
 type RespondToServerRequest = (payload: unknown) => Promise<void>
+type Subscribe = (listener: (notification: { method: string; params?: unknown }) => void) => () => void
 
 export type FeishuProjectOption = {
   id: string
@@ -28,6 +29,12 @@ export type FeishuStartedTurn = {
   turnId: string
 }
 
+export type FeishuAutoRouteAnalysis = {
+  requiredKeywords: string[]
+  instruction: string
+  reason: string
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -36,6 +43,30 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function readAgentMessage(params: unknown): string {
+  const row = asRecord(params)
+  const item = asRecord(row?.item)
+  if (readString(item?.type) !== 'agentMessage') return ''
+  const direct = readString(item?.text || item?.message)
+  if (direct) return direct
+  const content = Array.isArray(item?.content) ? item.content : []
+  return content.map((value) => readString(asRecord(value)?.text)).filter(Boolean).join('\n').trim()
+}
+
+function parseAutoRouteAnalysis(text: string): FeishuAutoRouteAnalysis {
+  const normalized = text.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '')
+  const row = asRecord(JSON.parse(normalized) as unknown)
+  const rawKeywords = Array.isArray(row?.required_keywords) ? row.required_keywords : []
+  const proposal = {
+    requiredKeywords: rawKeywords.filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim()).filter(Boolean).slice(0, 8),
+    instruction: readString(row?.instruction).slice(0, 1_000),
+    reason: readString(row?.reason).slice(0, 1_000),
+  }
+  if (!proposal.requiredKeywords.length || !proposal.instruction) throw new Error('Codex returned an invalid card route proposal')
+  return proposal
 }
 
 function projectName(project: CatalogProject): string {
@@ -65,9 +96,109 @@ export class FeishuCodexGateway {
   constructor(private readonly dependencies: {
     rpc: Rpc
     respondToServerRequest: RespondToServerRequest
+    subscribe?: Subscribe
     readCatalog: () => Promise<CatalogSnapshot>
     refreshCatalog?: () => Promise<void>
   }) {}
+
+  /** Runs a short-lived, read-only Codex thread with a strict output schema. */
+  async analyzeAutoRoute(input: {
+    cwd: string
+    cardTitle: string
+    cardText: string
+    candidateKeywords: string[]
+    requestedInstruction: string
+    timeoutMs?: number
+  }): Promise<FeishuAutoRouteAnalysis> {
+    if (!this.dependencies.subscribe) throw new Error('Codex analysis notifications are unavailable')
+    const timeoutMs = Math.max(5_000, Math.min(input.timeoutMs ?? 45_000, 90_000))
+    let threadId = ''
+    let settled = false
+    let timeout: ReturnType<typeof setTimeout> | null = null
+    let unsubscribe: () => void = () => {}
+
+    const result = new Promise<FeishuAutoRouteAnalysis>((resolve, reject) => {
+      const finish = (value: FeishuAutoRouteAnalysis | Error) => {
+        if (settled) return
+        settled = true
+        if (timeout) clearTimeout(timeout)
+        unsubscribe()
+        if (value instanceof Error) reject(value)
+        else resolve(value)
+      }
+      unsubscribe = this.dependencies.subscribe?.((notification) => {
+        const params = asRecord(notification.params)
+        if (readString(params?.threadId) !== threadId) return
+        if (notification.method === 'item/completed') {
+          const message = readAgentMessage(notification.params)
+          if (!message) return
+          try { finish(parseAutoRouteAnalysis(message)) } catch { /* turn/completed reports the final failure */ }
+          return
+        }
+        if (notification.method !== 'turn/completed') return
+        const turn = asRecord(params?.turn)
+        const status = readString(turn?.status || params?.status)
+        const error = readString(asRecord(turn?.error)?.message || asRecord(params?.error)?.message)
+        if (error || status === 'failed') {
+          finish(new Error(error || 'Codex card route analysis failed'))
+          return
+        }
+        const items = Array.isArray(turn?.items) ? turn.items : []
+        const message = items.map((item) => readAgentMessage({ item })).filter(Boolean).at(-1) ?? ''
+        try { finish(parseAutoRouteAnalysis(message)) } catch (parseError) {
+          finish(parseError instanceof Error ? parseError : new Error(String(parseError)))
+        }
+      }) ?? (() => undefined)
+      timeout = setTimeout(() => finish(new Error('Codex card route analysis timed out')), timeoutMs)
+      timeout.unref?.()
+    })
+
+    try {
+      const started = asRecord(await this.dependencies.rpc('thread/start', {
+        cwd: input.cwd.trim(),
+        ephemeral: true,
+        approvalPolicy: 'never',
+        sandbox: 'read-only',
+        baseInstructions: [
+          '你是 CodyWeb 的飞书卡片路由规则分析器。',
+          '分析卡片结构，选择能区分卡片类型、且不会随每次告警变化的字段标签。',
+          '只能从 candidate_keywords 中选择，不得创建正则、脚本或新字段。',
+          '严格按照输出 Schema 返回；不要添加解释文字。',
+        ].join('\n'),
+      }))
+      threadId = readString(asRecord(started?.thread)?.id)
+      if (!threadId) throw new Error('thread/start did not return an analysis thread id')
+      await this.dependencies.rpc('turn/start', {
+        threadId,
+        input: [{ type: 'text', text: [
+          `卡片标题：${input.cardTitle}`,
+          `候选稳定字段：${input.candidateKeywords.join('、') || '无'}`,
+          `用户希望的处理方式：${input.requestedInstruction || '分析异常，给出结论、原因与建议'}`,
+          '',
+          '卡片内容：',
+          input.cardText.slice(0, 12_000),
+        ].join('\n'), text_elements: [] }],
+        approvalPolicy: 'never',
+        sandboxPolicy: { type: 'readOnly' },
+        outputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            required_keywords: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 8 },
+            instruction: { type: 'string', minLength: 1, maxLength: 1_000 },
+            reason: { type: 'string', minLength: 1, maxLength: 1_000 },
+          },
+          required: ['required_keywords', 'instruction', 'reason'],
+        },
+      })
+      return await result
+    } catch (error) {
+      if (timeout) clearTimeout(timeout)
+      unsubscribe()
+      settled = true
+      throw error
+    }
+  }
 
   async listProjects(): Promise<FeishuProjectOption[]> {
     await this.dependencies.refreshCatalog?.()

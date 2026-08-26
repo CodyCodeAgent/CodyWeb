@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import type { Server as HttpServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import vue from "@vitejs/plugin-vue";
@@ -14,6 +14,9 @@ const buildMetadata = readBuildMetadata(fileURLToPath(new URL(".", import.meta.u
 const buildTime = new Date().toISOString();
 
 export default defineConfig({
+  test: {
+    setupFiles: ["./src/test/setup.ts"],
+  },
   define: {
     __CODY_VERSION__: JSON.stringify(buildVersion),
     __CODY_GIT_SHA__: JSON.stringify(buildMetadata.gitSha),

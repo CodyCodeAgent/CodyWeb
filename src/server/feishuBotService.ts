@@ -6,6 +6,7 @@ import {
   buildAccessRequestCard,
   buildApprovalCard,
   buildActionResultCard,
+  buildAutoRouteCreatedCard,
   buildBotHelpCard,
   buildBoundSessionCard,
   buildProjectSelectionCard,
@@ -23,7 +24,13 @@ import {
 } from './feishuCards.js'
 import { persistFeishuAttachment, type FeishuDownloadedResource } from './feishuAttachments.js'
 import { parseFeishuMessage, type FeishuMessageResource } from './feishuMessageParser.js'
-import { resolveFeishuMessage, type FeishuMessageGetOptions } from './feishuMessageResolver.js'
+import { resolveFeishuMessage, type FeishuMessageGetOptions, type FeishuResolvedQuote } from './feishuMessageResolver.js'
+import {
+  buildFeishuAutoRoutePrompt,
+  createFeishuAutoRouteDraft,
+  matchesFeishuAutoRoute,
+  type FeishuAutoRouteDraft,
+} from './feishuAutoRoute.js'
 import {
   discoverCodexGeneratedReplyImages,
   extractFeishuToolReplyImages,
@@ -32,7 +39,7 @@ import {
   type FeishuImageUpload,
   type FeishuUploadedReplyImage,
 } from './feishuReplyImages.js'
-import type { FeishuCard as StoredFeishuCard, FeishuTurn as StoredFeishuTurn } from './feishuBotStore.js'
+import type { FeishuAutoRoute, FeishuCard as StoredFeishuCard, FeishuTurn as StoredFeishuTurn } from './feishuBotStore.js'
 import { FeishuPermanentDeliveryError } from './feishuReliableTransport.js'
 
 export type FeishuRuntimeState = 'connected' | 'connecting' | 'disconnected' | 'error'
@@ -69,6 +76,7 @@ export type FeishuPendingInbound = FeishuConversationRoute & {
   prompt: string
   resources?: FeishuMessageResource[]
   createdAtIso: string
+  autoRouteDraft?: FeishuAutoRouteDraft
   sessionSelection?: {
     action: 'new_session' | 'select_session'
     projectKey: string
@@ -115,6 +123,17 @@ export interface FeishuBotStorePort {
   deletePendingMessage(botId: string, messageId: string): Promise<void>
   claimPendingMessage(botId: string, bindingKey: string, claimToken: string): Promise<FeishuPendingInbound | null>
   releasePendingMessageClaim(botId: string, claimToken: string): Promise<void>
+  listAutoRoutes?(input: { botId?: string; chatId?: string; enabled?: boolean }): Promise<FeishuAutoRoute[]>
+  upsertAutoRoute?(input: {
+    botId: string; chatId: string; name: string; sourceSenderId: string; sourceSenderType: 'app' | 'bot'
+    cardTitle: string; requiredKeywords: string[]; fingerprintKey: string; instruction: string
+    projectKey: string; projectCwd: string; projectName: string; sessionId: string; sessionTitle: string
+    createdByOpenId: string
+  }): Promise<FeishuAutoRoute>
+  touchAutoRoute?(id: string): Promise<void>
+  updateAutoRouteDefinition?(input: {
+    id: string; requiredKeywords: string[]; instruction: string
+  }): Promise<FeishuAutoRoute | null>
 }
 
 export interface FeishuCatalogPort {
@@ -249,6 +268,11 @@ export type FeishuBotServiceDependencies = {
   approvals?: FeishuApprovalPort
   access?: FeishuAccessPort
   serverRequests?: FeishuServerRequestPort
+  autoRouteAnalyzer?: {
+    analyze(input: {
+      cwd: string; cardTitle: string; cardText: string; candidateKeywords: string[]; requestedInstruction: string
+    }): Promise<{ requiredKeywords: string[]; instruction: string; reason: string }>
+  }
   lifecycle?: FeishuLifecyclePort
   transportFactory?: (bot: FeishuBotDefinition) => FeishuTransport
   webThreadUrl?: (threadId: string) => string
@@ -307,8 +331,11 @@ type NormalizedInbound = FeishuConversationRoute & {
   explicitlyMentioned: boolean
   hasNonBotMention: boolean
   senderType: string
+  senderId: string
+  messageType: string
   eventKey: string
   topLevel: boolean
+  autoRouteDraft?: FeishuAutoRouteDraft
 }
 
 type PendingRequestCard = {
@@ -389,6 +416,9 @@ export function normalizeFeishuInbound(bot: FeishuBotDefinition, payload: unknow
   const chatType: 'p2p' | 'group' = readString(message.chat_type || message.chatType) === 'p2p' ? 'p2p' : 'group'
   const senderId = asRecord(sender.sender_id || sender.senderId)
   const senderOpenId = readString(senderId?.open_id || senderId?.openId)
+  const stableSenderId = readString(senderId?.union_id || senderId?.unionId)
+    || senderOpenId
+    || readString(senderId?.app_id || senderId?.appId || senderId?.user_id || senderId?.userId)
   const senderType = readString(sender.sender_type || sender.senderType)
   const parsedMessage = parseFeishuMessage({
     messageType: message.message_type || message.messageType || message.msg_type,
@@ -430,6 +460,8 @@ export function normalizeFeishuInbound(bot: FeishuBotDefinition, payload: unknow
     rootId,
     chatType,
     senderOpenId,
+    senderId: stableSenderId,
+    messageType: parsedMessage.messageType,
     messageId,
     prompt,
     resources,
@@ -657,6 +689,10 @@ export class LarkSdkTransport implements FeishuTransport {
       method: 'GET',
       url: `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`,
       params: {
+        // Persist a tenant-stable foreign-bot identity when a quoted card is
+        // converted into an auto route. Default open_id values are scoped to
+        // this app and are not a sound cross-application routing key.
+        user_id_type: 'union_id',
         ...(options.userCardContent ? { card_msg_content_type: 'user_card_content' } : {}),
         with_sender_name: 'true',
       },
@@ -1437,6 +1473,7 @@ export class FeishuBotService {
         bindingKey,
         pendingMessageId: pending.messageId,
         requesterOpenId: pending.senderOpenId,
+        ...(pending.autoRouteDraft ? { autoRoute: pending.autoRouteDraft } : {}),
       })
     }
 
@@ -1466,7 +1503,7 @@ export class FeishuBotService {
       if (pendingMessageId !== pending.messageId) throw new Error('这张 Session 选择卡已过期，请使用最新卡片')
       if (!this.isOperatorAuthorized(runtime.bot, operatorOpenId, pending.senderOpenId)) throw new Error('只有请求发起者或机器人管理员可以切换 Session')
       const alreadyBound = await this.dependencies.store.findBinding(botId, bindingKey)
-      if (alreadyBound && pending.sessionSelection?.createdThreadId === alreadyBound.threadId) {
+      if (!pending.autoRouteDraft && alreadyBound && pending.sessionSelection?.createdThreadId === alreadyBound.threadId) {
         await this.deliverPendingMessages(runtime, alreadyBound, pending)
         return buildBoundSessionCard({
           projectLabel: alreadyBound.projectLabel,
@@ -1546,7 +1583,7 @@ export class FeishuBotService {
         } }
         await this.dependencies.store.savePendingMessage(pending)
       }
-      const binding: FeishuSessionBinding = {
+      let binding: FeishuSessionBinding = {
         botId,
         bindingKey,
         chatId: pending.chatId,
@@ -1560,8 +1597,40 @@ export class FeishuBotService {
         threadTitle: title || 'Untitled session',
         permissionMode: 'yolo',
       }
+      let autoRoute: FeishuAutoRoute | null = null
+      if (pending.autoRouteDraft) {
+        if (!this.dependencies.store.upsertAutoRoute) throw new Error('当前版本尚未启用卡片自动路由存储')
+        const draft = pending.autoRouteDraft
+        autoRoute = await this.dependencies.store.upsertAutoRoute({
+          botId,
+          chatId: pending.chatId,
+          name: draft.cardTitle,
+          sourceSenderId: draft.sourceSenderId,
+          sourceSenderType: draft.sourceSenderType,
+          cardTitle: draft.cardTitle,
+          requiredKeywords: draft.requiredKeywords,
+          fingerprintKey: draft.fingerprintKey,
+          instruction: draft.instruction,
+          projectKey: project.projectKey,
+          projectCwd: project.cwd,
+          projectName: project.label,
+          sessionId: threadId,
+          sessionTitle: title || 'Untitled session',
+          createdByOpenId: pending.senderOpenId,
+        })
+        binding = { ...binding, bindingKey: autoRoute.bindingKey, rootId: '', threadTitle: autoRoute.sessionTitle }
+        this.refineAutoRouteWithCodex(autoRoute, draft)
+      }
       await this.dependencies.store.upsertBinding(binding)
       await this.deliverPendingMessages(runtime, binding, pending)
+      if (autoRoute) return buildAutoRouteCreatedCard({
+        routeName: autoRoute.name,
+        projectLabel: binding.projectLabel,
+        sessionTitle: binding.threadTitle,
+        cardTitle: autoRoute.cardTitle,
+        requiredKeywords: autoRoute.requiredKeywords,
+        webUrl: this.dependencies.webThreadUrl?.(threadId),
+      })
       return buildBoundSessionCard({
         projectLabel: binding.projectLabel,
         sessionTitle: binding.threadTitle,
@@ -1712,7 +1781,12 @@ export class FeishuBotService {
 
   private async processInbound(runtime: Runtime, payload: unknown): Promise<void> {
     const preliminary = normalizeFeishuInbound(runtime.bot, payload)
-    if (!preliminary || preliminary.senderType === 'app' || preliminary.senderType === 'bot') return
+    if (!preliminary) return
+    const botSender = preliminary.senderType === 'app' || preliminary.senderType === 'bot'
+    if (botSender) {
+      await this.processAutoRouteInbound(runtime, payload, preliminary)
+      return
+    }
     if (!preliminary.senderOpenId) {
       this.log('warn', `[feishu:${runtime.bot.botId}] rejected inbound ${preliminary.messageId}: sender open_id missing`)
       return
@@ -1729,6 +1803,17 @@ export class FeishuBotService {
         ...normalized,
         prompt: completed.quoteText ? `${completed.quoteText}\n\n${normalized.prompt}`.trim() : normalized.prompt,
         resources: [...completed.quoteResources, ...normalized.resources],
+        ...(completed.quote?.status === 'resolved' && completed.quote.text
+          ? { autoRouteDraft: createFeishuAutoRouteDraft({
+              sourceSenderId: completed.quote.senderId ?? '',
+              sourceSenderType: completed.quote.senderType ?? '',
+              messageType: completed.quote.messageType,
+              text: completed.quote.text,
+              instruction: normalized.prompt
+                .replace(/^\[用户引用了飞书消息 [^\]]+\]\s*/u, '')
+                .trim(),
+            }) ?? undefined }
+          : {}),
       }
       const processClaimed = () => this.processClaimedInbound(runtime, inbound)
       if (runtime.transport.withDeliveryScope) {
@@ -1747,7 +1832,119 @@ export class FeishuBotService {
     }
   }
 
-  private async completeInboundMessage(runtime: Runtime, payload: unknown): Promise<{ payload: unknown; quoteText: string; quoteResources: FeishuMessageResource[] }> {
+  private async processAutoRouteInbound(runtime: Runtime, payload: unknown, preliminary: NormalizedInbound): Promise<void> {
+    if (preliminary.chatType !== 'group' || !preliminary.topLevel || preliminary.messageType !== 'interactive') return
+    const allowedChatIds = runtime.bot.allowedChatIds ?? []
+    if (allowedChatIds.length > 0 && !allowedChatIds.includes(preliminary.chatId)) return
+    if (
+      !preliminary.senderId
+      || preliminary.senderOpenId === runtime.bot.botOpenId
+      || preliminary.senderId === runtime.bot.botOpenId
+      || preliminary.senderId === runtime.bot.appId
+    ) return
+    const candidates = await this.dependencies.store.listAutoRoutes?.({
+      botId: runtime.bot.botId,
+      chatId: preliminary.chatId,
+      enabled: true,
+    }) ?? []
+    if (!candidates.length) return
+    if (!await this.dependencies.store.claimEvent(runtime.bot.botId, preliminary.eventKey)) return
+    try {
+      const completed = await this.completeInboundMessage(runtime, payload)
+      const inbound = normalizeFeishuInbound(runtime.bot, completed.payload) ?? preliminary
+      const route = candidates.find((candidate) => matchesFeishuAutoRoute(candidate, {
+        sourceSenderId: inbound.senderId,
+        sourceSenderType: inbound.senderType,
+        messageType: inbound.messageType,
+        text: inbound.prompt,
+      }))
+      if (!route) {
+        await this.dependencies.store.completeEvent?.(runtime.bot.botId, preliminary.eventKey)
+        return
+      }
+      let rootId = ''
+      if (runtime.transport.getChatMode) {
+        try {
+          if (await runtime.transport.getChatMode(inbound.chatId, { forceRefresh: true }) === 'topic') rootId = inbound.messageId
+        } catch (error) {
+          this.log('warn', `[feishu:${runtime.bot.botId}] auto route ${route.id} could not resolve chat mode: ${String(error)}`)
+          await this.dependencies.store.completeEvent?.(runtime.bot.botId, preliminary.eventKey)
+          return
+        }
+      }
+      const binding: FeishuSessionBinding = {
+        botId: route.botId,
+        bindingKey: route.bindingKey,
+        chatId: route.chatId,
+        rootId,
+        chatType: 'group',
+        senderOpenId: route.createdByOpenId,
+        projectKey: route.projectKey,
+        projectLabel: route.projectName || route.projectKey || route.projectCwd,
+        cwd: route.projectCwd,
+        threadId: route.sessionId,
+        threadTitle: route.sessionTitle,
+        permissionMode: 'yolo',
+      }
+      await this.dependencies.store.upsertBinding(binding)
+      await this.dependencies.store.touchAutoRoute?.(route.id)
+      const prompt = buildFeishuAutoRoutePrompt({
+        routeName: route.name,
+        instruction: route.instruction,
+        cardText: inbound.prompt,
+      })
+      await this.enqueueMessage(binding.bindingKey, () => this.deliverPrompt(
+        runtime,
+        binding,
+        inbound.messageId,
+        prompt,
+        inbound.resources,
+        route.createdByOpenId,
+      ))
+      await this.dependencies.store.completeEvent?.(runtime.bot.botId, preliminary.eventKey)
+    } catch (error) {
+      await this.dependencies.store.failEvent?.(
+        runtime.bot.botId,
+        preliminary.eventKey,
+        error instanceof Error ? error.message : String(error),
+      )
+      throw error
+    }
+  }
+
+  private refineAutoRouteWithCodex(route: FeishuAutoRoute, draft: FeishuAutoRouteDraft): void {
+    const analyzer = this.dependencies.autoRouteAnalyzer
+    if (!analyzer || !this.dependencies.store.updateAutoRouteDefinition || !draft.requiredKeywords.length) return
+    this.schedule(() => {
+      void analyzer.analyze({
+        cwd: route.projectCwd,
+        cardTitle: route.cardTitle,
+        cardText: draft.preview,
+        candidateKeywords: draft.requiredKeywords,
+        requestedInstruction: route.instruction,
+      }).then(async (proposal) => {
+        const allowed = new Map(draft.requiredKeywords.map((keyword) => [keyword.toLocaleLowerCase(), keyword]))
+        const requiredKeywords = Array.from(new Set(proposal.requiredKeywords
+          .map((keyword) => allowed.get(keyword.trim().toLocaleLowerCase()) ?? '')
+          .filter(Boolean)))
+          .slice(0, 8)
+        if (!requiredKeywords.length) throw new Error('Codex returned no valid stable card fields')
+        const instruction = proposal.instruction.trim().slice(0, 1_000) || route.instruction
+        // Preserve the deterministic fingerprint generated from the original
+        // full schema. AI may narrow match fields, but reconfiguring the same
+        // card must update the existing destination instead of creating a
+        // second route with a new identity.
+        await this.dependencies.store.updateAutoRouteDefinition?.({ id: route.id, requiredKeywords, instruction })
+        this.log('info', `[feishu:${route.botId}] Codex refined auto route ${route.id}: ${proposal.reason || 'no reason provided'}`)
+      }).catch((error) => {
+        // The deterministic draft is already active. AI refinement is a safe,
+        // best-effort enhancement and must never break first-use routing.
+        this.log('warn', `[feishu:${route.botId}] Codex auto route refinement skipped: ${String(error)}`)
+      })
+    })
+  }
+
+  private async completeInboundMessage(runtime: Runtime, payload: unknown): Promise<{ payload: unknown; quoteText: string; quoteResources: FeishuMessageResource[]; quote?: FeishuResolvedQuote }> {
     if (!runtime.transport.getMessage) return { payload, quoteText: '', quoteResources: [] }
     const envelope = asRecord(payload)
     const event = asRecord(envelope?.event) ?? envelope
@@ -1791,7 +1988,7 @@ export class FeishuBotService {
             : {}),
         }))
         : []
-      return { payload: resolvedPayload, quoteText, quoteResources }
+      return { payload: resolvedPayload, quoteText, quoteResources, ...(resolved.quote ? { quote: resolved.quote } : {}) }
     } catch (error) {
       this.log('warn', `[feishu:${runtime.bot.botId}] failed to complete message ${messageId}: ${String(error)}`)
       return { payload, quoteText: '', quoteResources: [] }
@@ -1829,6 +2026,34 @@ export class FeishuBotService {
       if (inbound.explicitlyMentioned) {
         await this.replyTextWithFallback(runtime, inbound.messageId, inbound.chatId, '暂时无法确认群聊模式，为避免绑定到错误的 Session，本次未处理。请稍后重试。', '', inbound.chatType)
       }
+      return
+    }
+
+    if (inbound.chatType === 'group' && inbound.explicitlyMentioned && inbound.autoRouteDraft) {
+      if (!this.dependencies.store.upsertAutoRoute || !this.dependencies.store.listAutoRoutes) {
+        await this.replyTextWithFallback(runtime, inbound.messageId, inbound.chatId, '当前版本尚未启用卡片自动路由存储。', inbound.rootId, inbound.chatType)
+        return
+      }
+      const draft = inbound.autoRouteDraft
+      const pending: FeishuPendingInbound = {
+        ...inbound,
+        prompt: buildFeishuAutoRoutePrompt({
+          routeName: draft.cardTitle,
+          instruction: draft.instruction,
+          cardText: draft.preview,
+        }),
+        autoRouteDraft: draft,
+        createdAtIso: this.now().toISOString(),
+      }
+      await this.dependencies.store.savePendingMessage(pending)
+      const projects = await this.dependencies.catalog.listProjects()
+      await this.replyCardWithFallback(runtime, inbound.messageId, inbound.chatId, buildProjectSelectionCard({
+        projects,
+        bindingKey: inbound.bindingKey,
+        pendingMessageId: inbound.messageId,
+        requesterOpenId: inbound.senderOpenId,
+        autoRoute: draft,
+      }), inbound.rootId, inbound.chatType)
       return
     }
 

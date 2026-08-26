@@ -2227,6 +2227,9 @@ function readOfficialBotScopeManifest(): ScopeManifest {
         'im:message.p2p_msg:readonly',
         'im:message.group_at_msg:readonly',
         'im:message.group_at_msg.include_bot:readonly',
+        // Required by fixed-session card routes. Unlike the @mention scope,
+        // this is what delivers ordinary group messages sent by other bots.
+        'im:message.group_msg.include_bot:read',
         'im:message:readonly',
         'im:resource',
         'im:chat:read',

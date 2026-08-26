@@ -42,7 +42,13 @@ import {
   listFeishuTurns,
   listFeishuCards,
   listFeishuAuditLogs,
+  listFeishuAutoRoutes,
   appendFeishuAuditLog,
+  upsertFeishuAutoRoute,
+  touchFeishuAutoRoute,
+  updateFeishuAutoRouteDefinition,
+  setFeishuAutoRouteEnabled,
+  deleteFeishuAutoRoute,
   createFeishuTurn,
   updateFeishuTurn,
   upsertFeishuCard,
@@ -63,9 +69,11 @@ import {
   requeueFailedFeishuOutbox,
   type FeishuBotConfig,
   type FeishuConversationBinding,
+  type FeishuAutoRoute,
 } from './feishuBotStore.js'
 import type {
   FeishuBindingDto,
+  FeishuAutoRouteDto,
   FeishuBotDto,
   FeishuBotWriteInput,
   FeishuDiagnosticsDto,
@@ -138,6 +146,29 @@ function pendingFromPayload(payload: unknown): FeishuPendingInbound | null {
         ...(typeof rawSelection.createdThreadTitle === 'string' ? { createdThreadTitle: rawSelection.createdThreadTitle } : {}),
       }
     : undefined
+  const rawAutoRoute = row.autoRouteDraft && typeof row.autoRouteDraft === 'object' && !Array.isArray(row.autoRouteDraft)
+    ? row.autoRouteDraft as Record<string, unknown>
+    : null
+  const autoRouteDraft = rawAutoRoute
+    && (rawAutoRoute.sourceSenderType === 'app' || rawAutoRoute.sourceSenderType === 'bot')
+    && rawAutoRoute.messageType === 'interactive'
+    && typeof rawAutoRoute.sourceSenderId === 'string'
+    && typeof rawAutoRoute.cardTitle === 'string'
+    && Array.isArray(rawAutoRoute.requiredKeywords)
+    && typeof rawAutoRoute.instruction === 'string'
+    && typeof rawAutoRoute.fingerprintKey === 'string'
+    && typeof rawAutoRoute.preview === 'string'
+    ? {
+        sourceSenderId: rawAutoRoute.sourceSenderId,
+        sourceSenderType: rawAutoRoute.sourceSenderType as 'app' | 'bot',
+        messageType: 'interactive' as const,
+        cardTitle: rawAutoRoute.cardTitle,
+        requiredKeywords: rawAutoRoute.requiredKeywords.filter((value): value is string => typeof value === 'string'),
+        instruction: rawAutoRoute.instruction,
+        fingerprintKey: rawAutoRoute.fingerprintKey,
+        preview: rawAutoRoute.preview,
+      }
+    : undefined
   const value: FeishuPendingInbound = {
     botId: string('botId'),
     bindingKey: string('bindingKey'),
@@ -150,6 +181,7 @@ function pendingFromPayload(payload: unknown): FeishuPendingInbound | null {
     resources,
     createdAtIso: string('createdAtIso'),
     ...(sessionSelection ? { sessionSelection } : {}),
+    ...(autoRouteDraft ? { autoRouteDraft } : {}),
   }
   return value.botId && value.bindingKey && value.chatId && value.messageId ? value : null
 }
@@ -228,6 +260,10 @@ function createStorePort(): FeishuBotStorePort {
     releasePendingMessageClaim: async (botId, claimToken) => {
       await releasePendingFeishuMessageClaim(claimToken, botId)
     },
+    listAutoRoutes: (input) => listFeishuAutoRoutes(input),
+    upsertAutoRoute: (input) => upsertFeishuAutoRoute(input),
+    touchAutoRoute: async (id) => { await touchFeishuAutoRoute(id) },
+    updateAutoRouteDefinition: (input) => updateFeishuAutoRouteDefinition(input),
   }
 }
 
@@ -277,6 +313,29 @@ function bindingDto(binding: FeishuConversationBinding): FeishuBindingDto {
     createdAtIso: binding.createdAtIso,
     updatedAtIso: binding.updatedAtIso,
     lastMessageAtIso: binding.lastMessageAtIso,
+  }
+}
+
+function autoRouteDto(route: FeishuAutoRoute): FeishuAutoRouteDto {
+  return {
+    id: route.id,
+    botId: route.botId,
+    chatId: route.chatId,
+    name: route.name,
+    enabled: route.enabled,
+    sourceSenderId: route.sourceSenderId,
+    sourceSenderType: route.sourceSenderType,
+    cardTitle: route.cardTitle,
+    requiredKeywords: route.requiredKeywords,
+    instruction: route.instruction,
+    projectCwd: route.projectCwd,
+    projectName: route.projectName,
+    sessionId: route.sessionId,
+    sessionTitle: route.sessionTitle,
+    createdAtIso: route.createdAtIso,
+    updatedAtIso: route.updatedAtIso,
+    lastMatchedAtIso: route.lastMatchedAtIso,
+    matchCount: route.matchCount,
   }
 }
 
@@ -338,8 +397,8 @@ function publicThreadUrl(threadId: string): string {
 }
 
 type FeishuManagementAuditInput = {
-  action: 'bot.create' | 'bot.update' | 'bot.delete' | 'bot.reconnect' | 'bot.diagnose' | 'binding.remove' | 'delivery.manual_retry'
-  targetType: 'feishu_bot' | 'feishu_binding' | 'feishu_outbox'
+  action: 'bot.create' | 'bot.update' | 'bot.delete' | 'bot.reconnect' | 'bot.diagnose' | 'binding.remove' | 'delivery.manual_retry' | 'auto_route.enable' | 'auto_route.disable' | 'auto_route.remove'
+  targetType: 'feishu_bot' | 'feishu_binding' | 'feishu_outbox' | 'feishu_auto_route'
   targetId: string
   success: boolean
   metadata?: Record<string, unknown>
@@ -401,6 +460,7 @@ export function createFeishuIntegration(input: {
   const gateway = new FeishuCodexGateway({
     rpc: input.rpc,
     respondToServerRequest: input.respondToServerRequest,
+    subscribe: input.subscribe,
     refreshCatalog: () => input.catalogSync.refreshForRead().then(() => undefined),
     readCatalog: () => listCatalog('visible'),
   })
@@ -480,6 +540,9 @@ export function createFeishuIntegration(input: {
           ...(error ? { error } : {}),
         })
       },
+    },
+    autoRouteAnalyzer: {
+      analyze: (value) => gateway.analyzeAutoRoute(value),
     },
     lifecycle: {
       createTurn: (value) => createFeishuTurn(value),
@@ -648,6 +711,24 @@ export function createFeishuIntegration(input: {
         await recordFeishuManagementAudit({ action: 'binding.remove', targetType: 'feishu_binding', targetId: bindingId, success: false })
         throw error
       }
+    },
+    listAutoRoutes: async (botId) => (await listFeishuAutoRoutes({ botId })).map(autoRouteDto),
+    setAutoRouteEnabled: async (routeId, enabled) => {
+      const route = await setFeishuAutoRouteEnabled(routeId, enabled)
+      await recordFeishuManagementAudit({
+        action: enabled ? 'auto_route.enable' : 'auto_route.disable',
+        targetType: 'feishu_auto_route',
+        targetId: routeId,
+        success: Boolean(route),
+      })
+      return route ? autoRouteDto(route) : null
+    },
+    removeAutoRoute: async (routeId) => {
+      const removed = await deleteFeishuAutoRoute(routeId)
+      await recordFeishuManagementAudit({
+        action: 'auto_route.remove', targetType: 'feishu_auto_route', targetId: routeId, success: removed,
+      })
+      return removed
     },
     getDiagnostics: diagnosticsDto,
     retryDelivery: async (botId, outboxId) => {

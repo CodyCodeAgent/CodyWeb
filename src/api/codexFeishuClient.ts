@@ -116,6 +116,27 @@ export type FeishuBinding = {
   lastMessageAtIso: string | null
 }
 
+export type FeishuAutoRoute = {
+  id: string
+  botId: string
+  chatId: string
+  name: string
+  enabled: boolean
+  sourceSenderId: string
+  sourceSenderType: 'app' | 'bot'
+  cardTitle: string
+  requiredKeywords: string[]
+  instruction: string
+  projectCwd: string
+  projectName: string
+  sessionId: string
+  sessionTitle: string
+  createdAtIso: string
+  updatedAtIso: string
+  lastMatchedAtIso: string | null
+  matchCount: number
+}
+
 export type FeishuDiagnostics = {
   botId: string | null
   generatedAtIso: string
@@ -232,6 +253,34 @@ function normalizeBinding(value: unknown): FeishuBinding | null {
     createdAtIso: typeof row.createdAtIso === 'string' ? row.createdAtIso : '',
     updatedAtIso: typeof row.updatedAtIso === 'string' ? row.updatedAtIso : '',
     lastMessageAtIso: optionalString(row.lastMessageAtIso),
+  }
+}
+
+function normalizeAutoRoute(value: unknown): FeishuAutoRoute | null {
+  const row = asRecord(value)
+  if (!row || typeof row.id !== 'string' || typeof row.botId !== 'string' || typeof row.chatId !== 'string') return null
+  if (typeof row.cardTitle !== 'string' || typeof row.instruction !== 'string' || typeof row.sessionId !== 'string') return null
+  return {
+    id: row.id,
+    botId: row.botId,
+    chatId: row.chatId,
+    name: typeof row.name === 'string' ? row.name : row.cardTitle,
+    enabled: row.enabled === true,
+    sourceSenderId: typeof row.sourceSenderId === 'string' ? row.sourceSenderId : '',
+    sourceSenderType: row.sourceSenderType === 'bot' ? 'bot' : 'app',
+    cardTitle: row.cardTitle,
+    requiredKeywords: Array.isArray(row.requiredKeywords)
+      ? row.requiredKeywords.filter((item): item is string => typeof item === 'string')
+      : [],
+    instruction: row.instruction,
+    projectCwd: typeof row.projectCwd === 'string' ? row.projectCwd : '',
+    projectName: typeof row.projectName === 'string' ? row.projectName : '',
+    sessionId: row.sessionId,
+    sessionTitle: typeof row.sessionTitle === 'string' ? row.sessionTitle : '',
+    createdAtIso: typeof row.createdAtIso === 'string' ? row.createdAtIso : '',
+    updatedAtIso: typeof row.updatedAtIso === 'string' ? row.updatedAtIso : '',
+    lastMatchedAtIso: optionalString(row.lastMatchedAtIso),
+    matchCount: typeof row.matchCount === 'number' && Number.isFinite(row.matchCount) ? row.matchCount : 0,
   }
 }
 
@@ -559,6 +608,40 @@ export async function removeFeishuBinding(bindingId: string): Promise<void> {
     malformedMessage: 'Feishu binding remove returned malformed response',
   })
   if (result.removed !== true) invalidResponse('Feishu binding remove returned malformed response', 'feishu/bindings/remove', status)
+}
+
+export async function fetchFeishuAutoRoutes(botId?: string): Promise<FeishuAutoRoute[]> {
+  const { result, status } = await fetchCodexResultRecord(queryPath('/codex-api/feishu/auto-routes', { botId }), {
+    method: 'feishu/auto-routes/list',
+    networkErrorMessage: 'Feishu auto routes request failed before it was sent',
+    httpErrorMessage: 'Feishu auto routes request failed',
+    malformedMessage: 'Feishu auto routes returned malformed response',
+  })
+  if (!Array.isArray(result.routes)) invalidResponse('Feishu auto routes returned malformed response', 'feishu/auto-routes/list', status)
+  return result.routes.map(normalizeAutoRoute).filter((route): route is FeishuAutoRoute => route !== null)
+}
+
+export async function setFeishuAutoRouteEnabled(routeId: string, enabled: boolean): Promise<FeishuAutoRoute> {
+  const { result, status } = await fetchCodexResultRecord(`/codex-api/feishu/auto-routes/${encodeURIComponent(routeId)}`, {
+    init: { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) },
+    method: 'feishu/auto-routes/update',
+    networkErrorMessage: 'Feishu auto route update failed before it was sent',
+    httpErrorMessage: 'Feishu auto route update failed',
+    malformedMessage: 'Feishu auto route update returned malformed response',
+  })
+  return normalizeAutoRoute(result.route)
+    ?? invalidResponse('Feishu auto route update returned malformed response', 'feishu/auto-routes/update', status)
+}
+
+export async function removeFeishuAutoRoute(routeId: string): Promise<void> {
+  const { result, status } = await fetchCodexResultRecord(`/codex-api/feishu/auto-routes/${encodeURIComponent(routeId)}`, {
+    init: { method: 'DELETE' },
+    method: 'feishu/auto-routes/remove',
+    networkErrorMessage: 'Feishu auto route remove failed before it was sent',
+    httpErrorMessage: 'Feishu auto route remove failed',
+    malformedMessage: 'Feishu auto route remove returned malformed response',
+  })
+  if (result.removed !== true) invalidResponse('Feishu auto route remove returned malformed response', 'feishu/auto-routes/remove', status)
 }
 
 export async function fetchFeishuDiagnostics(botId?: string): Promise<FeishuDiagnostics> {

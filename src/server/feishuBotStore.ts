@@ -163,6 +163,32 @@ export type FeishuAuditLog = {
   createdAtIso: string
 }
 
+export type FeishuAutoRoute = {
+  id: string
+  botId: string
+  bindingKey: string
+  chatId: string
+  name: string
+  enabled: boolean
+  sourceSenderId: string
+  sourceSenderType: 'app' | 'bot'
+  messageType: 'interactive'
+  cardTitle: string
+  requiredKeywords: string[]
+  fingerprintKey: string
+  instruction: string
+  projectKey: string
+  projectCwd: string
+  projectName: string
+  sessionId: string
+  sessionTitle: string
+  createdByOpenId: string
+  createdAtIso: string
+  updatedAtIso: string
+  lastMatchedAtIso: string | null
+  matchCount: number
+}
+
 const BOT_STATUS_TO_CONNECTION: Record<FeishuBotStatus, FeishuConnectionState> = {
   connected: 'connected',
   connecting: 'connecting',
@@ -363,6 +389,35 @@ function ensureFeishuTables(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS feishu_audit_bot_time_idx
       ON feishu_audit_logs(bot_id, created_at_iso DESC);
+
+    CREATE TABLE IF NOT EXISTS feishu_auto_routes (
+      id TEXT PRIMARY KEY,
+      bot_id TEXT NOT NULL REFERENCES feishu_bots(bot_id) ON DELETE CASCADE,
+      binding_key TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      source_sender_id TEXT NOT NULL,
+      source_sender_type TEXT NOT NULL CHECK (source_sender_type IN ('app', 'bot')),
+      message_type TEXT NOT NULL DEFAULT 'interactive' CHECK (message_type = 'interactive'),
+      card_title TEXT NOT NULL,
+      required_keywords_json TEXT NOT NULL DEFAULT '[]',
+      fingerprint_key TEXT NOT NULL,
+      instruction TEXT NOT NULL,
+      project_key TEXT NOT NULL,
+      project_cwd TEXT NOT NULL,
+      project_name TEXT NOT NULL DEFAULT '',
+      session_id TEXT NOT NULL,
+      session_title TEXT NOT NULL DEFAULT '',
+      created_by_open_id TEXT NOT NULL DEFAULT '',
+      created_at_iso TEXT NOT NULL,
+      updated_at_iso TEXT NOT NULL,
+      last_matched_at_iso TEXT,
+      match_count INTEGER NOT NULL DEFAULT 0,
+      UNIQUE (bot_id, chat_id, fingerprint_key)
+    );
+    CREATE INDEX IF NOT EXISTS feishu_auto_routes_match_idx
+      ON feishu_auto_routes(bot_id, chat_id, enabled, updated_at_iso DESC);
   `)
 
   const outboxColumns = db.prepare('PRAGMA table_info(feishu_outbox)').all() as Array<{ name: string }>
@@ -408,6 +463,175 @@ function ensureFeishuTables(db: Database.Database): void {
 
   migrateLegacySingleton(db)
   migratePlaintextBotSecrets(db)
+}
+
+function normalizeAutoRoute(row: Record<string, unknown>): FeishuAutoRoute {
+  const keywords = parseJson(row.requiredKeywordsJson, [])
+  return {
+    id: String(row.id),
+    botId: String(row.botId),
+    bindingKey: String(row.bindingKey),
+    chatId: String(row.chatId),
+    name: String(row.name),
+    enabled: row.enabled === 1,
+    sourceSenderId: String(row.sourceSenderId),
+    sourceSenderType: row.sourceSenderType === 'bot' ? 'bot' : 'app',
+    messageType: 'interactive',
+    cardTitle: String(row.cardTitle),
+    requiredKeywords: Array.isArray(keywords) ? keywords.filter((value): value is string => typeof value === 'string') : [],
+    fingerprintKey: String(row.fingerprintKey),
+    instruction: String(row.instruction),
+    projectKey: String(row.projectKey),
+    projectCwd: String(row.projectCwd),
+    projectName: String(row.projectName),
+    sessionId: String(row.sessionId),
+    sessionTitle: String(row.sessionTitle),
+    createdByOpenId: String(row.createdByOpenId),
+    createdAtIso: String(row.createdAtIso),
+    updatedAtIso: String(row.updatedAtIso),
+    lastMatchedAtIso: typeof row.lastMatchedAtIso === 'string' ? row.lastMatchedAtIso : null,
+    matchCount: Number(row.matchCount) || 0,
+  }
+}
+
+const AUTO_ROUTE_SELECT = `SELECT id, bot_id AS botId, binding_key AS bindingKey,
+  chat_id AS chatId, name, enabled, source_sender_id AS sourceSenderId,
+  source_sender_type AS sourceSenderType, message_type AS messageType,
+  card_title AS cardTitle, required_keywords_json AS requiredKeywordsJson,
+  fingerprint_key AS fingerprintKey, instruction, project_key AS projectKey,
+  project_cwd AS projectCwd, project_name AS projectName, session_id AS sessionId,
+  session_title AS sessionTitle, created_by_open_id AS createdByOpenId,
+  created_at_iso AS createdAtIso, updated_at_iso AS updatedAtIso,
+  last_matched_at_iso AS lastMatchedAtIso, match_count AS matchCount
+  FROM feishu_auto_routes`
+
+export async function listFeishuAutoRoutes(filter: { botId?: string; chatId?: string; enabled?: boolean } = {}): Promise<FeishuAutoRoute[]> {
+  return withLocalDatabase((db) => {
+    ensureFeishuTables(db)
+    const clauses: string[] = []
+    const params: Array<string | number> = []
+    if (filter.botId) { clauses.push('bot_id = ?'); params.push(normalizeBotId(filter.botId)) }
+    if (filter.chatId) { clauses.push('chat_id = ?'); params.push(filter.chatId.trim()) }
+    if (filter.enabled !== undefined) { clauses.push('enabled = ?'); params.push(filter.enabled ? 1 : 0) }
+    const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
+    return (db.prepare(`${AUTO_ROUTE_SELECT}${where} ORDER BY updated_at_iso DESC`).all(...params) as Record<string, unknown>[])
+      .map(normalizeAutoRoute)
+  })
+}
+
+export async function upsertFeishuAutoRoute(input: {
+  id?: string
+  botId: string
+  chatId: string
+  name: string
+  enabled?: boolean
+  sourceSenderId: string
+  sourceSenderType: 'app' | 'bot'
+  cardTitle: string
+  requiredKeywords: string[]
+  fingerprintKey: string
+  instruction: string
+  projectKey: string
+  projectCwd: string
+  projectName: string
+  sessionId: string
+  sessionTitle: string
+  createdByOpenId: string
+}): Promise<FeishuAutoRoute> {
+  return withLocalDatabase((db) => {
+    ensureFeishuTables(db)
+    const botId = normalizeBotId(input.botId)
+    ensureBotExists(db, botId)
+    const existing = db.prepare(`${AUTO_ROUTE_SELECT} WHERE bot_id = ? AND chat_id = ? AND fingerprint_key = ?`)
+      .get(botId, input.chatId.trim(), input.fingerprintKey.trim()) as Record<string, unknown> | undefined
+    const timestamp = nowIso()
+    const id = existing ? String(existing.id) : input.id ?? randomUUID()
+    const bindingKey = existing ? String(existing.bindingKey) : `${botId}:auto-route:${id}`
+    db.prepare(`
+      INSERT INTO feishu_auto_routes
+        (id, bot_id, binding_key, chat_id, name, enabled, source_sender_id,
+         source_sender_type, message_type, card_title, required_keywords_json,
+         fingerprint_key, instruction, project_key, project_cwd, project_name,
+         session_id, session_title, created_by_open_id, created_at_iso, updated_at_iso)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'interactive', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(bot_id, chat_id, fingerprint_key) DO UPDATE SET
+        name = excluded.name, enabled = excluded.enabled,
+        source_sender_id = excluded.source_sender_id,
+        source_sender_type = excluded.source_sender_type,
+        card_title = excluded.card_title,
+        required_keywords_json = excluded.required_keywords_json,
+        instruction = excluded.instruction, project_key = excluded.project_key,
+        project_cwd = excluded.project_cwd, project_name = excluded.project_name,
+        session_id = excluded.session_id, session_title = excluded.session_title,
+        created_by_open_id = excluded.created_by_open_id,
+        updated_at_iso = excluded.updated_at_iso
+    `).run(
+      id, botId, bindingKey, input.chatId.trim(), clean(input.name, input.cardTitle), input.enabled === false ? 0 : 1,
+      input.sourceSenderId.trim(), input.sourceSenderType, input.cardTitle.trim(),
+      stringifyJson(uniqueStrings(input.requiredKeywords)), input.fingerprintKey.trim(), input.instruction.trim(),
+      input.projectKey.trim(), input.projectCwd.trim(), input.projectName.trim(), input.sessionId.trim(),
+      input.sessionTitle.trim(), input.createdByOpenId.trim(), existing ? String(existing.createdAtIso) : timestamp, timestamp,
+    )
+    return normalizeAutoRoute(db.prepare(`${AUTO_ROUTE_SELECT} WHERE bot_id = ? AND chat_id = ? AND fingerprint_key = ?`)
+      .get(botId, input.chatId.trim(), input.fingerprintKey.trim()) as Record<string, unknown>)
+  })
+}
+
+export async function setFeishuAutoRouteEnabled(id: string, enabled: boolean): Promise<FeishuAutoRoute | null> {
+  return withLocalDatabase((db) => {
+    ensureFeishuTables(db)
+    const changed = db.prepare('UPDATE feishu_auto_routes SET enabled = ?, updated_at_iso = ? WHERE id = ?')
+      .run(enabled ? 1 : 0, nowIso(), id.trim()).changes
+    if (!changed) return null
+    return normalizeAutoRoute(db.prepare(`${AUTO_ROUTE_SELECT} WHERE id = ?`).get(id.trim()) as Record<string, unknown>)
+  })
+}
+
+export async function updateFeishuAutoRouteDefinition(input: {
+  id: string
+  requiredKeywords: string[]
+  instruction: string
+}): Promise<FeishuAutoRoute | null> {
+  return withLocalDatabase((db) => {
+    ensureFeishuTables(db)
+    const route = db.prepare(`${AUTO_ROUTE_SELECT} WHERE id = ?`).get(input.id.trim()) as Record<string, unknown> | undefined
+    if (!route) return null
+    db.prepare(`UPDATE feishu_auto_routes SET required_keywords_json = ?, instruction = ?,
+      updated_at_iso = ? WHERE id = ?`)
+      .run(
+        stringifyJson(uniqueStrings(input.requiredKeywords).slice(0, 8)),
+        input.instruction.trim(),
+        nowIso(),
+        input.id.trim(),
+      )
+    return normalizeAutoRoute(db.prepare(`${AUTO_ROUTE_SELECT} WHERE id = ?`).get(input.id.trim()) as Record<string, unknown>)
+  })
+}
+
+export async function touchFeishuAutoRoute(id: string): Promise<boolean> {
+  return withLocalDatabase((db) => {
+    ensureFeishuTables(db)
+    const timestamp = nowIso()
+    return db.prepare(`UPDATE feishu_auto_routes SET match_count = match_count + 1,
+      last_matched_at_iso = ?, updated_at_iso = ? WHERE id = ? AND enabled = 1`)
+      .run(timestamp, timestamp, id.trim()).changes > 0
+  })
+}
+
+export async function deleteFeishuAutoRoute(id: string): Promise<boolean> {
+  return withLocalDatabase((db) => {
+    ensureFeishuTables(db)
+    const transaction = db.transaction(() => {
+      const route = db.prepare('SELECT bot_id AS botId, binding_key AS bindingKey FROM feishu_auto_routes WHERE id = ?')
+        .get(id.trim()) as { botId: string; bindingKey: string } | undefined
+      if (!route) return false
+      db.prepare('DELETE FROM feishu_auto_routes WHERE id = ?').run(id.trim())
+      db.prepare('DELETE FROM feishu_pending_messages_v2 WHERE bot_id = ? AND binding_key = ?').run(route.botId, route.bindingKey)
+      db.prepare('DELETE FROM feishu_bindings WHERE bot_id = ? AND binding_key = ?').run(route.botId, route.bindingKey)
+      return true
+    })
+    return transaction()
+  })
 }
 
 function secretContext(botId: string): string {

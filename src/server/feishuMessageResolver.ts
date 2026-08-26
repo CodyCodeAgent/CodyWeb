@@ -35,6 +35,9 @@ export type FeishuResolvedQuote = {
   messageType?: string
   content?: string
   text?: string
+  senderId?: string
+  senderType?: string
+  senderName?: string
   status: 'resolved' | 'unavailable'
   reason?: string
 }
@@ -206,6 +209,23 @@ function senderName(message: JsonRecord): string {
   return asString(sender?.sender_name || message.sender_name || sender?.name)
 }
 
+function senderIdentity(message: JsonRecord): { senderId?: string; senderType?: string; senderName?: string } {
+  const sender = asRecord(message.sender) ?? {}
+  const senderId = asRecord(sender.sender_id || sender.senderId) ?? asRecord(message.sender_id || message.senderId) ?? {}
+  // union_id is tenant-stable across apps. A foreign bot's open_id is scoped
+  // to the receiving app and can differ between REST quote lookup and the
+  // later websocket event, so prefer union_id whenever Feishu supplies it.
+  const id = [senderId.union_id, senderId.unionId, senderId.open_id, senderId.openId, senderId.app_id, senderId.appId, sender.id]
+    .map(asString).find(Boolean)
+  const type = asString(sender.sender_type || sender.senderType || message.sender_type || message.senderType)
+  const name = senderName(message)
+  return {
+    ...(id ? { senderId: id } : {}),
+    ...(type ? { senderType: type } : {}),
+    ...(name ? { senderName: name } : {}),
+  }
+}
+
 function cloneWith(message: JsonRecord, patch: JsonRecord): JsonRecord {
   return { ...message, ...patch, body: { ...(asRecord(message.body) ?? {}), ...(asRecord(patch.body) ?? {}) } }
 }
@@ -304,7 +324,14 @@ async function resolveQuote(input: ParseFeishuMessageInput, getMessage: FeishuMe
       })).content
     }
     const text = type ? parseFeishuMessage({ messageType: type, content, messageId: quotedId }).text : undefined
-    return { messageId: quotedId, status: 'resolved', ...(type ? { messageType: type } : {}), ...(content ? { content } : {}), ...(text ? { text } : {}) }
+    return {
+      messageId: quotedId,
+      status: 'resolved',
+      ...senderIdentity(message),
+      ...(type ? { messageType: type } : {}),
+      ...(content ? { content } : {}),
+      ...(text ? { text } : {}),
+    }
   } catch {
     return { messageId: quotedId, status: 'unavailable', reason: '无法读取被引用消息（可能已删除、跨租户或无权限）' }
   }

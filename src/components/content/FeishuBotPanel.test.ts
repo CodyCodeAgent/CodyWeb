@@ -7,6 +7,7 @@ import FeishuBotPanel from './FeishuBotPanel.vue'
 const api = vi.hoisted(() => ({
   fetchFeishuBots: vi.fn(),
   fetchFeishuBindings: vi.fn(),
+  fetchFeishuAutoRoutes: vi.fn(async () => []),
   fetchFeishuDiagnostics: vi.fn(),
   diagnoseFeishuBot: vi.fn(),
   createFeishuBot: vi.fn(),
@@ -14,6 +15,8 @@ const api = vi.hoisted(() => ({
   updateFeishuBot: vi.fn(),
   reconnectFeishuBot: vi.fn(),
   removeFeishuBinding: vi.fn(),
+  removeFeishuAutoRoute: vi.fn(),
+  setFeishuAutoRouteEnabled: vi.fn(),
   retryFeishuDelivery: vi.fn(),
   startFeishuQrSetup: vi.fn(),
   fetchFeishuQrSetup: vi.fn(),
@@ -412,6 +415,36 @@ describe('FeishuBotPanel', () => {
     await flushPromises()
     expect(api.removeFeishuBinding).toHaveBeenCalledWith('binding-1')
     expect(wrapper.find('.feishu-bindings .feishu-danger-button').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows, pauses, and removes a fixed-session card route', async () => {
+    const route = {
+      id: 'route-1', botId: 'bot-1', chatId: 'oc_alerts', name: '差异播报', enabled: true,
+      sourceSenderId: 'on_alert_bot', sourceSenderType: 'app', cardTitle: '【平台】差异播报',
+      requiredKeywords: ['任务ID', '校验结果'], instruction: '分析根因', projectCwd: '/repo',
+      projectName: 'CodyWeb', sessionId: 'thread-1', sessionTitle: 'Alert triage',
+      createdAtIso: '', updatedAtIso: '', lastMatchedAtIso: null, matchCount: 0,
+    }
+    api.fetchFeishuBots.mockResolvedValue([bot])
+    api.fetchFeishuBindings.mockResolvedValue([])
+    api.fetchFeishuAutoRoutes.mockResolvedValue([route] as never)
+    api.fetchFeishuDiagnostics.mockResolvedValue(diagnostics)
+    api.setFeishuAutoRouteEnabled.mockResolvedValue({ ...route, enabled: false })
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    const wrapper = mount(FeishuBotPanel)
+    await flushPromises()
+    expect(wrapper.text()).toContain('Card auto routes')
+    expect(wrapper.text()).toContain('差异播报')
+    expect(wrapper.text()).toContain('Alert triage')
+    const switchButton = wrapper.get('.feishu-auto-route-actions [role="switch"]')
+    expect(switchButton.attributes('aria-checked')).toBe('true')
+    await switchButton.trigger('click')
+    await flushPromises()
+    expect(api.setFeishuAutoRouteEnabled).toHaveBeenCalledWith('route-1', false)
+    await wrapper.get('.feishu-auto-route-actions .feishu-danger-button').trigger('click')
+    await flushPromises()
+    expect(api.removeFeishuAutoRoute).toHaveBeenCalledWith('route-1')
     wrapper.unmount()
   })
 

@@ -46,6 +46,27 @@ export type FeishuBindingDto = {
   lastMessageAtIso: string | null
 }
 
+export type FeishuAutoRouteDto = {
+  id: string
+  botId: string
+  chatId: string
+  name: string
+  enabled: boolean
+  sourceSenderId: string
+  sourceSenderType: 'app' | 'bot'
+  cardTitle: string
+  requiredKeywords: string[]
+  instruction: string
+  projectCwd: string
+  projectName: string
+  sessionId: string
+  sessionTitle: string
+  createdAtIso: string
+  updatedAtIso: string
+  lastMatchedAtIso: string | null
+  matchCount: number
+}
+
 export type FeishuBotWriteInput = {
   name?: string
   appId?: string
@@ -134,6 +155,9 @@ export type FeishuRoutesDependencies = {
   diagnoseBot: (botId: string) => Promise<FeishuConnectivityReportDto>
   listBindings: (botId?: string) => Promise<FeishuBindingDto[]>
   removeBinding: (bindingId: string) => Promise<boolean>
+  listAutoRoutes: (botId?: string) => Promise<FeishuAutoRouteDto[]>
+  setAutoRouteEnabled: (routeId: string, enabled: boolean) => Promise<FeishuAutoRouteDto | null>
+  removeAutoRoute: (routeId: string) => Promise<boolean>
   getDiagnostics: (botId?: string) => Promise<FeishuDiagnosticsDto>
   retryDelivery: (botId: string, outboxId: string) => Promise<boolean>
   startQrSetup: (input: { name: string; allowAllUsers: boolean; allowedOpenIds: string[]; groupMentionMode: FeishuGroupMentionModeDto; p2pMode: FeishuP2pModeDto; availability: FeishuAvailabilityInputDto }) => Promise<FeishuQrSetupJobDto>
@@ -419,6 +443,12 @@ export function createFeishuRoutes(dependencies: FeishuRoutesDependencies): Doma
       return true
     }
 
+    if (req.method === 'GET' && url.pathname === '/codex-api/feishu/auto-routes') {
+      const botId = url.searchParams.get('botId')?.trim() || undefined
+      setJson(res, 200, { result: { routes: await dependencies.listAutoRoutes(botId) } })
+      return true
+    }
+
     if (req.method === 'GET' && url.pathname === '/codex-api/feishu/diagnostics') {
       const botId = url.searchParams.get('botId')?.trim() || undefined
       setJson(res, 200, { result: { diagnostics: await dependencies.getDiagnostics(botId) } })
@@ -434,6 +464,29 @@ export function createFeishuRoutes(dependencies: FeishuRoutesDependencies): Doma
       }
       const removed = await dependencies.removeBinding(bindingId)
       setJson(res, removed ? 200 : 404, removed ? { result: { removed: true } } : { error: 'Binding not found' })
+      return true
+    }
+
+    match = url.pathname.match(/^\/codex-api\/feishu\/auto-routes\/([^/]+)$/u)
+    if (req.method === 'PATCH' && match) {
+      const routeId = decodePathPart(match[1] ?? '')
+      const body = asRecord(await readJsonBody(req))
+      if (!routeId || !body || typeof body.enabled !== 'boolean') {
+        setJson(res, 400, { error: 'Invalid body: expected { enabled: boolean }' })
+        return true
+      }
+      const route = await dependencies.setAutoRouteEnabled(routeId, body.enabled)
+      setJson(res, route ? 200 : 404, route ? { result: { route } } : { error: 'Auto route not found' })
+      return true
+    }
+    if (req.method === 'DELETE' && match) {
+      const routeId = decodePathPart(match[1] ?? '')
+      if (!routeId) {
+        setJson(res, 400, { error: 'Invalid auto route id' })
+        return true
+      }
+      const removed = await dependencies.removeAutoRoute(routeId)
+      setJson(res, removed ? 200 : 404, removed ? { result: { removed: true } } : { error: 'Auto route not found' })
       return true
     }
 

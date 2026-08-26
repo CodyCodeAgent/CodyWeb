@@ -536,6 +536,58 @@
             </template>
           </section>
 
+          <section v-if="selectedBot && !isCreating" class="feishu-auto-routes">
+            <header>
+              <div>
+                <h3>{{ t('settings.feishu.autoRoutesTitle') }}</h3>
+                <p>{{ t('settings.feishu.autoRoutesHint') }}</p>
+              </div>
+              <span>{{ selectedAutoRoutes.length }}</span>
+            </header>
+            <div v-if="selectedAutoRoutes.length === 0" class="feishu-empty feishu-empty-compact">
+              <strong>{{ t('settings.feishu.autoRoutesEmptyTitle') }}</strong>
+              <p>{{ t('settings.feishu.autoRoutesEmptyBody') }}</p>
+            </div>
+            <ul v-else>
+              <li v-for="route in selectedAutoRoutes" :key="route.id" :data-enabled="String(route.enabled)">
+                <div class="feishu-auto-route-heading">
+                  <span class="feishu-status" :data-status="route.enabled ? 'connected' : 'disconnected'">
+                    <span class="feishu-status-dot" aria-hidden="true" />
+                    {{ route.enabled ? t('settings.feishu.autoRouteEnabled') : t('settings.feishu.autoRoutePaused') }}
+                  </span>
+                  <strong>{{ route.name }}</strong>
+                  <span>{{ route.projectName || route.projectCwd }} · {{ route.sessionTitle || route.sessionId }}</span>
+                </div>
+                <dl>
+                  <div><dt>{{ t('settings.feishu.autoRouteCard') }}</dt><dd>{{ route.cardTitle }}</dd></div>
+                  <div><dt>{{ t('settings.feishu.autoRouteFields') }}</dt><dd>{{ route.requiredKeywords.join(' · ') || t('settings.feishu.autoRouteTitleOnly') }}</dd></div>
+                  <div><dt>{{ t('settings.feishu.autoRouteInstruction') }}</dt><dd>{{ route.instruction }}</dd></div>
+                  <div><dt>{{ t('settings.feishu.autoRouteActivity') }}</dt><dd>{{ t('settings.feishu.autoRouteMatchCount', { count: String(route.matchCount) }) }} · {{ formatTime(route.lastMatchedAtIso) }}</dd></div>
+                </dl>
+                <div class="feishu-auto-route-actions">
+                  <button
+                    class="feishu-secondary-button"
+                    type="button"
+                    role="switch"
+                    :aria-checked="route.enabled"
+                    :disabled="updatingAutoRouteId === route.id"
+                    @click="toggleAutoRoute(route)"
+                  >
+                    {{ route.enabled ? t('settings.feishu.autoRoutePause') : t('settings.feishu.autoRouteEnable') }}
+                  </button>
+                  <button
+                    class="feishu-danger-button"
+                    type="button"
+                    :disabled="removingAutoRouteId === route.id"
+                    @click="removeAutoRoute(route)"
+                  >
+                    {{ removingAutoRouteId === route.id ? t('settings.feishu.autoRouteRemoving') : t('settings.feishu.autoRouteRemove') }}
+                  </button>
+                </div>
+              </li>
+            </ul>
+          </section>
+
           <section v-if="selectedBot && !isCreating" class="feishu-bindings">
             <header>
               <div>
@@ -553,7 +605,7 @@
                 <div class="feishu-binding-main">
                   <strong>{{ binding.projectName || binding.projectCwd }}</strong>
                   <span>{{ binding.sessionTitle || binding.sessionId || t('settings.feishu.newSession') }}</span>
-                  <code>{{ bindingScopeLabel(binding) }} · {{ binding.collaborationMode }} · {{ binding.permissionMode.toUpperCase() }} · {{ binding.threadId || binding.chatId }}</code>
+                  <code>{{ bindingScopeLabel(binding) }} · {{ binding.collaborationMode || 'default' }} · {{ (binding.permissionMode || 'yolo').toUpperCase() }} · {{ binding.threadId || binding.chatId }}</code>
                 </div>
                 <div class="feishu-binding-meta">
                   <time :datetime="binding.lastMessageAtIso || undefined">{{ formatTime(binding.lastMessageAtIso) }}</time>
@@ -586,6 +638,7 @@ import {
   deleteFeishuBot,
   diagnoseFeishuBot,
   fetchFeishuDiagnostics,
+  fetchFeishuAutoRoutes,
   fetchFeishuBindings,
   fetchFeishuBots,
   fetchFeishuQrSetup,
@@ -594,11 +647,14 @@ import {
   fetchFeishuOpenPlatformApps,
   reconnectFeishuBot,
   removeFeishuBinding,
+  removeFeishuAutoRoute,
   retryFeishuDelivery,
   retryFeishuQrSetup,
+  setFeishuAutoRouteEnabled,
   startFeishuQrSetup,
   updateFeishuBot,
   type FeishuBinding,
+  type FeishuAutoRoute,
   type FeishuBot,
   type FeishuBotStatus,
   type FeishuConnectivityReport,
@@ -632,6 +688,7 @@ const { locale, t } = useLocale()
 const showTransportWarning = typeof window !== 'undefined' && isRemotePlainHttpLocation(window.location)
 const bots = ref<FeishuBot[]>([])
 const bindings = ref<FeishuBinding[]>([])
+const autoRoutes = ref<FeishuAutoRoute[]>([])
 const diagnostics = ref<FeishuDiagnostics | null>(null)
 const connectivityReport = ref<FeishuConnectivityReport | null>(null)
 const selectedBotId = ref('')
@@ -653,6 +710,8 @@ const isDiagnosticsLoading = ref(false)
 const isConnectivityLoading = ref(false)
 const reconnectingBotId = ref('')
 const removingBindingId = ref('')
+const removingAutoRouteId = ref('')
+const updatingAutoRouteId = ref('')
 const retryingDeliveryId = ref('')
 const loadError = ref('')
 const diagnosticsError = ref('')
@@ -671,6 +730,7 @@ let qrSetupPollTimer: ReturnType<typeof setTimeout> | null = null
 
 const selectedBot = computed(() => bots.value.find((bot) => bot.id === selectedBotId.value) ?? null)
 const selectedBindings = computed(() => bindings.value.filter((binding) => binding.botId === selectedBotId.value))
+const selectedAutoRoutes = computed(() => autoRoutes.value.filter((route) => route.botId === selectedBotId.value))
 const secretPlaceholder = computed(() => isCreating.value || !selectedBot.value?.secretConfigured
   ? t('settings.feishu.field.secretPlaceholder')
   : t('settings.feishu.field.secretKeepPlaceholder'))
@@ -993,9 +1053,10 @@ async function loadData(): Promise<void> {
   isLoading.value = true
   loadError.value = ''
   try {
-    const [nextBots, nextBindings] = await Promise.all([fetchFeishuBots(), fetchFeishuBindings()])
+    const [nextBots, nextBindings, nextAutoRoutes] = await Promise.all([fetchFeishuBots(), fetchFeishuBindings(), fetchFeishuAutoRoutes()])
     bots.value = nextBots
     bindings.value = nextBindings
+    autoRoutes.value = nextAutoRoutes
     const nextSetups = await fetchFeishuQrSetups().catch(() => [])
     const resumable = nextSetups.find((job) => isActiveQrStatus(job.status) || job.status === 'failed')
     if (resumable && !isCreating.value) {
@@ -1115,6 +1176,7 @@ async function deleteSelectedBot(): Promise<void> {
     const result = await deleteFeishuBot(bot.id, deleteRemoteAction.value)
     bots.value = bots.value.filter((item) => item.id !== bot.id)
     bindings.value = bindings.value.filter((item) => item.botId !== bot.id)
+    autoRoutes.value = autoRoutes.value.filter((item) => item.botId !== bot.id)
     diagnostics.value = null
     connectivityReport.value = null
     selectedBotId.value = ''
@@ -1133,9 +1195,10 @@ async function refreshBotState(): Promise<void> {
   if (isRefreshing.value || isLoading.value || isCreating.value || document.hidden) return
   isRefreshing.value = true
   try {
-    const [nextBots, nextBindings] = await Promise.all([fetchFeishuBots(), fetchFeishuBindings()])
+    const [nextBots, nextBindings, nextAutoRoutes] = await Promise.all([fetchFeishuBots(), fetchFeishuBindings(), fetchFeishuAutoRoutes()])
     bots.value = nextBots
     bindings.value = nextBindings
+    autoRoutes.value = nextAutoRoutes
     const current = nextBots.find((bot) => bot.id === selectedBotId.value)
     if (!current && nextBots[0]) selectBot(nextBots[0])
     else if (current) void loadDiagnostics(current.id)
@@ -1233,6 +1296,39 @@ async function unbind(binding: FeishuBinding): Promise<void> {
   }
 }
 
+async function toggleAutoRoute(route: FeishuAutoRoute): Promise<void> {
+  if (updatingAutoRouteId.value) return
+  actionError.value = ''
+  successMessage.value = ''
+  updatingAutoRouteId.value = route.id
+  try {
+    const updated = await setFeishuAutoRouteEnabled(route.id, !route.enabled)
+    const index = autoRoutes.value.findIndex((item) => item.id === route.id)
+    if (index >= 0) autoRoutes.value.splice(index, 1, updated)
+    successMessage.value = t(updated.enabled ? 'settings.feishu.autoRouteEnabledMessage' : 'settings.feishu.autoRoutePausedMessage')
+  } catch (error) {
+    actionError.value = errorMessage(error)
+  } finally {
+    updatingAutoRouteId.value = ''
+  }
+}
+
+async function removeAutoRoute(route: FeishuAutoRoute): Promise<void> {
+  if (!window.confirm(t('settings.feishu.autoRouteRemoveConfirm', { name: route.name }))) return
+  actionError.value = ''
+  successMessage.value = ''
+  removingAutoRouteId.value = route.id
+  try {
+    await removeFeishuAutoRoute(route.id)
+    autoRoutes.value = autoRoutes.value.filter((item) => item.id !== route.id)
+    successMessage.value = t('settings.feishu.autoRouteRemovedMessage')
+  } catch (error) {
+    actionError.value = errorMessage(error)
+  } finally {
+    removingAutoRouteId.value = ''
+  }
+}
+
 function statusLabel(status: FeishuBotStatus): string {
   return t(`settings.feishu.status.${status}` as const)
 }
@@ -1294,7 +1390,7 @@ onBeforeUnmount(() => {
 @reference "../../style.css";
 
 .feishu-panel { min-width: 0; }
-.feishu-toolbar, .feishu-detail-header, .feishu-bindings > header, .feishu-diagnostics > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.feishu-toolbar, .feishu-detail-header, .feishu-auto-routes > header, .feishu-bindings > header, .feishu-diagnostics > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .feishu-toolbar { margin-bottom: 0.75rem; border-top: 1px solid var(--color-border); padding-top: 0.75rem; }
 .feishu-toolbar > div { display: grid; gap: 0.15rem; }
 .feishu-toolbar-actions { display: flex !important; flex-shrink: 0; flex-direction: row !important; gap: 0.5rem !important; }
@@ -1321,10 +1417,10 @@ onBeforeUnmount(() => {
 .feishu-status[data-status='connecting'] .feishu-status-dot { background: var(--color-warning); }
 .feishu-status[data-status='error'] .feishu-status-dot { background: var(--color-danger); }
 .feishu-detail { display: grid; min-width: 0; gap: 0.75rem; }
-.feishu-form, .feishu-health, .feishu-bindings, .feishu-diagnostics { min-width: 0; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); padding: 0.85rem; }
+.feishu-form, .feishu-health, .feishu-auto-routes, .feishu-bindings, .feishu-diagnostics { min-width: 0; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); padding: 0.85rem; }
 .feishu-detail-header { margin-bottom: 0.8rem; }
 .feishu-detail h3 { margin: 0; color: var(--color-text); font-size: 0.88rem; }
-.feishu-detail-header p, .feishu-bindings header p { margin: 0.18rem 0 0; color: var(--color-text-muted); font-size: 0.72rem; line-height: 1.45; }
+.feishu-detail-header p, .feishu-auto-routes header p, .feishu-bindings header p { margin: 0.18rem 0 0; color: var(--color-text-muted); font-size: 0.72rem; line-height: 1.45; }
 .feishu-enabled-switch { display: inline-flex; min-height: 2.75rem; cursor: pointer; align-items: center; gap: 0.5rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0 0.7rem; color: var(--color-text); font-size: 0.75rem; font-weight: 600; }
 .feishu-enabled-switch input { width: 1rem; height: 1rem; accent-color: var(--color-accent); }
 .feishu-manual-enabled-switch { width: fit-content; margin: 0 0 0.75rem auto; }
@@ -1475,8 +1571,21 @@ button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2
 .feishu-diagnostic-recents [data-tone='danger'] { color: var(--color-danger); }
 .feishu-diagnostics-empty { margin: 0; color: var(--color-text-muted); font-size: 0.67rem; line-height: 1.45; }
 .feishu-diagnostics-privacy { margin: 0.65rem 0 0; border-top: 1px solid var(--color-border); padding-top: 0.55rem; color: var(--color-text-muted); font-size: 0.64rem; line-height: 1.45; }
+.feishu-auto-routes > header { align-items: center; margin-bottom: 0.7rem; }
+.feishu-auto-routes > header > span, .feishu-bindings > header > span { display: inline-grid; min-width: 1.65rem; height: 1.65rem; place-items: center; border-radius: 999px; background: var(--color-elevated); color: var(--color-text); font-size: 0.7rem; font-weight: 700; }
+.feishu-auto-routes ul { display: grid; list-style: none; margin: 0; padding: 0; gap: 0.6rem; }
+.feishu-auto-routes li { display: grid; min-width: 0; grid-template-columns: minmax(12rem, 0.8fr) minmax(16rem, 1.4fr) auto; align-items: start; gap: 0.8rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-panel); padding: 0.7rem; }
+.feishu-auto-routes li[data-enabled='false'] { opacity: 0.72; }
+.feishu-auto-route-heading { display: grid; min-width: 0; gap: 0.22rem; }
+.feishu-auto-route-heading > strong { overflow: hidden; color: var(--color-text); font-size: 0.78rem; text-overflow: ellipsis; white-space: nowrap; }
+.feishu-auto-route-heading > span:last-child { overflow-wrap: anywhere; color: var(--color-text-muted); font-size: 0.67rem; line-height: 1.4; }
+.feishu-auto-routes dl { display: grid; min-width: 0; margin: 0; gap: 0.3rem; }
+.feishu-auto-routes dl > div { display: grid; min-width: 0; grid-template-columns: 4.5rem minmax(0, 1fr); gap: 0.45rem; }
+.feishu-auto-routes dt { color: var(--color-text-muted); font-size: 0.64rem; font-weight: 650; }
+.feishu-auto-routes dd { overflow-wrap: anywhere; margin: 0; color: var(--color-text); font-size: 0.66rem; line-height: 1.45; }
+.feishu-auto-route-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; }
+.feishu-auto-route-actions button { min-width: 5.5rem; }
 .feishu-bindings > header { align-items: center; margin-bottom: 0.7rem; }
-.feishu-bindings > header > span { display: inline-grid; min-width: 1.65rem; height: 1.65rem; place-items: center; border-radius: 999px; background: var(--color-elevated); color: var(--color-text); font-size: 0.7rem; font-weight: 700; }
 .feishu-bindings ul { display: grid; list-style: none; margin: 0; padding: 0; gap: 0.5rem; }
 .feishu-bindings li { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 0.75rem; border-top: 1px solid var(--color-border); padding-top: 0.65rem; }
 .feishu-binding-main { display: grid; min-width: 0; gap: 0.18rem; }
@@ -1518,10 +1627,13 @@ button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2
   .feishu-qr-intro ol { grid-template-columns: minmax(0, 1fr); }
   .feishu-diagnostic-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .feishu-diagnostic-recents { grid-template-columns: minmax(0, 1fr); }
+  .feishu-auto-routes li { grid-template-columns: minmax(0, 1fr); }
+  .feishu-auto-route-actions { justify-content: stretch; }
+  .feishu-auto-route-actions button { flex: 1; }
 }
 @media (max-width: 520px) {
   .feishu-setup-proofs ul { grid-template-columns: 1fr; }
-  .feishu-toolbar, .feishu-platform-session, .feishu-detail-header, .feishu-bindings li, .feishu-diagnostics > header { align-items: stretch; flex-direction: column; }
+  .feishu-toolbar, .feishu-platform-session, .feishu-detail-header, .feishu-auto-routes > header, .feishu-bindings li, .feishu-diagnostics > header { align-items: stretch; flex-direction: column; }
   .feishu-create-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .feishu-toolbar-actions { width: 100%; }
   .feishu-toolbar-actions > button { flex: 1; }

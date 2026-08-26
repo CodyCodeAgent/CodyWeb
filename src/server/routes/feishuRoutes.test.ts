@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
-import { createFeishuRoutes, type FeishuBotDto, type FeishuConnectivityReportDto, type FeishuDiagnosticsDto, type FeishuRoutesDependencies } from './feishuRoutes'
+import { createFeishuRoutes, type FeishuAutoRouteDto, type FeishuBotDto, type FeishuConnectivityReportDto, type FeishuDiagnosticsDto, type FeishuRoutesDependencies } from './feishuRoutes'
 import type { FeishuQrSetupJobDto } from '../feishuQrSetup'
 import { emptyFeishuSetupChecks } from '../feishuQrSetupStore'
 
@@ -32,6 +32,14 @@ const qrJob: FeishuQrSetupJobDto = {
   account: null, bot: null, warnings: [], error: null, canRetry: false, canCancel: true, canConfirmIdentity: false,
   checks: emptyFeishuSetupChecks(),
   createdAtIso: '2026-07-18T00:00:00.000Z', updatedAtIso: '2026-07-18T00:00:00.000Z',
+}
+
+const autoRoute: FeishuAutoRouteDto = {
+  id: 'route-1', botId: 'bot-1', chatId: 'oc_alerts', name: '差异播报', enabled: true,
+  sourceSenderId: 'on_alert_bot', sourceSenderType: 'app', cardTitle: '【平台】差异播报',
+  requiredKeywords: ['任务ID', '校验结果'], instruction: '分析根因', projectCwd: '/repo',
+  projectName: 'Repo', sessionId: 'thread-1', sessionTitle: 'Alert triage',
+  createdAtIso: '', updatedAtIso: '', lastMatchedAtIso: null, matchCount: 0,
 }
 
 function request(method: string, body?: unknown): IncomingMessage {
@@ -75,6 +83,9 @@ function dependencies(): FeishuRoutesDependencies {
     })),
     listBindings: vi.fn(async () => []),
     removeBinding: vi.fn(async () => true),
+    listAutoRoutes: vi.fn(async () => []),
+    setAutoRouteEnabled: vi.fn(async () => null),
+    removeAutoRoute: vi.fn(async () => true),
     getDiagnostics: vi.fn(async (botId): Promise<FeishuDiagnosticsDto> => ({
       botId: botId ?? null,
       generatedAtIso: '2026-07-18T01:00:00.000Z',
@@ -118,6 +129,21 @@ describe('createFeishuRoutes', () => {
     const result = await invoke(createFeishuRoutes(deps), 'GET', '/codex-api/feishu/bots')
     expect(result).toMatchObject({ handled: true, statusCode: 200, body: { result: { bots: [bot] } } })
     expect(JSON.stringify(result.body)).not.toContain('appSecret')
+  })
+
+  it('lists, pauses, and removes fixed-session card routes', async () => {
+    const deps = dependencies()
+    deps.listAutoRoutes = vi.fn(async () => [autoRoute])
+    deps.setAutoRouteEnabled = vi.fn(async (_id, enabled) => ({ ...autoRoute, enabled }))
+    const route = createFeishuRoutes(deps)
+    const listed = await invoke(route, 'GET', '/codex-api/feishu/auto-routes?botId=bot-1')
+    expect(listed).toMatchObject({ statusCode: 200, body: { result: { routes: [autoRoute] } } })
+    expect(deps.listAutoRoutes).toHaveBeenCalledWith('bot-1')
+    const paused = await invoke(route, 'PATCH', '/codex-api/feishu/auto-routes/route-1', { enabled: false })
+    expect(paused).toMatchObject({ statusCode: 200, body: { result: { route: { enabled: false } } } })
+    expect(deps.setAutoRouteEnabled).toHaveBeenCalledWith('route-1', false)
+    expect((await invoke(route, 'DELETE', '/codex-api/feishu/auto-routes/route-1')).statusCode).toBe(200)
+    expect(deps.removeAutoRoute).toHaveBeenCalledWith('route-1')
   })
 
   it('validates and creates a bot', async () => {

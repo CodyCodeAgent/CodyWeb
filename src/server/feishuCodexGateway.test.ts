@@ -112,6 +112,46 @@ describe('FeishuCodexGateway', () => {
     })
   })
 
+  it('lets Codex refine a card route through a bounded structured analyzer', async () => {
+    let listener: ((notification: { method: string; params?: unknown }) => void) | null = null
+    const respondToServerRequest = vi.fn(async () => undefined)
+    const rpc = vi.fn(async (method: string) => {
+      if (method === 'thread/start') return { thread: { id: 'thread-analyzer' } }
+      if (method === 'turn/start') {
+        queueMicrotask(() => listener?.({
+          method: 'item/completed',
+          params: {
+            threadId: 'thread-analyzer',
+            item: {
+              type: 'agentMessage',
+              text: JSON.stringify({ required_keywords: ['任务ID', '校验结果'], instruction: '定位差异根因', reason: '字段稳定' }),
+            },
+          },
+        }))
+        return { turn: { id: 'turn-analyzer' } }
+      }
+      return {}
+    })
+    const gateway = new FeishuCodexGateway({
+      rpc,
+      respondToServerRequest,
+      subscribe: (value) => { listener = value; return () => { listener = null } },
+      readCatalog: vi.fn(async () => catalog),
+    })
+    await expect(gateway.analyzeAutoRoute({
+      cwd: '/repo', cardTitle: '差异播报', cardText: '任务ID：T1\n校验结果：不一致',
+      candidateKeywords: ['任务ID', '校验结果', '校验时间'], requestedInstruction: '排查根因',
+    })).resolves.toEqual({ requiredKeywords: ['任务ID', '校验结果'], instruction: '定位差异根因', reason: '字段稳定' })
+    expect(rpc).toHaveBeenCalledWith('thread/start', expect.objectContaining({
+      cwd: '/repo', ephemeral: true,
+    }))
+    expect(rpc).toHaveBeenCalledWith('turn/start', expect.objectContaining({
+      threadId: 'thread-analyzer',
+      outputSchema: expect.objectContaining({ type: 'object', additionalProperties: false }),
+    }))
+    expect(respondToServerRequest).not.toHaveBeenCalled()
+  })
+
   it('maps user-input answers to the app-server response schema', async () => {
     const respondToServerRequest = vi.fn(async () => undefined)
     const gateway = new FeishuCodexGateway({ rpc: vi.fn(), respondToServerRequest, readCatalog: vi.fn(async () => catalog) })
