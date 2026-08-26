@@ -39,8 +39,9 @@ function stableFieldLabels(text: string): string[] {
     const line = compact(rawLine).replace(/^[-*•]\s*/u, '')
     if (/^\[卡片(?:[:：]|\])/u.test(line)) continue
     const match = line.match(/^([^：:\n]{2,24})[：:]/u)
-    const label = match?.[1]?.trim() ?? ''
+    const label = (match?.[1]?.trim() ?? '').replace(/^[*_`]+|[*_`]+$/gu, '').trim()
     if (!label || /^https?$/iu.test(label) || /\d{4,}/u.test(label)) continue
+    if (!/^[\p{L}\p{N}_ /-]{2,24}$/u.test(label)) continue
     labels.push(label)
   }
   return [...new Set(labels)].slice(0, 8)

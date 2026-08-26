@@ -25,6 +25,14 @@ describe('Feishu card auto routes', () => {
     expect(draft?.fingerprintKey).toMatch(/^[a-f0-9]{64}$/u)
   })
 
+  it('normalizes markdown labels and rejects value-shaped pseudo labels', () => {
+    const draft = createFeishuAutoRouteDraft({
+      sourceSenderId: 'on_human', sourceSenderType: 'user', messageType: 'interactive',
+      text: `[卡片: 【平台】差异播报]\n**任务名称**：示例\n**任务ID**：T1\n(异常1) goeval [不一致]：详情\n数据源sponsor_v2(账本)：延迟`,
+    })!
+    expect(draft.requiredKeywords).toEqual(['任务名称', '任务ID'])
+  })
+
   it('matches changed card values but rejects another source, title, or schema', () => {
     const draft = createFeishuAutoRouteDraft({
       sourceSenderId: 'ou_alert_bot', sourceSenderType: 'bot', messageType: 'interactive', text,

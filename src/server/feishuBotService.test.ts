@@ -1339,7 +1339,7 @@ describe('FeishuBotService', () => {
       message_id: 'om_config', parent_id: 'om_source_card', root_id: 'om_source_card',
       content: JSON.stringify({ text: '@_user_1 帮我分析根因' }),
     }))
-    await vi.waitFor(() => expect(store.pending.get(binding().bindingKey)?.autoRouteDraft).toMatchObject({
+    await vi.waitFor(() => expect([...store.pending.values()].find((row) => row.messageId === 'om_config')?.autoRouteDraft).toMatchObject({
       sourceSenderId: 'on_alert_bot', cardTitle: '【平台】差异播报',
       requiredKeywords: ['任务ID', '校验结果'], instruction: '帮我分析根因',
     }))

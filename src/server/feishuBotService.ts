@@ -2035,8 +2035,13 @@ export class FeishuBotService {
         return
       }
       const draft = inbound.autoRouteDraft
+      // Route setup is an independent one-shot workflow. Reusing the ordinary
+      // chat binding key would put repeated setup attempts behind older
+      // unconsumed project pickers, making every new picker appear stale.
+      const setupBindingKey = `${inbound.bindingKey}:auto-route-setup:${inbound.messageId}`
       const pending: FeishuPendingInbound = {
         ...inbound,
+        bindingKey: setupBindingKey,
         prompt: buildFeishuAutoRoutePrompt({
           routeName: draft.cardTitle,
           instruction: draft.instruction,
@@ -2049,7 +2054,7 @@ export class FeishuBotService {
       const projects = await this.dependencies.catalog.listProjects()
       await this.replyCardWithFallback(runtime, inbound.messageId, inbound.chatId, buildProjectSelectionCard({
         projects,
-        bindingKey: inbound.bindingKey,
+        bindingKey: setupBindingKey,
         pendingMessageId: inbound.messageId,
         requesterOpenId: inbound.senderOpenId,
         autoRoute: draft,
