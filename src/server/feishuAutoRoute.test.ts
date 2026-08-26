@@ -41,6 +41,19 @@ describe('Feishu card auto routes', () => {
     })).toBe(false)
   })
 
+  it('turns a human-forwarded card into a group-scoped any-bot rule', () => {
+    const draft = createFeishuAutoRouteDraft({
+      sourceSenderId: 'on_human', sourceSenderType: 'user', messageType: 'interactive', text,
+    })!
+    expect(draft).toMatchObject({ sourceSenderId: '*', sourceSenderType: 'app' })
+    expect(matchesFeishuAutoRoute(draft, {
+      sourceSenderId: 'on_actual_alert_bot', sourceSenderType: 'bot', messageType: 'interactive', text,
+    })).toBe(true)
+    expect(matchesFeishuAutoRoute(draft, {
+      sourceSenderId: 'on_human', sourceSenderType: 'user', messageType: 'interactive', text,
+    })).toBe(false)
+  })
+
   it('builds a bounded, explicit instruction envelope', () => {
     expect(buildFeishuAutoRoutePrompt({ routeName: '差异播报', instruction: '分析根因', cardText: text }))
       .toContain('固定处理指令：分析根因')

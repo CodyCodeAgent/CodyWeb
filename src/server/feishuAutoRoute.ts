@@ -16,6 +16,7 @@ export type FeishuAutoRouteMatcher = Pick<FeishuAutoRouteDraft,
 >
 
 const DEFAULT_ROUTE_INSTRUCTION = '请分析这张卡片中的异常或变化，给出明确结论、可能原因和下一步处理建议。'
+export const ANY_BOT_SOURCE_ID = '*'
 
 function compact(value: string): string {
   return value.replace(/\s+/gu, ' ').trim()
@@ -63,11 +64,14 @@ export function createFeishuAutoRouteDraft(input: {
   text: string
   instruction?: string
 }): FeishuAutoRouteDraft | null {
-  const sourceSenderType: 'app' | 'bot' | null = input.sourceSenderType === 'app' || input.sourceSenderType === 'bot'
-    ? input.sourceSenderType
-    : null
-  const sourceSenderId = input.sourceSenderId.trim()
-  if (!sourceSenderType || !sourceSenderId || input.messageType !== 'interactive') return null
+  const directBotSource = input.sourceSenderType === 'app' || input.sourceSenderType === 'bot'
+  // A card forwarded by a human no longer carries the original bot identity in
+  // Feishu's quoted-message payload. Keep the rule scoped to the current group
+  // (enforced by the store query) and match any foreign bot there by the exact
+  // card title/schema. Direct bot cards still retain strict source matching.
+  const sourceSenderType: 'app' | 'bot' = input.sourceSenderType === 'bot' ? 'bot' : 'app'
+  const sourceSenderId = directBotSource ? input.sourceSenderId.trim() : ANY_BOT_SOURCE_ID
+  if (!sourceSenderId || input.messageType !== 'interactive') return null
   const cardTitle = extractFeishuCardTitle(input.text)
   if (!cardTitle) return null
   const requiredKeywords = stableFieldLabels(input.text)
@@ -93,8 +97,13 @@ export function matchesFeishuAutoRoute(route: FeishuAutoRouteMatcher, input: {
   messageType: string
   text: string
 }): boolean {
-  if (route.sourceSenderType !== input.sourceSenderType) return false
-  if (!route.sourceSenderId || route.sourceSenderId !== input.sourceSenderId) return false
+  const wildcardBotSource = route.sourceSenderId === ANY_BOT_SOURCE_ID
+  if (wildcardBotSource) {
+    if (input.sourceSenderType !== 'app' && input.sourceSenderType !== 'bot') return false
+  } else {
+    if (route.sourceSenderType !== input.sourceSenderType) return false
+    if (!route.sourceSenderId || route.sourceSenderId !== input.sourceSenderId) return false
+  }
   if (route.messageType !== input.messageType) return false
   const title = normalize(extractFeishuCardTitle(input.text))
   if (!title || title !== normalize(route.cardTitle)) return false

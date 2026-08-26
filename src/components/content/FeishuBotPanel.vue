@@ -559,6 +559,7 @@
                   <span>{{ route.projectName || route.projectCwd }} · {{ route.sessionTitle || route.sessionId }}</span>
                 </div>
                 <dl>
+                  <div><dt>{{ t('settings.feishu.autoRouteSource') }}</dt><dd>{{ route.sourceSenderId === '*' ? t('settings.feishu.autoRouteAnyBot') : route.sourceSenderId }}</dd></div>
                   <div><dt>{{ t('settings.feishu.autoRouteCard') }}</dt><dd>{{ route.cardTitle }}</dd></div>
                   <div><dt>{{ t('settings.feishu.autoRouteFields') }}</dt><dd>{{ route.requiredKeywords.join(' · ') || t('settings.feishu.autoRouteTitleOnly') }}</dd></div>
                   <div><dt>{{ t('settings.feishu.autoRouteInstruction') }}</dt><dd>{{ route.instruction }}</dd></div>
