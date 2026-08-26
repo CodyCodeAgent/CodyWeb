@@ -67,7 +67,7 @@ export function buildProjectSelectionCard(input: {
   bindingKey: string
   pendingMessageId?: string
   requesterOpenId?: string
-  autoRoute?: { cardTitle: string; requiredKeywords: string[] }
+  autoRoute?: { cardTitle: string; requiredKeywords: string[]; sourceSenderId?: string }
 }): FeishuCard {
   const projects = input.projects.slice(0, 100)
   const projectLabelCounts = new Map<string, number>()
@@ -75,8 +75,9 @@ export function buildProjectSelectionCard(input: {
     const key = project.label.trim().toLocaleLowerCase()
     projectLabelCounts.set(key, (projectLabelCounts.get(key) ?? 0) + 1)
   }
+  const anyBotSource = input.autoRoute?.sourceSenderId === '*'
   const autoRouteSummary = input.autoRoute
-    ? `已识别被引用卡片：**${truncate(input.autoRoute.cardTitle, 120)}**\n\n匹配字段：${input.autoRoute.requiredKeywords.length ? input.autoRoute.requiredKeywords.map((value) => `\`${truncate(value, 30)}\``).join('、') : '仅匹配卡片标题与来源机器人'}\n\n请选择自动投递到哪个 **CodyWeb 项目**。以后同类卡片无需再次 @Cody。`
+    ? `已识别被引用卡片：**${truncate(input.autoRoute.cardTitle, 120)}**\n\n匹配字段：${input.autoRoute.requiredKeywords.length ? input.autoRoute.requiredKeywords.map((value) => `\`${truncate(value, 30)}\``).join('、') : `仅匹配卡片标题与${anyBotSource ? '机器人消息' : '来源机器人'}`}\n\n请选择自动投递到哪个 **CodyWeb 项目**。以后同类卡片无需再次 @Cody。`
     : '请选择要连接的 **CodyWeb 项目**。绑定后，飞书和 Web 会继续同一个 Codex session。'
   const elements: unknown[] = [{ tag: 'div', text: markdown(autoRouteSummary) }]
 
@@ -109,7 +110,7 @@ export function buildProjectSelectionCard(input: {
   elements.push({
     tag: 'note',
     elements: [{ tag: 'plain_text', content: input.autoRoute
-      ? '自动路由仅在当前群、当前来源机器人和当前卡片特征同时匹配时触发。'
+      ? `自动路由仅在当前群、${anyBotSource ? '机器人消息' : '当前来源机器人'}和当前卡片特征同时匹配时触发。`
       : '群聊按群/话题绑定，私聊按会话绑定。' }],
   })
   return card(input.autoRoute ? '配置卡片自动路由' : '连接 CodyWeb', elements, input.autoRoute ? 'turquoise' : 'blue')
@@ -172,13 +173,15 @@ export function buildAutoRouteCreatedCard(input: {
   sessionTitle: string
   cardTitle: string
   requiredKeywords: string[]
+  sourceSenderId?: string
   webUrl?: string
 }): FeishuCard {
   const actions = input.webUrl
     ? [{ tag: 'button', text: plainText('打开 Session'), type: 'primary', url: input.webUrl }]
     : []
+  const sourceDescription = input.sourceSenderId === '*' ? '任一机器人发送' : '同一机器人发送'
   return card('自动路由已启用', [
-    { tag: 'div', text: markdown(`规则：**${truncate(input.routeName, 100)}**\n\n卡片：**${truncate(input.cardTitle, 120)}**\n\n目标：**${truncate(input.projectLabel, 80)} · ${truncate(input.sessionTitle, 100)}**\n\n以后当前群中由同一机器人发送、标题和字段特征一致的卡片，会自动进入这个 Session。`) },
+    { tag: 'div', text: markdown(`规则：**${truncate(input.routeName, 100)}**\n\n卡片：**${truncate(input.cardTitle, 120)}**\n\n目标：**${truncate(input.projectLabel, 80)} · ${truncate(input.sessionTitle, 100)}**\n\n以后当前群中由${sourceDescription}、标题和字段特征一致的卡片，会自动进入这个 Session。`) },
     ...(input.requiredKeywords.length ? [{ tag: 'div', text: markdown(`匹配字段：${input.requiredKeywords.map((value) => `\`${truncate(value, 30)}\``).join('、')}`) }] : []),
     ...(actions.length ? [{ tag: 'action', actions }] : []),
     { tag: 'note', elements: [{ tag: 'plain_text', content: '可在 CodyWeb 设置 → 飞书机器人 → 自动路由中暂停或删除。' }] },

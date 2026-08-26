@@ -1629,6 +1629,7 @@ export class FeishuBotService {
         sessionTitle: binding.threadTitle,
         cardTitle: autoRoute.cardTitle,
         requiredKeywords: autoRoute.requiredKeywords,
+        sourceSenderId: autoRoute.sourceSenderId,
         webUrl: this.dependencies.webThreadUrl?.(threadId),
       })
       return buildBoundSessionCard({
