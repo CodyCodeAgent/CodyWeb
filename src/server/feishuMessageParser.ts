@@ -181,8 +181,14 @@ export function getFeishuQuotedMessageId(input: Pick<ParseFeishuMessageInput, 'm
   const parentId = asString(input.parentId)
   if (!parentId) return undefined
   const messageId = asString(input.messageId)
-  const rootId = asString(input.rootId || input.threadId)
-  if (parentId === messageId || parentId === rootId) return undefined
+  const threadId = asString(input.threadId)
+  const rootId = asString(input.rootId)
+  if (parentId === messageId) return undefined
+  // In a topic/thread Feishu repeats the thread root as parent_id plumbing.
+  // In an ordinary group, however, replying to a message legitimately sends
+  // parent_id === root_id with no thread_id. That is a real visible quote and
+  // must be preserved (notably for quoted-card auto-route setup).
+  if (threadId && (parentId === rootId || parentId === threadId)) return undefined
   return parentId
 }
 

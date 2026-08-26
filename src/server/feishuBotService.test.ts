@@ -1336,7 +1336,7 @@ describe('FeishuBotService', () => {
         }] } })
     await service.start()
     transport.handlers?.onMessage(inbound({
-      message_id: 'om_config', parent_id: 'om_source_card',
+      message_id: 'om_config', parent_id: 'om_source_card', root_id: 'om_source_card',
       content: JSON.stringify({ text: '@_user_1 帮我分析根因' }),
     }))
     await vi.waitFor(() => expect(store.pending.get(binding().bindingKey)?.autoRouteDraft).toMatchObject({

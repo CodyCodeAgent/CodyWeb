@@ -173,8 +173,15 @@ describe('feishuMessageParser', () => {
       quotedMessageId: 'om_quote',
     })
     expect(parseFeishuMessage({
-      messageType: 'text', messageId: 'om_new', parentId: 'om_root', rootId: 'om_root',
+      messageType: 'text', messageId: 'om_new', parentId: 'om_root', rootId: 'om_root', threadId: 'omt_thread',
       content: { text: '普通话题回复' },
     }).text).toBe('普通话题回复')
+    expect(parseFeishuMessage({
+      messageType: 'text', messageId: 'om_new', parentId: 'om_quote', rootId: 'om_quote',
+      content: { text: '普通群引用回复' },
+    })).toMatchObject({
+      text: '[用户引用了飞书消息 om_quote]\n普通群引用回复',
+      quotedMessageId: 'om_quote',
+    })
   })
 })
