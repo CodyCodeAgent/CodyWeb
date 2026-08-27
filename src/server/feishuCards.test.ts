@@ -56,21 +56,19 @@ describe('Feishu cards', () => {
     expect(sessionCard).toContain('Same title · thread-b')
   })
 
-  it('describes forwarded-card routes as matching any bot in the group', () => {
+  it('describes card routes as matching content regardless of sender', () => {
     const projectCard = JSON.stringify(buildProjectSelectionCard({
       bindingKey: 'bot:group:chat:auto-route',
       projects: [{ projectKey: '/repo', cwd: '/repo', label: 'repo', sessionCount: 1 }],
       autoRoute: { cardTitle: 'Alert', requiredKeywords: ['Task ID'], sourceSenderId: '*' },
     }))
-    expect(projectCard).toContain('机器人消息和当前卡片特征')
-    expect(projectCard).not.toContain('当前来源机器人')
+    expect(projectCard).toContain('不限制发送者')
 
     const createdCard = JSON.stringify(buildAutoRouteCreatedCard({
       routeName: 'Alert', projectLabel: 'repo', sessionTitle: 'Alerts', cardTitle: 'Alert',
       requiredKeywords: ['Task ID'], sourceSenderId: '*',
     }))
-    expect(createdCard).toContain('任一机器人发送')
-    expect(createdCard).not.toContain('同一机器人发送')
+    expect(createdCard).toContain('无论由谁发送')
   })
 
   it('builds patchable stream states and approval actions', () => {

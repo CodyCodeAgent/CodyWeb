@@ -1784,10 +1784,8 @@ export class FeishuBotService {
     const preliminary = normalizeFeishuInbound(runtime.bot, payload)
     if (!preliminary) return
     const botSender = preliminary.senderType === 'app' || preliminary.senderType === 'bot'
-    if (botSender) {
-      await this.processAutoRouteInbound(runtime, payload, preliminary)
-      return
-    }
+    const autoRouted = await this.processAutoRouteInbound(runtime, payload, preliminary)
+    if (autoRouted || botSender) return
     if (!preliminary.senderOpenId) {
       this.log('warn', `[feishu:${runtime.bot.botId}] rejected inbound ${preliminary.messageId}: sender open_id missing`)
       return
@@ -1833,36 +1831,32 @@ export class FeishuBotService {
     }
   }
 
-  private async processAutoRouteInbound(runtime: Runtime, payload: unknown, preliminary: NormalizedInbound): Promise<void> {
-    if (preliminary.chatType !== 'group' || !preliminary.topLevel || preliminary.messageType !== 'interactive') return
+  private async processAutoRouteInbound(runtime: Runtime, payload: unknown, preliminary: NormalizedInbound): Promise<boolean> {
+    if (preliminary.chatType !== 'group' || !preliminary.topLevel || preliminary.messageType !== 'interactive') return false
     const allowedChatIds = runtime.bot.allowedChatIds ?? []
-    if (allowedChatIds.length > 0 && !allowedChatIds.includes(preliminary.chatId)) return
+    if (allowedChatIds.length > 0 && !allowedChatIds.includes(preliminary.chatId)) return false
     if (
-      !preliminary.senderId
-      || preliminary.senderOpenId === runtime.bot.botOpenId
+      preliminary.senderOpenId === runtime.bot.botOpenId
       || preliminary.senderId === runtime.bot.botOpenId
       || preliminary.senderId === runtime.bot.appId
-    ) return
+    ) return false
     const candidates = await this.dependencies.store.listAutoRoutes?.({
       botId: runtime.bot.botId,
       chatId: preliminary.chatId,
       enabled: true,
     }) ?? []
-    if (!candidates.length) return
-    if (!await this.dependencies.store.claimEvent(runtime.bot.botId, preliminary.eventKey)) return
+    if (!candidates.length) return false
+    const completed = await this.completeInboundMessage(runtime, payload)
+    const inbound = normalizeFeishuInbound(runtime.bot, completed.payload) ?? preliminary
+    const route = candidates.find((candidate) => matchesFeishuAutoRoute(candidate, {
+      sourceSenderId: inbound.senderId,
+      sourceSenderType: inbound.senderType,
+      messageType: inbound.messageType,
+      text: inbound.prompt,
+    }))
+    if (!route) return false
+    if (!await this.dependencies.store.claimEvent(runtime.bot.botId, preliminary.eventKey)) return true
     try {
-      const completed = await this.completeInboundMessage(runtime, payload)
-      const inbound = normalizeFeishuInbound(runtime.bot, completed.payload) ?? preliminary
-      const route = candidates.find((candidate) => matchesFeishuAutoRoute(candidate, {
-        sourceSenderId: inbound.senderId,
-        sourceSenderType: inbound.senderType,
-        messageType: inbound.messageType,
-        text: inbound.prompt,
-      }))
-      if (!route) {
-        await this.dependencies.store.completeEvent?.(runtime.bot.botId, preliminary.eventKey)
-        return
-      }
       let rootId = ''
       if (runtime.transport.getChatMode) {
         try {
@@ -1870,7 +1864,7 @@ export class FeishuBotService {
         } catch (error) {
           this.log('warn', `[feishu:${runtime.bot.botId}] auto route ${route.id} could not resolve chat mode: ${String(error)}`)
           await this.dependencies.store.completeEvent?.(runtime.bot.botId, preliminary.eventKey)
-          return
+          return true
         }
       }
       const binding: FeishuSessionBinding = {
@@ -1903,6 +1897,7 @@ export class FeishuBotService {
         route.createdByOpenId,
       ))
       await this.dependencies.store.completeEvent?.(runtime.bot.botId, preliminary.eventKey)
+      return true
     } catch (error) {
       await this.dependencies.store.failEvent?.(
         runtime.bot.botId,

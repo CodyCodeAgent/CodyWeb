@@ -1340,7 +1340,7 @@ describe('FeishuBotService', () => {
       content: JSON.stringify({ text: '@_user_1 帮我分析根因' }),
     }))
     await vi.waitFor(() => expect([...store.pending.values()].find((row) => row.messageId === 'om_config')?.autoRouteDraft).toMatchObject({
-      sourceSenderId: 'on_alert_bot', cardTitle: '【平台】差异播报',
+      sourceSenderId: '*', cardTitle: '【平台】差异播报',
       requiredKeywords: ['任务ID', '校验结果'], instruction: '帮我分析根因',
     }))
     expect(transport.cards.some((row) => JSON.stringify(row.card).includes('配置卡片自动路由'))).toBe(true)
@@ -1707,7 +1707,7 @@ describe('FeishuBotService', () => {
     await bound.service.stop()
   })
 
-  it('routes only matching top-level cards from another bot into the configured fixed session', async () => {
+  it('routes matching top-level cards from any sender into the configured fixed session', async () => {
     const { service, store, transport, startTurn } = harness()
     store.autoRoutes.set('route-1', {
       id: 'route-1', botId: 'bot-1', bindingKey: 'bot-1:auto-route:route-1', chatId: 'oc_1',
@@ -1728,7 +1728,7 @@ describe('FeishuBotService', () => {
         }),
         mentions: [],
       },
-      sender: { sender_type: 'app', sender_id: { open_id: 'ou_scoped_alert_bot', union_id: 'on_alert_bot' } },
+      sender: { sender_type: 'user', sender_id: { open_id: 'ou_user' } },
     })
     await vi.waitFor(() => expect(startTurn).toHaveBeenCalledOnce())
     expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({
@@ -1738,14 +1738,16 @@ describe('FeishuBotService', () => {
     expect(store.autoRoutes.get('route-1')?.matchCount).toBe(1)
     expect(store.bindings.get('bot-1:auto-route:route-1')).toMatchObject({ threadId: 'thread-1' })
 
+    expect(store.autoRoutes.get('route-1')?.matchCount).toBe(1)
+
     transport.handlers?.onMessage({
-      event_id: 'event-auto-route-other',
+      event_id: 'event-auto-route-self',
       message: {
-        message_id: 'om_other', chat_id: 'oc_1', chat_type: 'group', message_type: 'interactive',
-        content: JSON.stringify({ header: { title: { content: '【平台】差异播报' } }, elements: [{ tag: 'div', text: { content: '任务ID：T2\n校验结果：不一致' } }] }),
+        message_id: 'om_self', chat_id: 'oc_1', chat_type: 'group', message_type: 'interactive',
+        content: JSON.stringify({ header: { title: { content: '【平台】差异播报' } }, elements: [{ tag: 'div', text: { content: '任务ID：T4\n校验结果：不一致' } }] }),
         mentions: [],
       },
-      sender: { sender_type: 'app', sender_id: { open_id: 'ou_other_bot', union_id: 'on_other_bot' } },
+      sender: { sender_type: 'app', sender_id: { open_id: 'ou_bot' } },
     })
     await new Promise((resolve) => setImmediate(resolve))
     expect(startTurn).toHaveBeenCalledOnce()

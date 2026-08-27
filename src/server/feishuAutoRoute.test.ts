@@ -18,7 +18,8 @@ describe('Feishu card auto routes', () => {
       sourceSenderId: 'ou_alert_bot', sourceSenderType: 'app', messageType: 'interactive', text,
     })
     expect(draft).toMatchObject({
-      sourceSenderId: 'ou_alert_bot',
+      sourceSenderId: '*',
+      sourceSenderType: 'app',
       cardTitle: '【激励实时对账平台】差异播报',
       requiredKeywords: ['任务名称', '任务ID', '校验时间', '校验结果', '校验详情'],
     })
@@ -33,7 +34,7 @@ describe('Feishu card auto routes', () => {
     expect(draft.requiredKeywords).toEqual(['任务名称', '任务ID'])
   })
 
-  it('matches changed card values but rejects another source, title, or schema', () => {
+  it('matches changed card values from any sender but rejects another title or schema', () => {
     const draft = createFeishuAutoRouteDraft({
       sourceSenderId: 'ou_alert_bot', sourceSenderType: 'bot', messageType: 'interactive', text,
     })!
@@ -43,13 +44,16 @@ describe('Feishu card auto routes', () => {
     })).toBe(true)
     expect(matchesFeishuAutoRoute(draft, {
       sourceSenderId: 'ou_other_bot', sourceSenderType: 'bot', messageType: 'interactive', text: changed,
-    })).toBe(false)
+    })).toBe(true)
+    expect(matchesFeishuAutoRoute(draft, {
+      sourceSenderId: 'on_human', sourceSenderType: 'user', messageType: 'interactive', text: changed,
+    })).toBe(true)
     expect(matchesFeishuAutoRoute(draft, {
       sourceSenderId: 'ou_alert_bot', sourceSenderType: 'bot', messageType: 'interactive', text: changed.replace('校验详情：', '异常详情：'),
     })).toBe(false)
   })
 
-  it('turns a human-forwarded card into a group-scoped any-bot rule', () => {
+  it('turns every card into a group-scoped sender-independent rule', () => {
     const draft = createFeishuAutoRouteDraft({
       sourceSenderId: 'on_human', sourceSenderType: 'user', messageType: 'interactive', text,
     })!
@@ -59,7 +63,7 @@ describe('Feishu card auto routes', () => {
     })).toBe(true)
     expect(matchesFeishuAutoRoute(draft, {
       sourceSenderId: 'on_human', sourceSenderType: 'user', messageType: 'interactive', text,
-    })).toBe(false)
+    })).toBe(true)
   })
 
   it('builds a bounded, explicit instruction envelope', () => {
