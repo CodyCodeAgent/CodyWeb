@@ -36,6 +36,7 @@ import {
   requeueFailedFeishuOutbox,
   releasePendingFeishuMessageClaim,
   savePendingFeishuMessage,
+  setFeishuAutoRouteScenarioPackage,
   takePendingFeishuMessage,
   touchFeishuBinding,
   touchFeishuAutoRoute,
@@ -178,6 +179,9 @@ describe('feishuBotStore bindings and pending messages', () => {
     await expect(updateFeishuAutoRouteDefinition({
       id: updated.id, requiredKeywords: ['任务ID'], instruction: '仅定位差异根因',
     })).resolves.toMatchObject({ requiredKeywords: ['任务ID'], instruction: '仅定位差异根因', fingerprintKey: 'fingerprint-1' })
+    await expect(setFeishuAutoRouteScenarioPackage(updated.id, 'scenario-alert-triage')).resolves.toMatchObject({
+      id: updated.id, scenarioPackageId: 'scenario-alert-triage',
+    })
     await upsertFeishuBinding({
       botId: 'routes', bindingKey: updated.bindingKey, chatId: 'oc_alerts', chatType: 'group',
       projectCwd: '/repo', projectName: 'Repo', sessionId: 'session-2', sessionTitle: 'Persistent triage',

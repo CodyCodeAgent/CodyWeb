@@ -23,7 +23,7 @@ describe('useLocale helpers', () => {
     expect(translateLocaleMessage('zh-CN', 'workLog.fileStatus.modified')).toBe('已修改')
     expect(translateLocaleMessage('zh-CN', 'approvalRisk.label.deletesFiles')).toBe('删除文件')
     expect(translateLocaleMessage('zh-CN', 'approvalRisk.impact.outsideWorkspacePaths', { paths: '/etc/passwd' })).toBe('该命令引用了 cwd 外的路径：/etc/passwd')
-    expect(translateLocaleMessage('zh-CN', 'promptLibrary.title')).toBe('可复用任务简报')
+    expect(translateLocaleMessage('zh-CN', 'promptLibrary.title')).toBe('可复用场景包')
     expect(translateLocaleMessage('zh-CN', 'notifications.browserAlerts')).toBe('浏览器提醒')
     expect(translateLocaleMessage('zh-CN', 'mission.preparing')).toBe('正在准备下一步')
     expect(translateLocaleMessage('zh-CN', 'tokenFlame.summary', { tokens: '20.5M', level: '烈焰' })).toBe('今日：20.5M tokens · 烈焰')

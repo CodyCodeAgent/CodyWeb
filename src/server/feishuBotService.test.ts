@@ -17,6 +17,7 @@ import {
 import type { FeishuAutoRoute, FeishuCard, FeishuTurn } from './feishuBotStore'
 import type { FeishuMessageResource } from './feishuMessageParser'
 import { FeishuPermanentDeliveryError } from './feishuReliableTransport'
+import { FEISHU_CARD_ACTIONS } from './feishuCards'
 
 const bot: FeishuBotDefinition = {
   botId: 'bot-1', appId: 'cli_a', appSecret: 'secret', enabled: true,
@@ -44,6 +45,10 @@ class MemoryStore implements FeishuBotStorePort {
   failedEvents: Array<{ key: string; error: string }> = []
   pendingClaims = new Map<string, string>()
   autoRoutes = new Map<string, FeishuAutoRoute>()
+  scenarioPackages = new Map<string, {
+    id: string; title: string; description: string; content: string
+    primarySkill: { name: string; path: string; displayName: string; description: string } | null
+  }>()
   constructor(private readonly configuredBot: FeishuBotDefinition = bot) {}
   async listBots() { return [this.configuredBot] }
   async updateRuntime(_botId: string, update: FeishuRuntimeUpdate) { this.runtime.push(update) }
@@ -90,6 +95,7 @@ class MemoryStore implements FeishuBotStorePort {
       requiredKeywords: input.requiredKeywords, fingerprintKey: input.fingerprintKey, instruction: input.instruction,
       projectKey: input.projectKey, projectCwd: input.projectCwd, projectName: input.projectName,
       sessionId: input.sessionId, sessionTitle: input.sessionTitle, createdByOpenId: input.createdByOpenId,
+      scenarioPackageId: input.scenarioPackageId ?? '',
       createdAtIso: existing?.createdAtIso ?? now, updatedAtIso: now,
       lastMatchedAtIso: existing?.lastMatchedAtIso ?? null, matchCount: existing?.matchCount ?? 0,
     }
@@ -102,6 +108,11 @@ class MemoryStore implements FeishuBotStorePort {
     const updated = { ...current, ...input, updatedAtIso: new Date().toISOString() }
     this.autoRoutes.set(input.id, updated)
     return updated
+  }
+  async findScenarioPackage(id: string) { return this.scenarioPackages.get(id) ?? null }
+  async listScenarioPackages(cwd: string) {
+    void cwd
+    return [...this.scenarioPackages.values()].map(({ content: _content, ...item }) => item)
   }
 }
 
@@ -243,8 +254,13 @@ function harness(binding?: FeishuSessionBinding, options: {
   analyzeAutoRoute?: (input: {
     cwd: string; cardTitle: string; cardText: string; candidateKeywords: string[]; requestedInstruction: string
   }) => Promise<{ requiredKeywords: string[]; instruction: string; reason: string }>
+  scenarioPackages?: Array<{
+    id: string; title: string; description: string; content: string
+    primarySkill: { name: string; path: string; displayName: string; description: string } | null
+  }>
 } = {}) {
   const store = new MemoryStore(options.bot)
+  for (const item of options.scenarioPackages ?? []) store.scenarioPackages.set(item.id, item)
   if (binding) store.bindings.set(binding.bindingKey, binding)
   const transport = new FakeTransport()
   let turnSequence = 0
@@ -1287,7 +1303,17 @@ describe('FeishuBotService', () => {
       instruction: '定位差异根因并给出处理建议',
       reason: '任务ID和校验结果是稳定结构',
     }))
-    const { service, store } = harness(undefined, { analyzeAutoRoute })
+    const { service, store, startTurn } = harness(undefined, {
+      analyzeAutoRoute,
+      scenarioPackages: [{
+        id: 'scenario-alert', title: '差异告警排障', description: '排查差异告警',
+        content: '按稳定标识核对并定位根因。',
+        primarySkill: {
+          name: 'alert-triage', path: '/repo/.codex/skills/alert-triage/SKILL.md',
+          displayName: 'Alert triage', description: 'Investigate alerts.',
+        },
+      }],
+    })
     await service.start()
     const current = binding()
     await store.savePendingMessage({
@@ -1303,6 +1329,14 @@ describe('FeishuBotService', () => {
     })
     await service.handleCardAction('bot-1', {
       operator: { open_id: 'ou_user' }, context: { open_message_id: 'route-picker-card' },
+      action: { option: 'scenario-alert', value: {
+        action: FEISHU_CARD_ACTIONS.selectScenarioPackage, binding_key: current.bindingKey,
+        project_key: '/repo', pending_message_id: 'om_config_route',
+      } },
+    })
+    await vi.waitFor(() => expect(store.pending.get(current.bindingKey)?.scenarioPackageId).toBe('scenario-alert'))
+    await service.handleCardAction('bot-1', {
+      operator: { open_id: 'ou_user' }, context: { open_message_id: 'route-picker-card' },
       action: { option: 'thread-1', value: {
         action: 'cody_feishu_select_session', binding_key: current.bindingKey,
         project_key: '/repo', pending_message_id: 'om_config_route',
@@ -1312,7 +1346,12 @@ describe('FeishuBotService', () => {
     await vi.waitFor(() => expect([...store.autoRoutes.values()][0]).toMatchObject({
       sessionId: 'thread-1', requiredKeywords: ['任务ID', '校验结果'],
       instruction: '定位差异根因并给出处理建议',
+      scenarioPackageId: 'scenario-alert',
     }))
+    await vi.waitFor(() => expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      skills: [{ name: 'alert-triage', path: '/repo/.codex/skills/alert-triage/SKILL.md' }],
+      prompt: expect.stringContaining('按稳定标识核对并定位根因。'),
+    })))
     expect([...store.bindings.values()]).toEqual(expect.arrayContaining([
       expect.objectContaining({ bindingKey: expect.stringContaining(':auto-route:'), threadId: 'thread-1' }),
     ]))
@@ -1751,6 +1790,47 @@ describe('FeishuBotService', () => {
     })
     await new Promise((resolve) => setImmediate(resolve))
     expect(startTurn).toHaveBeenCalledOnce()
+    await service.stop()
+  })
+
+  it('applies a linked scenario package and its optional primary Skill to an auto-routed card', async () => {
+    const primarySkill = {
+      name: 'alert-triage', path: '/repo/.codex/skills/alert-triage/SKILL.md',
+      displayName: 'Alert triage', description: 'Investigate alert cards.',
+    }
+    const { service, store, transport, startTurn } = harness(undefined, {
+      scenarioPackages: [{
+        id: 'scenario-alert', title: '差异告警排障', description: '定位差异告警',
+        content: '先核对任务标识，再定位数据源延迟，最后输出根因与行动项。', primarySkill,
+      }],
+    })
+    store.autoRoutes.set('route-scenario', {
+      id: 'route-scenario', botId: 'bot-1', bindingKey: 'bot-1:auto-route:route-scenario', chatId: 'oc_1',
+      name: '差异播报', enabled: true, sourceSenderId: '*', sourceSenderType: 'app',
+      messageType: 'interactive', cardTitle: '【平台】差异播报', requiredKeywords: ['任务ID', '校验结果'],
+      fingerprintKey: 'fingerprint-scenario', instruction: '旧的固定指令', scenarioPackageId: 'scenario-alert',
+      projectKey: '/repo', projectCwd: '/repo', projectName: 'Repo', sessionId: 'thread-1',
+      sessionTitle: 'Alert triage', createdByOpenId: 'ou_user', createdAtIso: '', updatedAtIso: '',
+      lastMatchedAtIso: null, matchCount: 0,
+    })
+    await service.start()
+    transport.handlers?.onMessage({
+      event_id: 'event-auto-route-scenario',
+      message: {
+        message_id: 'om_alert_scenario', chat_id: 'oc_1', chat_type: 'group', message_type: 'interactive',
+        content: JSON.stringify({
+          header: { title: { content: '【平台】差异播报' } },
+          elements: [{ tag: 'div', text: { content: '任务ID：T2\n校验结果：不一致' } }],
+        }), mentions: [],
+      },
+      sender: { sender_type: 'app', sender_id: { union_id: 'on_any_alert_bot' } },
+    })
+    await vi.waitFor(() => expect(startTurn).toHaveBeenCalledOnce())
+    expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'thread-1',
+      skills: [{ name: primarySkill.name, path: primarySkill.path }],
+      prompt: expect.stringMatching(/场景包：差异告警排障[\s\S]*先核对任务标识/u),
+    }))
     await service.stop()
   })
 

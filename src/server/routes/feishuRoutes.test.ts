@@ -85,6 +85,7 @@ function dependencies(): FeishuRoutesDependencies {
     removeBinding: vi.fn(async () => true),
     listAutoRoutes: vi.fn(async () => []),
     setAutoRouteEnabled: vi.fn(async () => null),
+    setAutoRouteScenarioPackage: vi.fn(async () => null),
     removeAutoRoute: vi.fn(async () => true),
     getDiagnostics: vi.fn(async (botId): Promise<FeishuDiagnosticsDto> => ({
       botId: botId ?? null,
@@ -135,6 +136,7 @@ describe('createFeishuRoutes', () => {
     const deps = dependencies()
     deps.listAutoRoutes = vi.fn(async () => [autoRoute])
     deps.setAutoRouteEnabled = vi.fn(async (_id, enabled) => ({ ...autoRoute, enabled }))
+    deps.setAutoRouteScenarioPackage = vi.fn(async (_id, scenarioPackageId) => ({ ...autoRoute, scenarioPackageId }))
     const route = createFeishuRoutes(deps)
     const listed = await invoke(route, 'GET', '/codex-api/feishu/auto-routes?botId=bot-1')
     expect(listed).toMatchObject({ statusCode: 200, body: { result: { routes: [autoRoute] } } })
@@ -142,6 +144,9 @@ describe('createFeishuRoutes', () => {
     const paused = await invoke(route, 'PATCH', '/codex-api/feishu/auto-routes/route-1', { enabled: false })
     expect(paused).toMatchObject({ statusCode: 200, body: { result: { route: { enabled: false } } } })
     expect(deps.setAutoRouteEnabled).toHaveBeenCalledWith('route-1', false)
+    const packaged = await invoke(route, 'PATCH', '/codex-api/feishu/auto-routes/route-1', { scenarioPackageId: 'scenario-alert' })
+    expect(packaged).toMatchObject({ statusCode: 200, body: { result: { route: { scenarioPackageId: 'scenario-alert' } } } })
+    expect(deps.setAutoRouteScenarioPackage).toHaveBeenCalledWith('route-1', 'scenario-alert')
     expect((await invoke(route, 'DELETE', '/codex-api/feishu/auto-routes/route-1')).statusCode).toBe(200)
     expect(deps.removeAutoRoute).toHaveBeenCalledWith('route-1')
   })

@@ -77,6 +77,7 @@ export type FeishuPendingInbound = FeishuConversationRoute & {
   resources?: FeishuMessageResource[]
   createdAtIso: string
   autoRouteDraft?: FeishuAutoRouteDraft
+  scenarioPackageId?: string
   sessionSelection?: {
     action: 'new_session' | 'select_session'
     projectKey: string
@@ -126,7 +127,7 @@ export interface FeishuBotStorePort {
   listAutoRoutes?(input: { botId?: string; chatId?: string; enabled?: boolean }): Promise<FeishuAutoRoute[]>
   upsertAutoRoute?(input: {
     botId: string; chatId: string; name: string; sourceSenderId: string; sourceSenderType: 'app' | 'bot'
-    cardTitle: string; requiredKeywords: string[]; fingerprintKey: string; instruction: string
+    cardTitle: string; requiredKeywords: string[]; fingerprintKey: string; instruction: string; scenarioPackageId?: string
     projectKey: string; projectCwd: string; projectName: string; sessionId: string; sessionTitle: string
     createdByOpenId: string
   }): Promise<FeishuAutoRoute>
@@ -134,6 +135,14 @@ export interface FeishuBotStorePort {
   updateAutoRouteDefinition?(input: {
     id: string; requiredKeywords: string[]; instruction: string
   }): Promise<FeishuAutoRoute | null>
+  findScenarioPackage?(id: string): Promise<{
+    id: string; title: string; content: string
+    primarySkill: { name: string; path: string; displayName: string; description: string } | null
+  } | null>
+  listScenarioPackages?(cwd: string): Promise<Array<{
+    id: string; title: string; description: string
+    primarySkill: { name: string; path: string; displayName: string; description: string } | null
+  }>>
 }
 
 export interface FeishuCatalogPort {
@@ -152,6 +161,7 @@ export interface FeishuTurnPort {
     metadata: Record<string, string>
     collaborationMode?: 'default' | 'plan'
     permissionMode?: 'normal' | 'yolo'
+    skills?: Array<{ name: string; path: string }>
   }): Promise<{ turnId: string }>
   stopTurn?(input: { threadId: string; turnId?: string }): Promise<void>
   isThreadBusy?(threadId: string): Promise<boolean>
@@ -302,6 +312,7 @@ type ActiveTurnCard = {
   patchTimer: ReturnType<typeof setTimeout> | null
   sourceMessageId: string
   resources: FeishuMessageResource[]
+  skills: Array<{ name: string; path: string }>
   requesterOpenId: string
   startedAtIso: string
   durableTurnId?: string
@@ -356,6 +367,7 @@ type DurableTurnCardState = {
   binding: FeishuSessionBinding
   sourceMessageId: string
   resources: FeishuMessageResource[]
+  skills?: Array<{ name: string; path: string }>
   streamState: FeishuStreamState
   content: string
   preparedContent?: string
@@ -1442,7 +1454,7 @@ export class FeishuBotService {
       return this.pendingRequestCards.get(requestKey(botId, readString(value.request_id)))?.requesterOpenId ?? ''
     }
     const bindingKey = readString(value.binding_key)
-    if (action === FEISHU_CARD_ACTIONS.selectProject || action === FEISHU_CARD_ACTIONS.selectSession || action === FEISHU_CARD_ACTIONS.newSession) {
+    if (action === FEISHU_CARD_ACTIONS.selectProject || action === FEISHU_CARD_ACTIONS.selectScenarioPackage || action === FEISHU_CARD_ACTIONS.selectSession || action === FEISHU_CARD_ACTIONS.newSession) {
       let pending = await this.dependencies.store.peekPendingMessage(botId, bindingKey)
       if (pending) return pending.senderOpenId
     }
@@ -1474,6 +1486,41 @@ export class FeishuBotService {
         pendingMessageId: pending.messageId,
         requesterOpenId: pending.senderOpenId,
         ...(pending.autoRouteDraft ? { autoRoute: pending.autoRouteDraft } : {}),
+        scenarioPackages: pending.autoRouteDraft
+          ? (await this.dependencies.store.listScenarioPackages?.(project.cwd) ?? []).map((item) => ({
+              id: item.id, title: item.title, description: item.description,
+              primarySkillName: item.primarySkill?.displayName || item.primarySkill?.name,
+            }))
+          : [],
+        selectedScenarioPackageId: pending.scenarioPackageId,
+      })
+    }
+
+    if (action === FEISHU_CARD_ACTIONS.selectScenarioPackage) {
+      const pending = await this.dependencies.store.peekPendingMessage(botId, bindingKey)
+      if (!pending?.autoRouteDraft) throw new Error('原自动路由配置已过期，请重新发起')
+      if (pendingMessageId !== pending.messageId) throw new Error('这张场景包选择卡已过期，请使用最新卡片')
+      if (!this.isOperatorAuthorized(runtime.bot, operatorOpenId, pending.senderOpenId)) throw new Error('只有请求发起者或机器人管理员可以选择场景包')
+      const projects = await this.dependencies.catalog.listProjects()
+      const project = projects.find((row) => row.projectKey === readString(value.project_key))
+      if (!project) throw new Error('项目不存在或已隐藏')
+      const packages = await this.dependencies.store.listScenarioPackages?.(project.cwd) ?? []
+      const requestedId = option === '__none__' ? '' : option
+      if (requestedId && !packages.some((item) => item.id === requestedId)) throw new Error('场景包不存在或不适用于当前项目')
+      const updatedPending = { ...pending, scenarioPackageId: requestedId || undefined }
+      await this.dependencies.store.savePendingMessage(updatedPending)
+      return buildSessionSelectionCard({
+        project,
+        sessions: project.sessions,
+        bindingKey,
+        pendingMessageId: pending.messageId,
+        requesterOpenId: pending.senderOpenId,
+        autoRoute: pending.autoRouteDraft,
+        scenarioPackages: packages.map((item) => ({
+          id: item.id, title: item.title, description: item.description,
+          primarySkillName: item.primarySkill?.displayName || item.primarySkill?.name,
+        })),
+        selectedScenarioPackageId: requestedId,
       })
     }
 
@@ -1611,6 +1658,7 @@ export class FeishuBotService {
           requiredKeywords: draft.requiredKeywords,
           fingerprintKey: draft.fingerprintKey,
           instruction: draft.instruction,
+          scenarioPackageId: pending.scenarioPackageId,
           projectKey: project.projectKey,
           projectCwd: project.cwd,
           projectName: project.label,
@@ -1622,7 +1670,24 @@ export class FeishuBotService {
         this.refineAutoRouteWithCodex(autoRoute, draft)
       }
       await this.dependencies.store.upsertBinding(binding)
-      await this.deliverPendingMessages(runtime, binding, pending)
+      const scenarioPackage = autoRoute?.scenarioPackageId
+        ? await this.dependencies.store.findScenarioPackage?.(autoRoute.scenarioPackageId)
+        : null
+      if (autoRoute) {
+        const primarySkill = scenarioPackage?.primarySkill
+        const prompt = buildFeishuAutoRoutePrompt({
+          routeName: autoRoute.name,
+          instruction: scenarioPackage?.content || autoRoute.instruction,
+          cardText: pending.autoRouteDraft?.preview ?? pending.prompt,
+          ...(scenarioPackage ? { scenarioPackageName: scenarioPackage.title } : {}),
+          ...(primarySkill ? { primarySkillName: primarySkill.displayName || primarySkill.name } : {}),
+        })
+        await this.deliverPrompt(runtime, binding, pending.messageId, prompt, pending.resources, pending.senderOpenId,
+          primarySkill ? [{ name: primarySkill.name, path: primarySkill.path }] : [])
+        await this.dependencies.store.deletePendingMessage(binding.botId, pending.messageId)
+      } else {
+        await this.deliverPendingMessages(runtime, binding, pending)
+      }
       if (autoRoute) return buildAutoRouteCreatedCard({
         routeName: autoRoute.name,
         projectLabel: binding.projectLabel,
@@ -1631,6 +1696,7 @@ export class FeishuBotService {
         requiredKeywords: autoRoute.requiredKeywords,
         sourceSenderId: autoRoute.sourceSenderId,
         webUrl: this.dependencies.webThreadUrl?.(threadId),
+        scenarioPackageName: scenarioPackage?.title,
       })
       return buildBoundSessionCard({
         projectLabel: binding.projectLabel,
@@ -1883,10 +1949,16 @@ export class FeishuBotService {
       }
       await this.dependencies.store.upsertBinding(binding)
       await this.dependencies.store.touchAutoRoute?.(route.id)
+      const scenarioPackage = route.scenarioPackageId
+        ? await this.dependencies.store.findScenarioPackage?.(route.scenarioPackageId)
+        : null
+      const primarySkill = scenarioPackage?.primarySkill
       const prompt = buildFeishuAutoRoutePrompt({
         routeName: route.name,
-        instruction: route.instruction,
+        instruction: scenarioPackage?.content || route.instruction,
         cardText: inbound.prompt,
+        ...(scenarioPackage ? { scenarioPackageName: scenarioPackage.title } : {}),
+        ...(primarySkill ? { primarySkillName: primarySkill.displayName || primarySkill.name } : {}),
       })
       await this.enqueueMessage(binding.bindingKey, () => this.deliverPrompt(
         runtime,
@@ -1895,6 +1967,7 @@ export class FeishuBotService {
         prompt,
         inbound.resources,
         route.createdByOpenId,
+        primarySkill ? [{ name: primarySkill.name, path: primarySkill.path }] : [],
       ))
       await this.dependencies.store.completeEvent?.(runtime.bot.botId, preliminary.eventKey)
       return true
@@ -2404,6 +2477,7 @@ export class FeishuBotService {
     prompt: string,
     resources: FeishuMessageResource[] = [],
     requesterOpenId = binding.senderOpenId,
+    skills: Array<{ name: string; path: string }> = [],
   ): Promise<void> {
     if (!prompt.trim()) return
     const durableTurn = await this.dependencies.lifecycle?.createTurn({
@@ -2437,6 +2511,7 @@ export class FeishuBotService {
       patchTimer: null,
       sourceMessageId,
       resources,
+      skills,
       requesterOpenId,
       startedAtIso: this.now().toISOString(),
       durableTurnId: durableTurn?.id,
@@ -2540,6 +2615,7 @@ export class FeishuBotService {
         },
         collaborationMode: active.binding.collaborationMode ?? 'default',
         permissionMode: active.binding.permissionMode ?? 'yolo',
+        skills: active.skills,
       })
       active.turnId = result.turnId
       // Notifications can overtake the turn/start RPC response. Do not revive
@@ -2702,6 +2778,10 @@ export class FeishuBotService {
         patchTimer: null,
         sourceMessageId,
         resources,
+        skills: Array.isArray(state?.skills) ? state.skills.flatMap((value) => {
+          const row = asRecord(value); const name = readString(row?.name).trim(); const path = readString(row?.path).trim()
+          return name && path ? [{ name, path }] : []
+        }) : [],
         requesterOpenId,
         startedAtIso: readString(state?.startedAtIso) || turn.createdAtIso,
         durableTurnId: turn.id,
@@ -2781,6 +2861,7 @@ export class FeishuBotService {
       binding: active.binding,
       sourceMessageId: active.sourceMessageId,
       resources: active.resources,
+      skills: active.skills.length > 0 ? active.skills : undefined,
       streamState: active.state,
       content: active.content,
       preparedContent: active.preparedContent || undefined,

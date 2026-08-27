@@ -563,6 +563,25 @@
                   <div><dt>{{ t('settings.feishu.autoRouteCard') }}</dt><dd>{{ route.cardTitle }}</dd></div>
                   <div><dt>{{ t('settings.feishu.autoRouteFields') }}</dt><dd>{{ route.requiredKeywords.join(' · ') || t('settings.feishu.autoRouteTitleOnly') }}</dd></div>
                   <div><dt>{{ t('settings.feishu.autoRouteInstruction') }}</dt><dd>{{ route.instruction }}</dd></div>
+                  <div class="feishu-auto-route-package">
+                    <dt>{{ t('settings.feishu.autoRouteScenarioPackage') }}</dt>
+                    <dd>
+                      <select
+                        :value="route.scenarioPackageId"
+                        :disabled="updatingAutoRouteId === route.id"
+                        :aria-label="t('settings.feishu.autoRouteScenarioPackage')"
+                        @change="updateAutoRouteScenarioPackage(route, ($event.target as HTMLSelectElement).value)"
+                      >
+                        <option value="">{{ t('settings.feishu.autoRouteScenarioPackageNone') }}</option>
+                        <option v-for="item in scenarioPackagesForRoute(route)" :key="item.id" :value="item.id">
+                          {{ item.title }}{{ item.primarySkill ? ` · ${item.primarySkill.displayName || item.primarySkill.name}` : '' }}
+                        </option>
+                      </select>
+                      <small>{{ scenarioPackageForRoute(route)?.primarySkill
+                        ? t('settings.feishu.autoRouteScenarioPackageSkill', { skill: scenarioPackageForRoute(route)?.primarySkill?.displayName || scenarioPackageForRoute(route)?.primarySkill?.name || '' })
+                        : t('settings.feishu.autoRouteScenarioPackageAutodiscover') }}</small>
+                    </dd>
+                  </div>
                   <div><dt>{{ t('settings.feishu.autoRouteActivity') }}</dt><dd>{{ t('settings.feishu.autoRouteMatchCount', { count: String(route.matchCount) }) }} · {{ formatTime(route.lastMatchedAtIso) }}</dd></div>
                 </dl>
                 <div class="feishu-auto-route-actions">
@@ -652,6 +671,7 @@ import {
   retryFeishuDelivery,
   retryFeishuQrSetup,
   setFeishuAutoRouteEnabled,
+  setFeishuAutoRouteScenarioPackage,
   startFeishuQrSetup,
   updateFeishuBot,
   type FeishuBinding,
@@ -666,6 +686,8 @@ import {
   type FeishuOpenPlatformSession,
   type FeishuOpenPlatformApp,
 } from '../../api/codexFeishuClient'
+import { fetchPromptTemplates } from '../../api/codexPromptLibraryClient'
+import { normalizePromptTemplates, type PromptTemplate } from '../../composables/promptLibraryRules'
 import { useLocale } from '../../composables/useLocale'
 import { isRemotePlainHttpLocation } from '../../composables/feishuTransport'
 
@@ -690,6 +712,7 @@ const showTransportWarning = typeof window !== 'undefined' && isRemotePlainHttpL
 const bots = ref<FeishuBot[]>([])
 const bindings = ref<FeishuBinding[]>([])
 const autoRoutes = ref<FeishuAutoRoute[]>([])
+const scenarioPackages = ref<PromptTemplate[]>([])
 const diagnostics = ref<FeishuDiagnostics | null>(null)
 const connectivityReport = ref<FeishuConnectivityReport | null>(null)
 const selectedBotId = ref('')
@@ -732,6 +755,14 @@ let qrSetupPollTimer: ReturnType<typeof setTimeout> | null = null
 const selectedBot = computed(() => bots.value.find((bot) => bot.id === selectedBotId.value) ?? null)
 const selectedBindings = computed(() => bindings.value.filter((binding) => binding.botId === selectedBotId.value))
 const selectedAutoRoutes = computed(() => autoRoutes.value.filter((route) => route.botId === selectedBotId.value))
+
+function scenarioPackagesForRoute(route: FeishuAutoRoute): PromptTemplate[] {
+  return scenarioPackages.value.filter((item) => item.scope === 'global' || item.workspaceCwd === route.projectCwd)
+}
+
+function scenarioPackageForRoute(route: FeishuAutoRoute): PromptTemplate | null {
+  return scenarioPackages.value.find((item) => item.id === route.scenarioPackageId) ?? null
+}
 const secretPlaceholder = computed(() => isCreating.value || !selectedBot.value?.secretConfigured
   ? t('settings.feishu.field.secretPlaceholder')
   : t('settings.feishu.field.secretKeepPlaceholder'))
@@ -1058,6 +1089,7 @@ async function loadData(): Promise<void> {
     bots.value = nextBots
     bindings.value = nextBindings
     autoRoutes.value = nextAutoRoutes
+    void loadScenarioPackages()
     const nextSetups = await fetchFeishuQrSetups().catch(() => [])
     const resumable = nextSetups.find((job) => isActiveQrStatus(job.status) || job.status === 'failed')
     if (resumable && !isCreating.value) {
@@ -1070,6 +1102,16 @@ async function loadData(): Promise<void> {
     loadError.value = errorMessage(error)
   } finally {
     isLoading.value = false
+  }
+}
+
+async function loadScenarioPackages(): Promise<void> {
+  try {
+    const stored = await fetchPromptTemplates()
+    scenarioPackages.value = stored.length > 0 ? normalizePromptTemplates(stored) : []
+  } catch {
+    // 场景包属于自动路由的增强配置，加载失败不应阻塞机器人主体配置页。
+    scenarioPackages.value = []
   }
 }
 
@@ -1312,6 +1354,23 @@ async function toggleAutoRoute(route: FeishuAutoRoute): Promise<void> {
   } finally {
     updatingAutoRouteId.value = ''
   }
+}
+
+async function updateAutoRouteScenarioPackage(route: FeishuAutoRoute, scenarioPackageId: string): Promise<void> {
+  if (updatingAutoRouteId.value) return
+  updatingAutoRouteId.value = route.id
+  actionError.value = ''
+  successMessage.value = ''
+  try {
+    const updated = await setFeishuAutoRouteScenarioPackage(route.id, scenarioPackageId)
+    const index = autoRoutes.value.findIndex((item) => item.id === route.id)
+    if (index >= 0) autoRoutes.value.splice(index, 1, updated)
+    successMessage.value = scenarioPackageId
+      ? t('settings.feishu.autoRouteScenarioPackageUpdated')
+      : t('settings.feishu.autoRouteScenarioPackageCleared')
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : t('settings.feishu.autoRouteUpdateFailed')
+  } finally { updatingAutoRouteId.value = '' }
 }
 
 async function removeAutoRoute(route: FeishuAutoRoute): Promise<void> {
@@ -1584,6 +1643,9 @@ button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2
 .feishu-auto-routes dl > div { display: grid; min-width: 0; grid-template-columns: 4.5rem minmax(0, 1fr); gap: 0.45rem; }
 .feishu-auto-routes dt { color: var(--color-text-muted); font-size: 0.64rem; font-weight: 650; }
 .feishu-auto-routes dd { overflow-wrap: anywhere; margin: 0; color: var(--color-text); font-size: 0.66rem; line-height: 1.45; }
+.feishu-auto-route-package dd { display:grid; gap:.25rem; }
+.feishu-auto-route-package select { min-height:2.35rem; min-width:0; width:100%; border:1px solid var(--color-border); border-radius:var(--radius-sm); background:var(--color-control); color:var(--color-text); padding:0 .55rem; font-size:.68rem; }
+.feishu-auto-route-package small { color:var(--color-text-muted); font-size:.61rem; line-height:1.4; }
 .feishu-auto-route-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; }
 .feishu-auto-route-actions button { min-width: 5.5rem; }
 .feishu-bindings > header { align-items: center; margin-bottom: 0.7rem; }

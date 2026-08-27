@@ -177,6 +177,7 @@ export type FeishuAutoRoute = {
   requiredKeywords: string[]
   fingerprintKey: string
   instruction: string
+  scenarioPackageId?: string
   projectKey: string
   projectCwd: string
   projectName: string
@@ -404,6 +405,7 @@ function ensureFeishuTables(db: Database.Database): void {
       required_keywords_json TEXT NOT NULL DEFAULT '[]',
       fingerprint_key TEXT NOT NULL,
       instruction TEXT NOT NULL,
+      scenario_package_id TEXT NOT NULL DEFAULT '',
       project_key TEXT NOT NULL,
       project_cwd TEXT NOT NULL,
       project_name TEXT NOT NULL DEFAULT '',
@@ -460,6 +462,10 @@ function ensureFeishuTables(db: Database.Database): void {
   if (!pendingColumns.some((column) => column.name === 'claim_expires_at_iso')) {
     db.exec('ALTER TABLE feishu_pending_messages_v2 ADD COLUMN claim_expires_at_iso TEXT')
   }
+  const autoRouteColumns = db.prepare('PRAGMA table_info(feishu_auto_routes)').all() as Array<{ name: string }>
+  if (!autoRouteColumns.some((column) => column.name === 'scenario_package_id')) {
+    db.exec("ALTER TABLE feishu_auto_routes ADD COLUMN scenario_package_id TEXT NOT NULL DEFAULT ''")
+  }
 
   migrateLegacySingleton(db)
   migratePlaintextBotSecrets(db)
@@ -481,6 +487,7 @@ function normalizeAutoRoute(row: Record<string, unknown>): FeishuAutoRoute {
     requiredKeywords: Array.isArray(keywords) ? keywords.filter((value): value is string => typeof value === 'string') : [],
     fingerprintKey: String(row.fingerprintKey),
     instruction: String(row.instruction),
+    scenarioPackageId: String(row.scenarioPackageId ?? ''),
     projectKey: String(row.projectKey),
     projectCwd: String(row.projectCwd),
     projectName: String(row.projectName),
@@ -498,7 +505,7 @@ const AUTO_ROUTE_SELECT = `SELECT id, bot_id AS botId, binding_key AS bindingKey
   chat_id AS chatId, name, enabled, source_sender_id AS sourceSenderId,
   source_sender_type AS sourceSenderType, message_type AS messageType,
   card_title AS cardTitle, required_keywords_json AS requiredKeywordsJson,
-  fingerprint_key AS fingerprintKey, instruction, project_key AS projectKey,
+  fingerprint_key AS fingerprintKey, instruction, scenario_package_id AS scenarioPackageId, project_key AS projectKey,
   project_cwd AS projectCwd, project_name AS projectName, session_id AS sessionId,
   session_title AS sessionTitle, created_by_open_id AS createdByOpenId,
   created_at_iso AS createdAtIso, updated_at_iso AS updatedAtIso,
@@ -531,6 +538,7 @@ export async function upsertFeishuAutoRoute(input: {
   requiredKeywords: string[]
   fingerprintKey: string
   instruction: string
+  scenarioPackageId?: string
   projectKey: string
   projectCwd: string
   projectName: string
@@ -551,16 +559,16 @@ export async function upsertFeishuAutoRoute(input: {
       INSERT INTO feishu_auto_routes
         (id, bot_id, binding_key, chat_id, name, enabled, source_sender_id,
          source_sender_type, message_type, card_title, required_keywords_json,
-         fingerprint_key, instruction, project_key, project_cwd, project_name,
+         fingerprint_key, instruction, scenario_package_id, project_key, project_cwd, project_name,
          session_id, session_title, created_by_open_id, created_at_iso, updated_at_iso)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'interactive', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'interactive', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(bot_id, chat_id, fingerprint_key) DO UPDATE SET
         name = excluded.name, enabled = excluded.enabled,
         source_sender_id = excluded.source_sender_id,
         source_sender_type = excluded.source_sender_type,
         card_title = excluded.card_title,
         required_keywords_json = excluded.required_keywords_json,
-        instruction = excluded.instruction, project_key = excluded.project_key,
+        instruction = excluded.instruction, scenario_package_id = excluded.scenario_package_id, project_key = excluded.project_key,
         project_cwd = excluded.project_cwd, project_name = excluded.project_name,
         session_id = excluded.session_id, session_title = excluded.session_title,
         created_by_open_id = excluded.created_by_open_id,
@@ -568,12 +576,22 @@ export async function upsertFeishuAutoRoute(input: {
     `).run(
       id, botId, bindingKey, input.chatId.trim(), clean(input.name, input.cardTitle), input.enabled === false ? 0 : 1,
       input.sourceSenderId.trim(), input.sourceSenderType, input.cardTitle.trim(),
-      stringifyJson(uniqueStrings(input.requiredKeywords)), input.fingerprintKey.trim(), input.instruction.trim(),
+      stringifyJson(uniqueStrings(input.requiredKeywords)), input.fingerprintKey.trim(), input.instruction.trim(), input.scenarioPackageId?.trim() ?? '',
       input.projectKey.trim(), input.projectCwd.trim(), input.projectName.trim(), input.sessionId.trim(),
       input.sessionTitle.trim(), input.createdByOpenId.trim(), existing ? String(existing.createdAtIso) : timestamp, timestamp,
     )
     return normalizeAutoRoute(db.prepare(`${AUTO_ROUTE_SELECT} WHERE bot_id = ? AND chat_id = ? AND fingerprint_key = ?`)
       .get(botId, input.chatId.trim(), input.fingerprintKey.trim()) as Record<string, unknown>)
+  })
+}
+
+export async function setFeishuAutoRouteScenarioPackage(id: string, scenarioPackageId: string): Promise<FeishuAutoRoute | null> {
+  return withLocalDatabase((db) => {
+    ensureFeishuTables(db)
+    const changed = db.prepare('UPDATE feishu_auto_routes SET scenario_package_id = ?, updated_at_iso = ? WHERE id = ?')
+      .run(scenarioPackageId.trim(), nowIso(), id.trim()).changes
+    if (!changed) return null
+    return normalizeAutoRoute(db.prepare(`${AUTO_ROUTE_SELECT} WHERE id = ?`).get(id.trim()) as Record<string, unknown>)
   })
 }
 

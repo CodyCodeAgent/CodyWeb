@@ -6,7 +6,9 @@ import { handleListUserSettings, handleReadUserSetting, handleWriteUserSetting }
 import { handleThemeAssetRead, handleThemeAssetUpload } from '../themeAssetStore.js'
 import { asRecord, readJsonBody, setJson, type DomainRoute } from './httpRoute.js'
 
-export function createContentRoutes(): DomainRoute {
+export function createContentRoutes(dependencies: {
+  draftScenarioPackage?: (input: { cwd: string; brief: string }) => Promise<unknown>
+} = {}): DomainRoute {
   return async ({ req, res, url }) => {
     const key = `${req.method ?? ''} ${url.pathname}`
     if (key === 'POST /codex-api/uploads/images') await handleImageUpload(req, res)
@@ -24,6 +26,16 @@ export function createContentRoutes(): DomainRoute {
     else if (key === 'DELETE /codex-api/prompt-templates/item') await handleDeletePromptTemplate(url, res)
     else if (key === 'POST /codex-api/prompt-templates/use') await handleUsePromptTemplate(req, res)
     else if (key === 'POST /codex-api/prompt-templates/favorite') await handleFavoritePromptTemplate(req, res)
+    else if (key === 'POST /codex-api/scenario-packages/draft') {
+      if (!dependencies.draftScenarioPackage) setJson(res, 503, { error: 'Scenario package drafting is unavailable' })
+      else {
+        const body = asRecord(await readJsonBody(req))
+        const cwd = typeof body?.cwd === 'string' ? body.cwd.trim() : ''
+        const brief = typeof body?.brief === 'string' ? body.brief.trim() : ''
+        if (!cwd || !brief) setJson(res, 400, { error: 'A workspace and scenario description are required' })
+        else setJson(res, 200, { result: { draft: await dependencies.draftScenarioPackage({ cwd, brief }) } })
+      }
+    }
     else if (key === 'GET /codex-api/fs/directories') await handleDirectoryList(url, res)
     else if (key === 'POST /codex-api/diagrams/plantuml') {
       const body = asRecord(await readJsonBody(req)); const source = typeof body?.source === 'string' ? body.source : ''

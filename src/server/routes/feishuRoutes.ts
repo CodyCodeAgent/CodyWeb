@@ -57,6 +57,7 @@ export type FeishuAutoRouteDto = {
   cardTitle: string
   requiredKeywords: string[]
   instruction: string
+  scenarioPackageId?: string
   projectCwd: string
   projectName: string
   sessionId: string
@@ -157,6 +158,7 @@ export type FeishuRoutesDependencies = {
   removeBinding: (bindingId: string) => Promise<boolean>
   listAutoRoutes: (botId?: string) => Promise<FeishuAutoRouteDto[]>
   setAutoRouteEnabled: (routeId: string, enabled: boolean) => Promise<FeishuAutoRouteDto | null>
+  setAutoRouteScenarioPackage?: (routeId: string, scenarioPackageId: string) => Promise<FeishuAutoRouteDto | null>
   removeAutoRoute: (routeId: string) => Promise<boolean>
   getDiagnostics: (botId?: string) => Promise<FeishuDiagnosticsDto>
   retryDelivery: (botId: string, outboxId: string) => Promise<boolean>
@@ -471,11 +473,17 @@ export function createFeishuRoutes(dependencies: FeishuRoutesDependencies): Doma
     if (req.method === 'PATCH' && match) {
       const routeId = decodePathPart(match[1] ?? '')
       const body = asRecord(await readJsonBody(req))
-      if (!routeId || !body || typeof body.enabled !== 'boolean') {
-        setJson(res, 400, { error: 'Invalid body: expected { enabled: boolean }' })
+      if (!routeId || !body || (typeof body.enabled !== 'boolean' && typeof body.scenarioPackageId !== 'string')) {
+        setJson(res, 400, { error: 'Invalid body: expected enabled or scenarioPackageId' })
         return true
       }
-      const route = await dependencies.setAutoRouteEnabled(routeId, body.enabled)
+      if (typeof body.scenarioPackageId === 'string' && !dependencies.setAutoRouteScenarioPackage) {
+        setJson(res, 503, { error: 'Scenario package routing is unavailable' })
+        return true
+      }
+      const route = typeof body.scenarioPackageId === 'string'
+        ? await dependencies.setAutoRouteScenarioPackage!(routeId, body.scenarioPackageId)
+        : await dependencies.setAutoRouteEnabled(routeId, body.enabled as boolean)
       setJson(res, route ? 200 : 404, route ? { result: { route } } : { error: 'Auto route not found' })
       return true
     }

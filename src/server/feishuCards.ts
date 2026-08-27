@@ -3,6 +3,7 @@ import { buildFeishuMarkdownElements } from './feishuMarkdownCard'
 export const FEISHU_CARD_ACTIONS = {
   selectProject: 'cody_feishu_select_project',
   selectSession: 'cody_feishu_select_session',
+  selectScenarioPackage: 'cody_feishu_select_scenario_package',
   newSession: 'cody_feishu_new_session',
   unbind: 'cody_feishu_unbind',
   approve: 'cody_feishu_approve',
@@ -28,6 +29,13 @@ export type FeishuCardSession = {
   title: string
   preview?: string
   updatedAtIso?: string
+}
+
+export type FeishuCardScenarioPackage = {
+  id: string
+  title: string
+  description?: string
+  primarySkillName?: string
 }
 
 function plainText(content: string): Record<string, string> {
@@ -123,6 +131,8 @@ export function buildSessionSelectionCard(input: {
   pendingMessageId?: string
   requesterOpenId?: string
   autoRoute?: { cardTitle: string; requiredKeywords: string[] }
+  scenarioPackages?: FeishuCardScenarioPackage[]
+  selectedScenarioPackageId?: string
 }): FeishuCard {
   const sessions = input.sessions.slice(0, 90)
   const sessionLabelCounts = new Map<string, number>()
@@ -138,6 +148,23 @@ export function buildSessionSelectionCard(input: {
     requester_open_id: input.requesterOpenId ?? '',
   }
   const actions: unknown[] = []
+  const scenarioPackages = input.scenarioPackages?.slice(0, 90) ?? []
+  if (input.autoRoute && scenarioPackages.length > 0) {
+    actions.push({
+      tag: 'select_static',
+      placeholder: plainText(input.selectedScenarioPackageId
+        ? `场景包：${scenarioPackages.find((item) => item.id === input.selectedScenarioPackageId)?.title ?? '已选择'}`
+        : '选择场景包（可选）'),
+      options: [
+        { text: plainText('不指定场景包 · Codex 自主选择 Skill'), value: '__none__' },
+        ...scenarioPackages.map((item) => ({
+          text: plainText(truncate(`${item.title}${item.primarySkillName ? ` · ${item.primarySkillName}` : ''}`, 80)),
+          value: item.id,
+        })),
+      ],
+      value: { action: FEISHU_CARD_ACTIONS.selectScenarioPackage, ...sharedValue },
+    })
+  }
   if (sessions.length > 0) {
     actions.push({
       tag: 'select_static',
@@ -161,7 +188,7 @@ export function buildSessionSelectionCard(input: {
   })
 
   return card(input.autoRoute ? '选择自动路由 Session' : '选择 Session', [
-    { tag: 'div', text: markdown(`项目：**${truncate(input.project.label, 80)}**\n\n路径：\`${truncate(input.project.cwd, 160)}\`\n\n${input.autoRoute ? `卡片：**${truncate(input.autoRoute.cardTitle, 120)}**\n\n后续匹配卡片会持续进入所选 Session。` : '选择已有 session 会继续其完整上下文；也可以新建。'}`) },
+    { tag: 'div', text: markdown(`项目：**${truncate(input.project.label, 80)}**\n\n路径：\`${truncate(input.project.cwd, 160)}\`\n\n${input.autoRoute ? `卡片：**${truncate(input.autoRoute.cardTitle, 120)}**\n\n${input.selectedScenarioPackageId ? `场景包：**${truncate(scenarioPackages.find((item) => item.id === input.selectedScenarioPackageId)?.title ?? '已选择', 100)}**\n\n` : ''}后续匹配卡片会持续进入所选 Session。场景包可选；不指定时 Codex 会自行发现相关 Skill。` : '选择已有 session 会继续其完整上下文；也可以新建。'}`) },
     { tag: 'action', actions },
   ], input.autoRoute ? 'turquoise' : 'blue')
 }
@@ -174,12 +201,13 @@ export function buildAutoRouteCreatedCard(input: {
   requiredKeywords: string[]
   sourceSenderId?: string
   webUrl?: string
+  scenarioPackageName?: string
 }): FeishuCard {
   const actions = input.webUrl
     ? [{ tag: 'button', text: plainText('打开 Session'), type: 'primary', url: input.webUrl }]
     : []
   return card('自动路由已启用', [
-    { tag: 'div', text: markdown(`规则：**${truncate(input.routeName, 100)}**\n\n卡片：**${truncate(input.cardTitle, 120)}**\n\n目标：**${truncate(input.projectLabel, 80)} · ${truncate(input.sessionTitle, 100)}**\n\n以后当前群中标题和字段特征一致的卡片，无论由谁发送，都会自动进入这个 Session。`) },
+    { tag: 'div', text: markdown(`规则：**${truncate(input.routeName, 100)}**\n\n卡片：**${truncate(input.cardTitle, 120)}**\n\n目标：**${truncate(input.projectLabel, 80)} · ${truncate(input.sessionTitle, 100)}**${input.scenarioPackageName ? `\n\n场景包：**${truncate(input.scenarioPackageName, 100)}**` : ''}\n\n以后当前群中标题和字段特征一致的卡片，无论由谁发送，都会自动进入这个 Session。`) },
     ...(input.requiredKeywords.length ? [{ tag: 'div', text: markdown(`匹配字段：${input.requiredKeywords.map((value) => `\`${truncate(value, 30)}\``).join('、')}`) }] : []),
     ...(actions.length ? [{ tag: 'action', actions }] : []),
     { tag: 'note', elements: [{ tag: 'plain_text', content: '可在 CodyWeb 设置 → 飞书机器人 → 自动路由中暂停或删除。' }] },

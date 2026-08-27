@@ -1,10 +1,15 @@
+import type { UiComposerSkill } from '../types/codex'
+
 export type PromptTemplateScope = 'global' | 'workspace'
+export type ScenarioPackageAuthoringMode = 'human' | 'ai'
 
 export type PromptTemplate = {
   id: string
   title: string
   description: string
   content: string
+  primarySkill: UiComposerSkill | null
+  authoringMode: ScenarioPackageAuthoringMode
   category: string
   scope: PromptTemplateScope
   workspaceCwd: string
@@ -18,6 +23,7 @@ export type PromptTemplate = {
 export type PromptInsertion = {
   id: number
   text: string
+  skills: UiComposerSkill[]
   mode: 'insert' | 'replace'
 }
 
@@ -64,6 +70,8 @@ export function createPromptTemplateId(cryptoValue: { randomUUID?: () => string 
 export function defaultPromptTemplates(now = new Date().toISOString()): PromptTemplate[] {
   return DEFAULT_PROMPTS.map((prompt) => ({
     ...prompt,
+    primarySkill: null,
+    authoringMode: 'human',
     scope: 'global',
     workspaceCwd: '',
     isFavorite: false,
@@ -90,6 +98,8 @@ export function normalizePromptTemplates(value: unknown): PromptTemplate[] {
       title,
       description: string(row.description),
       content,
+      primarySkill: normalizePrimarySkill(row.primarySkill),
+      authoringMode: row.authoringMode === 'ai' ? 'ai' : 'human',
       category: string(row.category) || 'General',
       scope,
       workspaceCwd: scope === 'workspace' ? string(row.workspaceCwd) : '',
@@ -109,8 +119,22 @@ export function visiblePromptTemplates(templates: PromptTemplate[], cwd: string,
   return templates
     .filter((template) => template.scope === 'global' || (normalizedCwd && template.workspaceCwd === normalizedCwd))
     .filter((template) => category === 'All' || template.category === category)
-    .filter((template) => !needle || [template.title, template.description, template.content, template.category].some((value) => value.toLocaleLowerCase().includes(needle)))
+    .filter((template) => !needle || [template.title, template.description, template.content, template.category, template.primarySkill?.displayName ?? '', template.primarySkill?.name ?? ''].some((value) => value.toLocaleLowerCase().includes(needle)))
     .sort((left, right) => Number(right.isFavorite) - Number(left.isFavorite) || Date.parse(right.lastUsedAtIso || '') - Date.parse(left.lastUsedAtIso || '') || left.title.localeCompare(right.title))
+}
+
+function normalizePrimarySkill(value: unknown): UiComposerSkill | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const row = value as Record<string, unknown>
+  const name = string(row.name)
+  const path = string(row.path)
+  if (!name || !path) return null
+  return {
+    name,
+    path,
+    displayName: string(row.displayName) || name,
+    description: string(row.description),
+  }
 }
 
 export function insertPromptIntoDraft(draft: string, prompt: string, cursor: number, mode: PromptInsertion['mode']): { text: string; cursor: number } {

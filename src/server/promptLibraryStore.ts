@@ -7,6 +7,8 @@ const MAX_BODY_BYTES = 512 * 1024
 
 export type StoredPromptTemplate = {
   id: string; title: string; description: string; content: string; category: string
+  primarySkill: { name: string; path: string; displayName: string; description: string } | null
+  authoringMode: 'human' | 'ai'
   scope: 'global' | 'workspace'; workspaceCwd: string; isFavorite: boolean
   useCount: number; lastUsedAtIso: string; createdAtIso: string; updatedAtIso: string
 }
@@ -18,6 +20,8 @@ function ensurePromptTable(db: Database.Database): void {
       title TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       content TEXT NOT NULL,
+      primary_skill_json TEXT NOT NULL DEFAULT 'null',
+      authoring_mode TEXT NOT NULL DEFAULT 'human',
       category TEXT NOT NULL DEFAULT 'General',
       scope TEXT NOT NULL CHECK(scope IN ('global', 'workspace')),
       workspace_cwd TEXT NOT NULL DEFAULT '',
@@ -30,9 +34,29 @@ function ensurePromptTable(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_prompt_templates_scope ON prompt_templates(scope, workspace_cwd);
     CREATE INDEX IF NOT EXISTS idx_prompt_templates_recent ON prompt_templates(last_used_at_iso DESC);
   `)
+  const columns = db.prepare('PRAGMA table_info(prompt_templates)').all() as Array<{ name: string }>
+  if (!columns.some((column) => column.name === 'primary_skill_json')) {
+    db.exec("ALTER TABLE prompt_templates ADD COLUMN primary_skill_json TEXT NOT NULL DEFAULT 'null'")
+  }
+  if (!columns.some((column) => column.name === 'authoring_mode')) {
+    db.exec("ALTER TABLE prompt_templates ADD COLUMN authoring_mode TEXT NOT NULL DEFAULT 'human'")
+  }
 }
 
 function text(value: unknown): string { return typeof value === 'string' ? value.trim() : '' }
+
+function primarySkill(value: unknown): StoredPromptTemplate['primarySkill'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const row = value as Record<string, unknown>
+  const name = text(row.name); const path = text(row.path)
+  if (!name || !path || name.length > 160 || path.length > 2_048) return null
+  return { name, path, displayName: text(row.displayName) || name, description: text(row.description).slice(0, 1_000) }
+}
+
+function parsePrimarySkill(value: unknown): StoredPromptTemplate['primarySkill'] {
+  if (typeof value !== 'string' || !value.trim()) return null
+  try { return primarySkill(JSON.parse(value)) } catch { return null }
+}
 
 function normalizeTemplate(value: unknown): StoredPromptTemplate | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
@@ -43,6 +67,7 @@ function normalizeTemplate(value: unknown): StoredPromptTemplate | null {
   const now = new Date().toISOString()
   return {
     id, title, content, description: text(row.description), category: text(row.category) || 'General', scope,
+    primarySkill: primarySkill(row.primarySkill), authoringMode: row.authoringMode === 'ai' ? 'ai' : 'human',
     workspaceCwd: scope === 'workspace' ? text(row.workspaceCwd) : '', isFavorite: row.isFavorite === true,
     useCount: typeof row.useCount === 'number' && Number.isFinite(row.useCount) ? Math.max(0, Math.trunc(row.useCount)) : 0,
     lastUsedAtIso: text(row.lastUsedAtIso), createdAtIso: text(row.createdAtIso) || now, updatedAtIso: text(row.updatedAtIso) || now,
@@ -51,13 +76,14 @@ function normalizeTemplate(value: unknown): StoredPromptTemplate | null {
 
 function upsertTemplate(db: Database.Database, template: StoredPromptTemplate): void {
   db.prepare(`
-    INSERT INTO prompt_templates (id, title, description, content, category, scope, workspace_cwd, is_favorite, use_count, last_used_at_iso, created_at_iso, updated_at_iso)
-    VALUES (@id, @title, @description, @content, @category, @scope, @workspaceCwd, @isFavorite, @useCount, @lastUsedAtIso, @createdAtIso, @updatedAtIso)
+    INSERT INTO prompt_templates (id, title, description, content, primary_skill_json, authoring_mode, category, scope, workspace_cwd, is_favorite, use_count, last_used_at_iso, created_at_iso, updated_at_iso)
+    VALUES (@id, @title, @description, @content, @primarySkillJson, @authoringMode, @category, @scope, @workspaceCwd, @isFavorite, @useCount, @lastUsedAtIso, @createdAtIso, @updatedAtIso)
     ON CONFLICT(id) DO UPDATE SET title=excluded.title, description=excluded.description, content=excluded.content,
+      primary_skill_json=excluded.primary_skill_json, authoring_mode=excluded.authoring_mode,
       category=excluded.category, scope=excluded.scope, workspace_cwd=excluded.workspace_cwd,
       is_favorite=excluded.is_favorite, use_count=excluded.use_count, last_used_at_iso=excluded.last_used_at_iso,
       updated_at_iso=excluded.updated_at_iso
-  `).run({ ...template, isFavorite: template.isFavorite ? 1 : 0 })
+  `).run({ ...template, primarySkillJson: JSON.stringify(template.primarySkill), isFavorite: template.isFavorite ? 1 : 0 })
 }
 
 function migrateLegacyTemplates(db: Database.Database): void {
@@ -80,11 +106,22 @@ function migrateLegacyTemplates(db: Database.Database): void {
 export async function listPromptTemplates(): Promise<StoredPromptTemplate[]> {
   return withLocalDatabase((db) => {
     ensurePromptTable(db); migrateLegacyTemplates(db)
-    const rows = db.prepare(`SELECT id, title, description, content, category, scope, workspace_cwd AS workspaceCwd,
+    const rows = db.prepare(`SELECT id, title, description, content, primary_skill_json AS primarySkillJson, authoring_mode AS authoringMode, category, scope, workspace_cwd AS workspaceCwd,
       is_favorite AS isFavorite, use_count AS useCount, last_used_at_iso AS lastUsedAtIso,
       created_at_iso AS createdAtIso, updated_at_iso AS updatedAtIso FROM prompt_templates ORDER BY updated_at_iso DESC`).all()
-    return (rows as Array<Record<string, unknown>>).map((row) => ({ ...row, isFavorite: row.isFavorite === 1 } as StoredPromptTemplate))
+    return (rows as Array<Record<string, unknown>>).map((row) => ({
+      ...row,
+      primarySkill: parsePrimarySkill(row.primarySkillJson),
+      authoringMode: row.authoringMode === 'ai' ? 'ai' : 'human',
+      isFavorite: row.isFavorite === 1,
+    } as StoredPromptTemplate))
   })
+}
+
+export async function findPromptTemplate(idValue: unknown): Promise<StoredPromptTemplate | null> {
+  const id = text(idValue)
+  if (!id) return null
+  return (await listPromptTemplates()).find((template) => template.id === id) ?? null
 }
 
 export async function replacePromptTemplates(values: unknown): Promise<StoredPromptTemplate[]> {
@@ -137,9 +174,10 @@ export async function updatePromptTemplateUsage(idValue: unknown, usedAtValue: u
     db.prepare('UPDATE prompt_templates SET use_count = use_count + 1, last_used_at_iso = ?, updated_at_iso = ? WHERE id = ?').run(usedAtIso, usedAtIso, id)
     const row = db.prepare(`SELECT id, title, description, content, category, scope, workspace_cwd AS workspaceCwd,
       is_favorite AS isFavorite, use_count AS useCount, last_used_at_iso AS lastUsedAtIso,
+      primary_skill_json AS primarySkillJson, authoring_mode AS authoringMode,
       created_at_iso AS createdAtIso, updated_at_iso AS updatedAtIso FROM prompt_templates WHERE id = ?`).get(id) as Record<string, unknown> | undefined
     if (!row) throw new Error('Prompt template was not found')
-    return { ...row, isFavorite: row.isFavorite === 1 } as StoredPromptTemplate
+    return { ...row, primarySkill: parsePrimarySkill(row.primarySkillJson), authoringMode: row.authoringMode === 'ai' ? 'ai' : 'human', isFavorite: row.isFavorite === 1 } as StoredPromptTemplate
   })
 }
 
@@ -152,9 +190,10 @@ export async function updatePromptTemplateFavorite(idValue: unknown, favorite: u
     db.prepare('UPDATE prompt_templates SET is_favorite = ?, updated_at_iso = ? WHERE id = ?').run(favorite ? 1 : 0, updatedAtIso, id)
     const row = db.prepare(`SELECT id, title, description, content, category, scope, workspace_cwd AS workspaceCwd,
       is_favorite AS isFavorite, use_count AS useCount, last_used_at_iso AS lastUsedAtIso,
+      primary_skill_json AS primarySkillJson, authoring_mode AS authoringMode,
       created_at_iso AS createdAtIso, updated_at_iso AS updatedAtIso FROM prompt_templates WHERE id = ?`).get(id) as Record<string, unknown> | undefined
     if (!row) throw new Error('Prompt template was not found')
-    return { ...row, isFavorite: row.isFavorite === 1 } as StoredPromptTemplate
+    return { ...row, primarySkill: parsePrimarySkill(row.primarySkillJson), authoringMode: row.authoringMode === 'ai' ? 'ai' : 'human', isFavorite: row.isFavorite === 1 } as StoredPromptTemplate
   })
 }
 

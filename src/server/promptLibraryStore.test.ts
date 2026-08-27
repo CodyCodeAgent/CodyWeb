@@ -20,12 +20,17 @@ describe('prompt library store', () => {
 
     await replacePromptTemplates([{
       id: 'review', title: 'Review', description: 'Review changes', content: 'Review the changes.',
+      primarySkill: {
+        name: 'code-review', path: '/repo/.codex/skills/code-review/SKILL.md',
+        displayName: 'Code review', description: 'Review workspace changes.',
+      }, authoringMode: 'ai',
       category: 'Review', scope: 'workspace', workspaceCwd: '/repo', isFavorite: true,
       useCount: 2, lastUsedAtIso: now, createdAtIso: now, updatedAtIso: now,
     }])
 
     await expect(listPromptTemplates()).resolves.toEqual([expect.objectContaining({
       id: 'review', scope: 'workspace', workspaceCwd: '/repo', isFavorite: true, useCount: 2,
+      authoringMode: 'ai', primarySkill: expect.objectContaining({ name: 'code-review' }),
     })])
   })
 

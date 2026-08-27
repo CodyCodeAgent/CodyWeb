@@ -110,9 +110,13 @@ export function buildFeishuAutoRoutePrompt(input: {
   routeName: string
   instruction: string
   cardText: string
+  scenarioPackageName?: string
+  primarySkillName?: string
 }): string {
   return [
     `飞书群自动路由“${input.routeName}”命中了一张卡片。`,
+    ...(input.scenarioPackageName ? [`处理场景包：${input.scenarioPackageName}`] : []),
+    ...(input.primarySkillName ? [`主要 Skill：${input.primarySkillName}（已作为本次任务的原生 Skill 附加）`] : []),
     `固定处理指令：${input.instruction}`,
     '请直接处理卡片内容；如信息不足，请明确指出缺少什么。',
     '',

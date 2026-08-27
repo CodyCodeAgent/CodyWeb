@@ -99,6 +99,14 @@ export function useComposerSkills() {
     )
   }
 
+  function addSkill(skill: UiComposerSkill): void {
+    const name = skill.name.trim()
+    const path = skill.path.trim()
+    if (!name || !path) return
+    const exists = selectedSkills.value.some((selected) => selected.name === name && selected.path === path)
+    if (!exists) selectedSkills.value = [...selectedSkills.value, { ...skill, name, path }]
+  }
+
   function closeSkillMenu(): void {
     activeTrigger.value = null
   }
@@ -117,6 +125,7 @@ export function useComposerSkills() {
     skillError,
     updateSkillTrigger,
     selectSkill,
+    addSkill,
     removeSkill,
     closeSkillMenu,
     resetSkills,

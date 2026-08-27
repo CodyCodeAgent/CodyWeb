@@ -1942,7 +1942,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     createCatalogRoutes(catalogSync),
     createThreadCacheRoutes(threadMessageCache),
     createFeishuRoutes(feishuIntegration.routes),
-    createContentRoutes(),
+    createContentRoutes({ draftScenarioPackage: feishuIntegration.draftScenarioPackage }),
     createWorkspaceToolingRoutes({
       checkpointHealth: ({ url, res }) => handleCheckpointHealthRoute(url, res),
       createWorkflow: ({ req, res }) => handleCreateWorkspaceWorkflowWithNotifications(req, res, productEventHub),

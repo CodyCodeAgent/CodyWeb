@@ -127,6 +127,7 @@ export type FeishuAutoRoute = {
   cardTitle: string
   requiredKeywords: string[]
   instruction: string
+  scenarioPackageId: string
   projectCwd: string
   projectName: string
   sessionId: string
@@ -273,6 +274,7 @@ function normalizeAutoRoute(value: unknown): FeishuAutoRoute | null {
       ? row.requiredKeywords.filter((item): item is string => typeof item === 'string')
       : [],
     instruction: row.instruction,
+    scenarioPackageId: typeof row.scenarioPackageId === 'string' ? row.scenarioPackageId : '',
     projectCwd: typeof row.projectCwd === 'string' ? row.projectCwd : '',
     projectName: typeof row.projectName === 'string' ? row.projectName : '',
     sessionId: row.sessionId,
@@ -631,6 +633,18 @@ export async function setFeishuAutoRouteEnabled(routeId: string, enabled: boolea
   })
   return normalizeAutoRoute(result.route)
     ?? invalidResponse('Feishu auto route update returned malformed response', 'feishu/auto-routes/update', status)
+}
+
+export async function setFeishuAutoRouteScenarioPackage(routeId: string, scenarioPackageId: string): Promise<FeishuAutoRoute> {
+  const { result, status } = await fetchCodexResultRecord(`/codex-api/feishu/auto-routes/${encodeURIComponent(routeId)}`, {
+    init: jsonPatchInit({ scenarioPackageId }),
+    method: 'feishu/auto-routes/scenario-package',
+    networkErrorMessage: 'Feishu auto route update failed before it was sent',
+    httpErrorMessage: 'Feishu auto route update failed',
+    malformedMessage: 'Feishu auto route update returned malformed response',
+  })
+  return normalizeAutoRoute(result.route)
+    ?? invalidResponse('Feishu auto route update returned malformed response', 'feishu/auto-routes/scenario-package', status)
 }
 
 export async function removeFeishuAutoRoute(routeId: string): Promise<void> {

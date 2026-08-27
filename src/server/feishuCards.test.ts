@@ -26,11 +26,17 @@ describe('Feishu cards', () => {
       bindingKey: 'bot:group:chat:chat',
       project: { projectKey: '/repo', cwd: '/repo', label: 'CodyWeb', sessionCount: 2 },
       sessions: [{ threadId: 'thread-1', title: 'Fix scrolling' }],
+      autoRoute: { cardTitle: 'Alert', requiredKeywords: ['Task ID'] },
+      scenarioPackages: [{
+        id: 'scenario-alert', title: 'Alert triage', description: 'Investigate alerts', primarySkillName: 'Incident triage',
+      }],
     })
     expect(JSON.stringify(sessionCard)).toContain(FEISHU_CARD_ACTIONS.selectSession)
     expect(JSON.stringify(sessionCard)).toContain(FEISHU_CARD_ACTIONS.newSession)
     expect(JSON.stringify(sessionCard)).toContain('thread-1')
     expect(JSON.stringify(sessionCard)).toContain('/repo')
+    expect(JSON.stringify(sessionCard)).toContain(FEISHU_CARD_ACTIONS.selectScenarioPackage)
+    expect(JSON.stringify(sessionCard)).toContain('Alert triage · Incident triage')
   })
 
   it('disambiguates duplicate project and Session labels', () => {

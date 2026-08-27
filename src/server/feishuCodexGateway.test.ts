@@ -52,6 +52,20 @@ describe('FeishuCodexGateway', () => {
     expect(rpc).not.toHaveBeenCalledWith('thread/resume', expect.anything())
   })
 
+  it('attaches a scenario package primary Skill before the message without restricting other Skills', async () => {
+    const rpc = vi.fn(async (method: string) => method === 'turn/start' ? { turn: { id: 'turn-skilled' } } : {})
+    const gateway = new FeishuCodexGateway({ rpc, respondToServerRequest: vi.fn(), readCatalog: vi.fn(async () => catalog) })
+    await gateway.startTurn('thread-1', 'Investigate this alert', [], 'default', 'yolo', [{
+      name: 'alert-triage', path: '/repo/.codex/skills/alert-triage/SKILL.md',
+    }])
+    expect(rpc).toHaveBeenCalledWith('turn/start', expect.objectContaining({
+      input: [
+        { type: 'skill', name: 'alert-triage', path: '/repo/.codex/skills/alert-triage/SKILL.md' },
+        { type: 'text', text: 'Investigate this alert', text_elements: [] },
+      ],
+    }))
+  })
+
   it('resumes a materialized session before starting another turn', async () => {
     const rpc = vi.fn(async (method: string) => method === 'turn/start' ? { turn: { id: 'turn-next' } } : {})
     const gateway = new FeishuCodexGateway({ rpc, respondToServerRequest: vi.fn(), readCatalog: vi.fn(async () => catalog) })
@@ -150,6 +164,45 @@ describe('FeishuCodexGateway', () => {
       outputSchema: expect.objectContaining({ type: 'object', additionalProperties: false }),
     }))
     expect(respondToServerRequest).not.toHaveBeenCalled()
+  })
+
+  it('drafts a scenario package from the live Skill catalog with a strict read-only turn', async () => {
+    let listener: ((notification: { method: string; params?: unknown }) => void) | null = null
+    const rpc = vi.fn(async (method: string) => {
+      if (method === 'skills/list') return { data: [{ cwd: '/repo', skills: [{
+        name: 'alert-triage', path: '/repo/.codex/skills/alert-triage/SKILL.md', enabled: true,
+        interface: { displayName: 'Alert triage', shortDescription: 'Investigate structured alerts.' },
+      }] }] }
+      if (method === 'thread/start') return { thread: { id: 'thread-scenario-draft' } }
+      if (method === 'turn/start') {
+        queueMicrotask(() => listener?.({
+          method: 'item/completed', params: {
+            threadId: 'thread-scenario-draft', item: { type: 'agentMessage', text: JSON.stringify({
+              title: '差异告警排障', description: '排查结构化差异卡片', category: 'Troubleshooting',
+              content: '先核对稳定标识，再定位根因并输出行动项。',
+              primary_skill_path: '/repo/.codex/skills/alert-triage/SKILL.md', reason: '该 Skill 与告警排障直接匹配',
+            }) },
+          },
+        }))
+        return { turn: { id: 'turn-scenario-draft' } }
+      }
+      return {}
+    })
+    const gateway = new FeishuCodexGateway({
+      rpc, respondToServerRequest: vi.fn(),
+      subscribe: (value) => { listener = value; return () => { listener = null } },
+      readCatalog: vi.fn(async () => catalog),
+    })
+    await expect(gateway.draftScenarioPackage({ cwd: '/repo', brief: '分析差异播报卡片' })).resolves.toMatchObject({
+      title: '差异告警排障', primarySkill: { name: 'alert-triage', displayName: 'Alert triage' },
+    })
+    expect(rpc).toHaveBeenCalledWith('thread/start', expect.objectContaining({
+      cwd: '/repo', ephemeral: true, sandbox: 'read-only', approvalPolicy: 'never',
+    }))
+    expect(rpc).toHaveBeenCalledWith('turn/start', expect.objectContaining({
+      outputSchema: expect.objectContaining({ type: 'object', additionalProperties: false }),
+      sandboxPolicy: { type: 'readOnly' },
+    }))
   })
 
   it('maps user-input answers to the app-server response schema', async () => {

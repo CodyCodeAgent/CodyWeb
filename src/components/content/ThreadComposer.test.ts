@@ -117,13 +117,28 @@ describe('ThreadComposer', () => {
     await input.setValue('Existing note')
     ;(input.element as HTMLTextAreaElement).setSelectionRange(13, 13)
 
-    await wrapper.setProps({ promptInsertion: { id: 1, text: 'Reusable prompt', mode: 'insert' } })
+    await wrapper.setProps({ promptInsertion: { id: 1, text: 'Reusable prompt', skills: [], mode: 'insert' } })
 
     expect((input.element as HTMLTextAreaElement).value).toBe('Existing note\n\nReusable prompt')
     expect(wrapper.emitted('submit')).toBeUndefined()
 
-    await wrapper.setProps({ promptInsertion: { id: 2, text: 'Replacement', mode: 'replace' } })
+    await wrapper.setProps({ promptInsertion: { id: 2, text: 'Replacement', skills: [], mode: 'replace' } })
     expect((input.element as HTMLTextAreaElement).value).toBe('Replacement')
+  })
+
+  it('attaches a scenario package primary Skill to the next turn', async () => {
+    const wrapper = mountComposer()
+    const skill = {
+      name: 'alert-triage', path: '/repo/.codex/skills/alert-triage/SKILL.md',
+      displayName: 'Alert triage', description: 'Investigate structured alerts.',
+    }
+    await wrapper.setProps({ promptInsertion: {
+      id: 1, text: 'Investigate the alert with evidence.', skills: [skill], mode: 'replace',
+    } })
+    await wrapper.get('[data-testid="thread-composer"]').trigger('submit')
+    expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({
+      text: 'Investigate the alert with evidence.', skills: [skill],
+    })
   })
 
   it('attaches an externally selected code range to the current thread composer', async () => {

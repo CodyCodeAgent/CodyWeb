@@ -1,8 +1,14 @@
 import { CodexApiError } from './codexErrors'
 import { asRecord, fetchCodexResultRecord, jsonPostInit } from './codexHttpClient'
 import type { PromptTemplate } from '../composables/promptLibraryRules'
+import type { UiComposerSkill } from '../types/codex'
 
 const PROMPT_MUTATION_TIMEOUT_MS = 12_000
+
+export type ScenarioPackageDraft = Pick<PromptTemplate, 'title' | 'description' | 'category' | 'content'> & {
+  primarySkill: UiComposerSkill | null
+  reason: string
+}
 
 function promptMutationInit(body: unknown): RequestInit {
   return {
@@ -69,4 +75,35 @@ export async function setPromptTemplateFavorite(id: string, isFavorite: boolean)
     httpErrorMessage: 'Prompt favorite update failed', malformedMessage: 'Prompt favorite update returned malformed response',
   })
   return normalizeTemplateResult(result.template, status)
+}
+
+export async function draftScenarioPackage(cwd: string, brief: string): Promise<ScenarioPackageDraft> {
+  const { result, status } = await fetchCodexResultRecord('/codex-api/scenario-packages/draft', {
+    init: { ...jsonPostInit({ cwd, brief }), signal: AbortSignal.timeout(90_000) },
+    method: 'scenario-packages/draft',
+    networkErrorMessage: 'Scenario package draft failed before it was sent',
+    httpErrorMessage: 'Scenario package draft failed',
+    malformedMessage: 'Scenario package draft returned malformed data',
+  })
+  const row = asRecord(result.draft)
+  if (!row || typeof row.title !== 'string' || typeof row.content !== 'string') {
+    throw new CodexApiError('Scenario package draft returned malformed data', { code: 'invalid_response', method: 'scenario-packages/draft', status })
+  }
+  const skill = asRecord(row.primarySkill)
+  const primarySkill = skill && typeof skill.name === 'string' && typeof skill.path === 'string'
+    ? {
+        name: skill.name,
+        path: skill.path,
+        displayName: typeof skill.displayName === 'string' ? skill.displayName : skill.name,
+        description: typeof skill.description === 'string' ? skill.description : '',
+      }
+    : null
+  return {
+    title: row.title,
+    description: typeof row.description === 'string' ? row.description : '',
+    category: typeof row.category === 'string' ? row.category : 'General',
+    content: row.content,
+    primarySkill,
+    reason: typeof row.reason === 'string' ? row.reason : '',
+  }
 }

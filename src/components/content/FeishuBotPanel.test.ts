@@ -17,6 +17,7 @@ const api = vi.hoisted(() => ({
   removeFeishuBinding: vi.fn(),
   removeFeishuAutoRoute: vi.fn(),
   setFeishuAutoRouteEnabled: vi.fn(),
+  setFeishuAutoRouteScenarioPackage: vi.fn(),
   retryFeishuDelivery: vi.fn(),
   startFeishuQrSetup: vi.fn(),
   fetchFeishuQrSetup: vi.fn(),
@@ -29,11 +30,15 @@ const api = vi.hoisted(() => ({
   fetchFeishuOpenPlatformApps: vi.fn(async () => []),
   adoptFeishuOpenPlatformApp: vi.fn(),
 }))
+const promptApi = vi.hoisted(() => ({
+  fetchPromptTemplates: vi.fn(async () => []),
+}))
 const transport = vi.hoisted(() => ({
   isRemotePlainHttpLocation: vi.fn(() => false),
 }))
 
 vi.mock('../../api/codexFeishuClient', () => api)
+vi.mock('../../api/codexPromptLibraryClient', () => promptApi)
 vi.mock('../../composables/feishuTransport', () => transport)
 
 const bot = {
@@ -83,6 +88,7 @@ const connectivityReport = {
 
 afterEach(() => {
   vi.clearAllMocks()
+  promptApi.fetchPromptTemplates.mockResolvedValue([])
   vi.useRealTimers()
   transport.isRemotePlainHttpLocation.mockReturnValue(false)
   vi.unstubAllGlobals()
@@ -424,19 +430,30 @@ describe('FeishuBotPanel', () => {
       sourceSenderId: 'on_alert_bot', sourceSenderType: 'app', cardTitle: '【平台】差异播报',
       requiredKeywords: ['任务ID', '校验结果'], instruction: '分析根因', projectCwd: '/repo',
       projectName: 'CodyWeb', sessionId: 'thread-1', sessionTitle: 'Alert triage',
-      createdAtIso: '', updatedAtIso: '', lastMatchedAtIso: null, matchCount: 0,
+      scenarioPackageId: '', createdAtIso: '', updatedAtIso: '', lastMatchedAtIso: null, matchCount: 0,
     }
     api.fetchFeishuBots.mockResolvedValue([bot])
     api.fetchFeishuBindings.mockResolvedValue([])
     api.fetchFeishuAutoRoutes.mockResolvedValue([route] as never)
     api.fetchFeishuDiagnostics.mockResolvedValue(diagnostics)
     api.setFeishuAutoRouteEnabled.mockResolvedValue({ ...route, enabled: false })
+    api.setFeishuAutoRouteScenarioPackage.mockResolvedValue({ ...route, scenarioPackageId: 'scenario-alert' })
+    promptApi.fetchPromptTemplates.mockResolvedValue([{
+      id: 'scenario-alert', title: 'Alert investigation', description: 'Investigate alerts', content: 'Find the root cause.',
+      primarySkill: { name: 'alert-triage', path: '/repo/.codex/skills/alert-triage/SKILL.md', displayName: 'Alert triage', description: '' },
+      authoringMode: 'human', category: 'Troubleshooting', scope: 'workspace', workspaceCwd: '/repo',
+      isFavorite: false, useCount: 0, lastUsedAtIso: '', createdAtIso: '', updatedAtIso: '',
+    }] as never)
     vi.stubGlobal('confirm', vi.fn(() => true))
     const wrapper = mount(FeishuBotPanel)
     await flushPromises()
     expect(wrapper.text()).toContain('Card auto routes')
     expect(wrapper.text()).toContain('差异播报')
     expect(wrapper.text()).toContain('Alert triage')
+    const packageSelect = wrapper.get('.feishu-auto-route-package select')
+    await packageSelect.setValue('scenario-alert')
+    await flushPromises()
+    expect(api.setFeishuAutoRouteScenarioPackage).toHaveBeenCalledWith('route-1', 'scenario-alert')
     const switchButton = wrapper.get('.feishu-auto-route-actions [role="switch"]')
     expect(switchButton.attributes('aria-checked')).toBe('true')
     await switchButton.trigger('click')

@@ -10,7 +10,22 @@ import {
 describe('prompt library rules', () => {
   it('provides useful defaults and rejects malformed stored rows', () => {
     expect(defaultPromptTemplates()).toHaveLength(4)
+    expect(defaultPromptTemplates()[0]).toMatchObject({ primarySkill: null, authoringMode: 'human' })
     expect(normalizePromptTemplates([{ id: '', title: 'Bad', content: '' }])).toHaveLength(4)
+  })
+
+  it('normalizes an optional primary Skill without turning it into a hard allowlist', () => {
+    const [scenario] = normalizePromptTemplates([{
+      id: 'alert-triage', title: 'Alert triage', content: 'Inspect the alert.',
+      authoringMode: 'ai', primarySkill: {
+        name: 'incident-triage', path: '/repo/.codex/skills/incident-triage/SKILL.md',
+        displayName: 'Incident triage', description: 'Triage production alerts.',
+      },
+    }])
+    expect(scenario).toMatchObject({
+      authoringMode: 'ai',
+      primarySkill: { name: 'incident-triage', displayName: 'Incident triage' },
+    })
   })
 
   it('creates prompt ids without requiring secure-context randomUUID', () => {

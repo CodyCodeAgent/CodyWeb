@@ -397,6 +397,7 @@ const {
   skillError,
   updateSkillTrigger,
   selectSkill,
+  addSkill,
   removeSkill,
   closeSkillMenu,
   resetSkills,
@@ -476,6 +477,7 @@ watch(() => props.promptInsertion?.id, () => {
   if (!insertion) return
   const next = insertPromptIntoDraft(draft.value, insertion.text, getDraftCursor(), insertion.mode)
   draft.value = next.text
+  for (const skill of insertion.skills) addSkill(skill)
   void nextTick(() => {
     const input = draftInputRef.value
     if (!input) return

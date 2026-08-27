@@ -11,7 +11,8 @@ import {
   type FeishuSessionBinding,
 } from './feishuBotService.js'
 import { FeishuReliableTransport } from './feishuReliableTransport.js'
-import { FeishuCodexGateway } from './feishuCodexGateway.js'
+import { FeishuCodexGateway, type ScenarioPackageDraft } from './feishuCodexGateway.js'
+import { findPromptTemplate, listPromptTemplates } from './promptLibraryStore.js'
 import { resolveFeishuOwnerOpenId } from './feishuOwnerResolver.js'
 import { FeishuQrSetupManager } from './feishuQrSetup.js'
 import {
@@ -48,6 +49,7 @@ import {
   touchFeishuAutoRoute,
   updateFeishuAutoRouteDefinition,
   setFeishuAutoRouteEnabled,
+  setFeishuAutoRouteScenarioPackage,
   deleteFeishuAutoRoute,
   createFeishuTurn,
   updateFeishuTurn,
@@ -182,12 +184,16 @@ function pendingFromPayload(payload: unknown): FeishuPendingInbound | null {
     createdAtIso: string('createdAtIso'),
     ...(sessionSelection ? { sessionSelection } : {}),
     ...(autoRouteDraft ? { autoRouteDraft } : {}),
+    ...(typeof row.scenarioPackageId === 'string' && row.scenarioPackageId.trim() ? { scenarioPackageId: row.scenarioPackageId.trim() } : {}),
   }
   return value.botId && value.bindingKey && value.chatId && value.messageId ? value : null
 }
 
 function createStorePort(): FeishuBotStorePort {
   return {
+    findScenarioPackage: (id) => findPromptTemplate(id),
+    listScenarioPackages: async (cwd) => (await listPromptTemplates()).filter((item) =>
+      item.scope === 'global' || item.workspaceCwd === cwd.trim()),
     listBots: async () => (await listFeishuBots()).map((bot) => ({
       botId: bot.id,
       appId: bot.appId,
@@ -328,6 +334,7 @@ function autoRouteDto(route: FeishuAutoRoute): FeishuAutoRouteDto {
     cardTitle: route.cardTitle,
     requiredKeywords: route.requiredKeywords,
     instruction: route.instruction,
+    scenarioPackageId: route.scenarioPackageId,
     projectCwd: route.projectCwd,
     projectName: route.projectName,
     sessionId: route.sessionId,
@@ -397,7 +404,7 @@ function publicThreadUrl(threadId: string): string {
 }
 
 type FeishuManagementAuditInput = {
-  action: 'bot.create' | 'bot.update' | 'bot.delete' | 'bot.reconnect' | 'bot.diagnose' | 'binding.remove' | 'delivery.manual_retry' | 'auto_route.enable' | 'auto_route.disable' | 'auto_route.remove'
+  action: 'bot.create' | 'bot.update' | 'bot.delete' | 'bot.reconnect' | 'bot.diagnose' | 'binding.remove' | 'delivery.manual_retry' | 'auto_route.enable' | 'auto_route.disable' | 'auto_route.remove' | 'auto_route.scenario_package'
   targetType: 'feishu_bot' | 'feishu_binding' | 'feishu_outbox' | 'feishu_auto_route'
   targetId: string
   success: boolean
@@ -445,6 +452,7 @@ function safeBotAuditMetadata(input: FeishuBotWriteInput): Record<string, unknow
 export type FeishuIntegration = {
   service: FeishuBotService
   routes: FeishuRoutesDependencies
+  draftScenarioPackage: (input: { cwd: string; brief: string }) => Promise<ScenarioPackageDraft>
   start: () => Promise<void>
   stop: () => Promise<void>
 }
@@ -490,8 +498,8 @@ export function createFeishuIntegration(input: {
       archiveSession: ({ threadId }) => gateway.archiveSession(threadId),
     },
     turns: {
-      startTurn: async ({ threadId, prompt, localImagePaths, collaborationMode, permissionMode }) => {
-        const result = await gateway.startTurn(threadId, prompt, localImagePaths, collaborationMode, permissionMode)
+      startTurn: async ({ threadId, prompt, localImagePaths, collaborationMode, permissionMode, skills }) => {
+        const result = await gateway.startTurn(threadId, prompt, localImagePaths, collaborationMode, permissionMode, skills)
         return { turnId: result.turnId }
       },
       stopTurn: async ({ threadId, turnId }) => {
@@ -723,6 +731,22 @@ export function createFeishuIntegration(input: {
       })
       return route ? autoRouteDto(route) : null
     },
+    setAutoRouteScenarioPackage: async (routeId, scenarioPackageId) => {
+      const current = (await listFeishuAutoRoutes()).find((item) => item.id === routeId)
+      if (!current) return null
+      if (scenarioPackageId.trim()) {
+        const scenarioPackage = await findPromptTemplate(scenarioPackageId)
+        if (!scenarioPackage || (scenarioPackage.scope === 'workspace' && scenarioPackage.workspaceCwd !== current.projectCwd)) {
+          throw new Error('Scenario package does not exist or is not available in this route workspace')
+        }
+      }
+      const route = await setFeishuAutoRouteScenarioPackage(routeId, scenarioPackageId)
+      await recordFeishuManagementAudit({
+        action: 'auto_route.scenario_package', targetType: 'feishu_auto_route', targetId: routeId,
+        success: Boolean(route), metadata: { configured: Boolean(scenarioPackageId.trim()) },
+      })
+      return route ? autoRouteDto(route) : null
+    },
     removeAutoRoute: async (routeId) => {
       const removed = await deleteFeishuAutoRoute(routeId)
       await recordFeishuManagementAudit({
@@ -882,6 +906,7 @@ export function createFeishuIntegration(input: {
   return {
     service,
     routes,
+    draftScenarioPackage: (value) => gateway.draftScenarioPackage(value),
     start: async () => {
       await cleanupFeishuOperationalData()
       await service.start()
