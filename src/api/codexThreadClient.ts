@@ -19,6 +19,7 @@ import type {
   UiThreadMessagePage,
 } from '../types/codex'
 import type { TurnPermissionOverride } from '../composables/desktopTurnPermissions'
+import { buildTurnUserInput } from '@codycodeagent/cody-web-core/session'
 
 export type TurnCollaborationMode = {
   mode: UiCollaborationModeOption['mode']
@@ -219,25 +220,11 @@ export function buildTurnInput(
   images: UiComposerImage[],
   skills: UiComposerSkill[] = [],
 ): Array<Record<string, unknown>> {
-  const input: Array<Record<string, unknown>> = []
-  for (const skill of skills) {
-    const name = skill.name.trim()
-    const path = skill.path.trim()
-    if (name.length > 0 && path.length > 0) {
-      input.push({ type: 'skill', name, path })
-    }
-  }
-  const normalizedText = text.trim()
-  if (normalizedText.length > 0) {
-    input.push({ type: 'text', text: normalizedText, text_elements: [] })
-  }
-  for (const image of images) {
-    const path = image.path.trim()
-    if (path.length > 0) {
-      input.push({ type: 'localImage', path })
-    }
-  }
-  return input
+  return buildTurnUserInput({
+    text,
+    skills,
+    localImages: images.map(image => ({ path: image.path })),
+  })
 }
 
 export async function steerThreadTurn(
