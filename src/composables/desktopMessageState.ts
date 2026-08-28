@@ -1,6 +1,11 @@
 import type { TurnActivityState } from './realtimeNotificationReaders'
 import type { UiLiveOverlay, UiMessage, UiToolingRollbackFileResult } from '../types/codex'
-import { mergeMessages as coreMergeMessages } from '@codycodeagent/cody-web-core/conversation'
+import {
+  formatTurnDuration as coreFormatTurnDuration,
+  mergeMessages as coreMergeMessages,
+  normalizeMessageText as coreNormalizeMessageText,
+  upsertLiveDelta as coreUpsertLiveDelta,
+} from '@codycodeagent/cody-web-core/conversation'
 
 const WORKED_MESSAGE_TYPE = 'worked'
 
@@ -383,7 +388,7 @@ export function mergeMessages(
 }
 
 export function normalizeMessageText(value: string): string {
-  return value.replace(/\s+/gu, ' ').trim()
+  return coreNormalizeMessageText(value)
 }
 
 export function removeRedundantLiveAgentMessages(previous: UiMessage[], incoming: UiMessage[]): UiMessage[] {
@@ -519,15 +524,7 @@ export function upsertLiveAssistantDelta(
     turnId?: string
   },
 ): UiMessage[] {
-  if (!delta.messageId || !delta.textDelta) return previous
-  const existing = previous.find((message) => message.id === delta.messageId)
-  return upsertMessage(previous, {
-    id: delta.messageId,
-    turnId: delta.turnId || existing?.turnId,
-    role: 'assistant',
-    text: `${existing?.text ?? ''}${delta.textDelta}`,
-    messageType: delta.messageType,
-  })
+  return coreUpsertLiveDelta(previous, delta)
 }
 
 export function upsertLiveAssistantDeltaForThread(
@@ -626,27 +623,7 @@ export function buildDisplayedMessages(
 }
 
 export function formatTurnDuration(durationMs: number): string {
-  if (!Number.isFinite(durationMs) || durationMs <= 0) {
-    return '<1s'
-  }
-
-  const totalSeconds = Math.max(1, Math.round(durationMs / 1000))
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-  const parts: string[] = []
-
-  if (hours > 0) {
-    parts.push(`${hours}h`)
-  }
-
-  if (minutes > 0 || hours > 0) {
-    parts.push(`${minutes}m`)
-  }
-
-  const displaySeconds = seconds > 0 || parts.length === 0 ? seconds : 0
-  parts.push(`${displaySeconds}s`)
-  return parts.join(' ')
+  return coreFormatTurnDuration(durationMs)
 }
 
 export function areTurnSummariesEqual(first?: TurnSummaryState, second?: TurnSummaryState): boolean {

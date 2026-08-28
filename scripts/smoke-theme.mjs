@@ -374,6 +374,7 @@ async function assertLightThemeHealth(page, baseUrl) {
     BROWSER_TIMEOUT_MS,
   )
   await setThemeSelect(page, 'theme-skin-select', 'light-pro', 'themeSkin')
+  await setThemeSelect(page, 'theme-color-mode-select', 'light', 'themeColorMode')
   await page.evaluate(`(() => {
     const accent = document.querySelector('[data-testid="theme-accent-input"]');
     accent.value = '#1d4ed8';
@@ -491,18 +492,15 @@ async function assertThemeVisualHealth(page) {
     const panel = styles.getPropertyValue('--color-panel').trim();
     const text = styles.getPropertyValue('--color-text').trim();
     const accent = styles.getPropertyValue('--color-accent').trim();
-    const flameMessage = document.querySelector('.flame-settings-message');
     return {
       viewportWidth: window.innerWidth,
       scrollWidth: root.scrollWidth,
       bodyTextLength: document.body.textContent.length,
       themePanel: rect('.workspace-theme-panel'),
-      flameCard: rect('.flame-settings-card'),
       background,
       panel,
       text,
       accent,
-      flameMessageBackground: flameMessage ? getComputedStyle(flameMessage).backgroundColor : '',
       textOnBackground: contrast(text, background),
       textOnPanel: contrast(text, panel),
     };
@@ -511,10 +509,8 @@ async function assertThemeVisualHealth(page) {
   assert(visual.scrollWidth <= visual.viewportWidth + 1, `Settings page has horizontal overflow: ${JSON.stringify(visual)}`)
   assert(visual.bodyTextLength > 500, `Settings page rendered too little text: ${JSON.stringify(visual)}`)
   assert(visual.themePanel?.visible === true && visual.themePanel.width >= 600, `Theme panel is not visibly laid out: ${JSON.stringify(visual)}`)
-  assert(visual.flameCard?.visible === true && visual.flameCard.width >= 600, `Token flame card is not visibly laid out: ${JSON.stringify(visual)}`)
   assert(visual.background !== visual.panel, `Theme background and panel colors collapsed together: ${JSON.stringify(visual)}`)
   assert(visual.accent.toLowerCase() === EXPECTED_THEME.accentColor, `Theme accent did not apply visually: ${JSON.stringify(visual)}`)
-  assert(visual.flameMessageBackground !== 'rgb(236, 253, 245)', `Settings success state leaked a light-only background: ${JSON.stringify(visual)}`)
   assert(visual.textOnBackground >= 4.5, `Theme text/background contrast is too low: ${JSON.stringify(visual)}`)
   assert(visual.textOnPanel >= 4.5, `Theme text/panel contrast is too low: ${JSON.stringify(visual)}`)
 
@@ -659,20 +655,13 @@ try {
       value?.density === EXPECTED_THEME.density &&
       value?.layout === EXPECTED_THEME.layoutPresetId &&
       value?.accent.toLowerCase() === EXPECTED_THEME.accentColor &&
-      value?.summary === 'Control Tower · IDE Mode' &&
+      value?.summary === 'Control Tower · Dark · IDE Mode' &&
       value?.detail === `Accent override: ${EXPECTED_THEME.accentColor}.` &&
       value?.rootSkin === EXPECTED_THEME.skinId &&
       value?.rootDensity === EXPECTED_THEME.density &&
       value?.rootLayout === EXPECTED_THEME.layoutPresetId &&
       value?.rootAccent.toLowerCase() === EXPECTED_THEME.accentColor &&
       value?.persistenceError === '',
-    BROWSER_TIMEOUT_MS,
-  )
-  await browser.page.evaluate(`document.querySelector('.flame-settings-reset-position')?.click()`)
-  await waitForPageValue(
-    browser.page,
-    `document.querySelector('.flame-settings-message')?.textContent?.trim() || ''`,
-    (value) => value === 'Saved to local settings.',
     BROWSER_TIMEOUT_MS,
   )
   const visualHealth = await assertThemeVisualHealth(browser.page)

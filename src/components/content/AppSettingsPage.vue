@@ -283,7 +283,7 @@ const saveMessage = ref('')
 const saveTone = ref<'success' | 'danger'>('success')
 const hasHydrated = ref(false)
 const settingsQuery = ref('')
-const activeSection = ref<SettingsSection>(sectionFromHash() ?? 'feishu')
+const activeSection = ref<SettingsSection>(sectionFromHash() ?? 'appearance')
 const settingsNavItems = computed(() => [
   { key: 'appearance' as const, group: 'general' as const, label: t('settings.nav.appearance'), hint: t('settings.nav.appearanceHint'), title: t('settings.appearance.title'), subtitle: t('settings.appearance.subtitle'), terms: 'appearance theme skin layout density accent 外观 主题', icon: IconTablerSun },
   { key: 'language' as const, group: 'general' as const, label: t('settings.nav.language'), hint: t('settings.nav.languageHint'), title: t('settings.language.title'), subtitle: t('settings.language.subtitle'), terms: 'language locale chinese english 语言 中文 英文', icon: IconTablerSettings },

@@ -127,7 +127,6 @@ export async function forkThread(threadId: string): Promise<string> {
 
   const payload = await callRpc<ThreadForkResponse>('thread/fork', {
     threadId: normalizedThreadId,
-    persistExtendedHistory: true,
   })
   return payload.thread.id
 }

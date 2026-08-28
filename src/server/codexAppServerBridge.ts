@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import type { Server as HttpServer, IncomingMessage, ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
@@ -6,6 +6,10 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { cwd as getProcessCwd } from 'node:process'
 import { WebSocket, WebSocketServer } from 'ws'
+import {
+  createAppServerHost,
+  type AppServerHost as CoreAppServerHost,
+} from '@codycodeagent/cody-web-core/runtime'
 import { findCatalogThreadCwd } from './catalogStore.js'
 import { CatalogSyncService } from './catalogSyncService.js'
 import { AgentTaskService } from './agentTaskService.js'
@@ -53,24 +57,6 @@ import {
   type ToolingWorkflowStepStatus,
   type ToolingWorkflowValidationResult,
 } from './toolingService.js'
-
-type JsonRpcCall = {
-  jsonrpc: '2.0'
-  id: number
-  method: string
-  params?: unknown
-}
-
-type JsonRpcResponse = {
-  id?: number
-  result?: unknown
-  error?: {
-    code: number
-    message: string
-  }
-  method?: string
-  params?: unknown
-}
 
 export type ServerRequestReply = {
   result?: unknown
@@ -678,96 +664,44 @@ export function isAppServerAlreadyInitializedError(payload: unknown): boolean {
 }
 
 class AppServerProcess {
-  private process: ChildProcessWithoutNullStreams | null = null
-  private initialized = false
-  private initializePromise: Promise<void> | null = null
-  private readBuffer = ''
-  private nextId = 1
-  private stopping = false
-  private startedAtIso: string | null = null
-  private exitedAtIso: string | null = null
-  private exitCode: number | null = null
-  private exitSignal: string | null = null
-  private sentClientRequestCount = 0
-  private completedClientRequestCount = 0
-  private failedClientRequestCount = 0
-  private notificationCount = 0
-  private serverRequestCount = 0
+  private readonly host: CoreAppServerHost
   private logSequence = 0
-  private restartReadyAtMs = 0
   private readonly recentLogs: AppServerDiagnosticLog[] = []
-  private readonly notificationCountsByMethod = new Map<string, number>()
   private readonly mcpServers = new Map<string, McpServerDiagnostic>()
-  private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (reason?: unknown) => void }>()
   private readonly notificationListeners = new Set<(value: { method: string; params: unknown }) => void>()
   private readonly pendingServerRequests = new Map<number, PendingServerRequest>()
   private readonly pendingServerRequestApprovalScopes = new Map<number, ToolingApprovalDecisionScope>()
   private nextSmokeServerRequestId = 900_000
 
-  private start(): void {
-    if (this.process) return
-
-    this.stopping = false
-    const proc = spawn('codex', [...CODEX_APP_SERVER_ARGS], { stdio: ['pipe', 'pipe', 'pipe'] })
-    this.process = proc
-    this.startedAtIso = new Date().toISOString()
-    this.exitedAtIso = null
-    this.exitCode = null
-    this.exitSignal = null
-    this.pushLog('info', 'bridge', `codex app-server started${proc.pid ? ` pid ${String(proc.pid)}` : ''}`)
-
-    proc.stdout.setEncoding('utf8')
-    proc.stdout.on('data', (chunk: string) => {
-      this.readBuffer += chunk
-
-      let lineEnd = this.readBuffer.indexOf('\n')
-      while (lineEnd !== -1) {
-        const line = this.readBuffer.slice(0, lineEnd).trim()
-        this.readBuffer = this.readBuffer.slice(lineEnd + 1)
-
-        if (line.length > 0) {
-          this.handleLine(line)
+  constructor() {
+    this.host = createAppServerHost({
+      command: 'codex',
+      args: [...CODEX_APP_SERVER_ARGS],
+      rpcTimeoutMs: APP_SERVER_RPC_TIMEOUT_MS,
+      restartCooldownMs: APP_SERVER_RESTART_COOLDOWN_MS,
+      initializeParams: {
+        clientInfo: { name: 'cody-web-ui', title: 'CodyWeb', version: '0.5.0' },
+        capabilities: { experimentalApi: true, requestAttestation: false },
+      },
+    })
+    this.host.subscribe((notification) => {
+      if (notification.method === 'server/request') {
+        const request = asRecord(notification.params)
+        if (request && typeof request.id === 'number' && typeof request.method === 'string') {
+          void this.handleServerRequest(request.id, request.method, request.params ?? null)
         }
-
-        lineEnd = this.readBuffer.indexOf('\n')
-      }
-    })
-
-    proc.stderr.setEncoding('utf8')
-    proc.stderr.on('data', (chunk: string) => {
-      this.pushChunkLogs('warning', 'stderr', chunk)
-    })
-
-    proc.on('error', (error) => {
-      this.pushLog('error', 'bridge', error.message)
-    })
-
-    proc.on('exit', (code, signal) => {
-      const isCurrentProcess = this.process === proc
-      if (!isCurrentProcess && this.process !== null) {
-        this.pushLog('info', 'bridge', 'stale codex app-server process exited after replacement')
         return
       }
-
-      this.exitedAtIso = new Date().toISOString()
-      this.exitCode = typeof code === 'number' ? code : null
-      this.exitSignal = signal ?? null
-      const failure = new Error(this.stopping ? 'codex app-server stopped' : 'codex app-server exited unexpectedly')
-      for (const request of this.pending.values()) {
-        request.reject(failure)
+      // CodyWeb emits a richer resolved notification after policy/audit work.
+      if (notification.method === 'server/request/resolved') return
+      if (notification.method === 'server/request/expired') {
+        const request = asRecord(notification.params)
+        if (request && typeof request.id === 'number') {
+          this.pendingServerRequests.delete(request.id)
+          this.pendingServerRequestApprovalScopes.delete(request.id)
+        }
       }
-
-      if (this.pending.size > 0) {
-        this.failedClientRequestCount += this.pending.size
-      }
-      this.pending.clear()
-      this.pendingServerRequests.clear()
-      this.pendingServerRequestApprovalScopes.clear()
-      this.process = null
-      this.initialized = false
-      this.initializePromise = null
-      this.readBuffer = ''
-      this.pushLog(this.stopping ? 'info' : 'error', 'bridge', failure.message)
+      this.emitNotification(notification)
     })
   }
 
@@ -792,70 +726,7 @@ class AppServerProcess {
     }
   }
 
-  private pushChunkLogs(
-    level: AppServerDiagnosticLogLevel,
-    source: AppServerDiagnosticLogSource,
-    chunk: string,
-  ): void {
-    const lines = chunk.split(/\r?\n/u)
-    for (const line of lines) {
-      this.pushLog(level, source, line)
-    }
-  }
-
-  private sendLine(payload: Record<string, unknown>): void {
-    if (!this.process) {
-      throw new Error('codex app-server is not running')
-    }
-
-    this.process.stdin.write(`${JSON.stringify(payload)}\n`)
-  }
-
-  private handleLine(line: string): void {
-    let message: JsonRpcResponse
-    try {
-      message = JSON.parse(line) as JsonRpcResponse
-    } catch {
-      this.pushLog('warning', 'stdout', 'Ignored malformed app-server JSON-RPC line.')
-      return
-    }
-
-    if (typeof message.id === 'number' && this.pending.has(message.id)) {
-      const pendingRequest = this.pending.get(message.id)
-      this.pending.delete(message.id)
-
-      if (!pendingRequest) return
-
-      if (message.error) {
-        this.failedClientRequestCount += 1
-        pendingRequest.reject(new Error(message.error.message))
-      } else {
-        this.completedClientRequestCount += 1
-        pendingRequest.resolve(message.result)
-      }
-      return
-    }
-
-    if (typeof message.method === 'string' && typeof message.id !== 'number') {
-      this.emitNotification({
-        method: message.method,
-        params: message.params ?? null,
-      })
-      return
-    }
-
-    // Handle server-initiated JSON-RPC requests (approvals, dynamic tool calls, etc.).
-    if (typeof message.id === 'number' && typeof message.method === 'string') {
-      void this.handleServerRequest(message.id, message.method, message.params ?? null)
-    }
-  }
-
   private emitNotification(notification: { method: string; params: unknown }): void {
-    this.notificationCount += 1
-    this.notificationCountsByMethod.set(
-      notification.method,
-      (this.notificationCountsByMethod.get(notification.method) ?? 0) + 1,
-    )
     this.captureMcpServerStatus(notification)
     for (const listener of this.notificationListeners) {
       listener(notification)
@@ -879,24 +750,11 @@ class AppServerProcess {
     })
   }
 
-  private sendServerRequestReply(requestId: number, reply: ServerRequestReply): void {
-    if (reply.error) {
-      this.sendLine({
-        jsonrpc: '2.0',
-        id: requestId,
-        error: reply.error,
-      })
-      return
-    }
-
-    this.sendLine({
-      jsonrpc: '2.0',
-      id: requestId,
-      result: reply.result ?? {},
-    })
+  private async sendServerRequestReply(requestId: number, reply: ServerRequestReply): Promise<void> {
+    await this.host.resolveServerRequest(requestId, reply)
   }
 
-  private resolvePendingServerRequest(requestId: number, reply: ServerRequestReply): void {
+  private async resolvePendingServerRequest(requestId: number, reply: ServerRequestReply): Promise<void> {
     const pendingRequest = this.pendingServerRequests.get(requestId)
     if (!pendingRequest) {
       throw new Error(`No pending server request found for id ${String(requestId)}`)
@@ -904,7 +762,7 @@ class AppServerProcess {
     this.pendingServerRequests.delete(requestId)
 
     if (!pendingRequest.isSmokeInjected) {
-      this.sendServerRequestReply(requestId, reply)
+      await this.sendServerRequestReply(requestId, reply)
     }
     const requestParams = asRecord(pendingRequest.params)
     const threadId =
@@ -953,7 +811,7 @@ class AppServerProcess {
 
     const reply: ServerRequestReply = { result: { decision: 'accept' } }
     const resolvedAtIso = new Date().toISOString()
-    this.sendServerRequestReply(pendingRequest.id, reply)
+    await this.sendServerRequestReply(pendingRequest.id, reply)
     const auditInput = buildApprovalAuditInput({
       requestId: pendingRequest.id,
       pendingRequest,
@@ -1013,7 +871,7 @@ class AppServerProcess {
       },
     }
     const resolvedAtIso = new Date().toISOString()
-    this.sendServerRequestReply(pendingRequest.id, reply)
+    await this.sendServerRequestReply(pendingRequest.id, reply)
     const auditInput = buildApprovalAuditInput({
       requestId: pendingRequest.id,
       pendingRequest,
@@ -1057,7 +915,7 @@ class AppServerProcess {
       },
     }
     const resolvedAtIso = new Date().toISOString()
-    this.sendServerRequestReply(pendingRequest.id, reply)
+    await this.sendServerRequestReply(pendingRequest.id, reply)
     const auditInput = buildApprovalAuditInput({
       requestId: pendingRequest.id,
       pendingRequest,
@@ -1094,7 +952,6 @@ class AppServerProcess {
   }
 
   private async handleServerRequest(requestId: number, method: string, params: unknown): Promise<void> {
-    this.serverRequestCount += 1
     const pendingRequest: PendingServerRequest = {
       id: requestId,
       method,
@@ -1180,110 +1037,11 @@ class AppServerProcess {
   }
 
   private async call(method: string, params: unknown, timeoutMs = APP_SERVER_RPC_TIMEOUT_MS): Promise<unknown> {
-    this.start()
-    const id = this.nextId++
-    this.sentClientRequestCount += 1
-
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        if (!this.pending.delete(id)) return
-
-        this.failedClientRequestCount += 1
-        const error = new Error(appServerRpcTimeoutMessage(method, timeoutMs))
-        this.pushLog('error', 'bridge', error.message)
-        this.recoverAfterRpcTimeout(method)
-        reject(error)
-      }, timeoutMs)
-      timeout.unref?.()
-
-      this.pending.set(id, {
-        resolve: (value) => {
-          clearTimeout(timeout)
-          resolve(value)
-        },
-        reject: (reason) => {
-          clearTimeout(timeout)
-          reject(reason)
-        },
-      })
-
-      try {
-        this.sendLine({
-          jsonrpc: '2.0',
-          id,
-          method,
-          params,
-        } satisfies JsonRpcCall)
-      } catch (error) {
-        clearTimeout(timeout)
-        this.pending.delete(id)
-        this.failedClientRequestCount += 1
-        reject(error)
-      }
-    })
+    return this.host.call(method, params, { timeoutMs })
   }
 
-  private recoverAfterRpcTimeout(method: string): void {
-    if (!shouldRecoverAppServerAfterRpcTimeout({
-      method,
-      pendingClientRequestCount: this.pending.size,
-      pendingServerRequestCount: this.pendingServerRequests.size,
-    })) {
-      return
-    }
-
-    this.pushLog(
-      'warning',
-      'bridge',
-      `restarting codex app-server after ${method} timed out to clear a stuck read request`,
-    )
-    this.restartReadyAtMs = Date.now() + APP_SERVER_RESTART_COOLDOWN_MS
-    this.dispose()
-  }
-
-  private async waitForRestartCooldown(): Promise<void> {
-    const delayMs = this.restartReadyAtMs - Date.now()
-    if (delayMs <= 0) return
-
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, delayMs)
-      timer.unref?.()
-    })
-  }
-
-  private async ensureInitialized(timeoutMs = APP_SERVER_RPC_TIMEOUT_MS): Promise<void> {
-    if (this.initialized) return
-    if (this.initializePromise) {
-      await this.initializePromise
-      return
-    }
-
-    await this.waitForRestartCooldown()
-
-    this.initializePromise = this.call('initialize', {
-      clientInfo: {
-        name: 'cody-web-ui',
-        version: '0.1.0',
-      },
-      capabilities: {
-        experimentalApi: true,
-      },
-    }, timeoutMs)
-      .then(() => {
-        this.initialized = true
-      })
-      .catch((error) => {
-        if (!isAppServerAlreadyInitializedError(error)) {
-          throw error
-        }
-        this.initialized = true
-        this.pushLog('warning', 'bridge', 'codex app-server was already initialized; reusing existing session.')
-      })
-      .finally(() => {
-        this.initializePromise = null
-      })
-
-    await this.initializePromise
+  private async ensureInitialized(_timeoutMs = APP_SERVER_RPC_TIMEOUT_MS): Promise<void> {
+    await this.host.ensureInitialized()
   }
 
   async rpc(method: string, params: unknown, timeoutMs = APP_SERVER_RPC_TIMEOUT_MS): Promise<unknown> {
@@ -1331,7 +1089,7 @@ class AppServerProcess {
       const code = typeof rawError.code === 'number' && Number.isFinite(rawError.code)
         ? Math.trunc(rawError.code)
         : -32000
-      this.resolvePendingServerRequest(id, { error: { code, message } })
+      await this.resolvePendingServerRequest(id, { error: { code, message } })
       return
     }
 
@@ -1339,7 +1097,7 @@ class AppServerProcess {
       throw new Error('Invalid response payload: expected "result" or "error"')
     }
 
-    this.resolvePendingServerRequest(id, { result: body.result })
+    await this.resolvePendingServerRequest(id, { result: body.result })
   }
 
   listPendingServerRequests(): PendingServerRequest[] {
@@ -1417,75 +1175,29 @@ class AppServerProcess {
   }
 
   getDiagnostics(): AppServerDiagnostics {
+    const diagnostics = this.host.diagnostics()
+    const coreLogs: AppServerDiagnosticLog[] = diagnostics.recentLogs.map((log, index) => ({
+      id: `core-app-server-log-${String(index)}-${log.atIso}`,
+      createdAtIso: log.atIso,
+      level: log.level,
+      source: log.source,
+      message: log.message,
+    }))
     return {
-      status: this.process ? 'running' : 'stopped',
-      pid: this.process?.pid ?? null,
-      initialized: this.initialized,
-      startedAtIso: this.startedAtIso,
-      exitedAtIso: this.exitedAtIso,
-      exitCode: this.exitCode,
-      exitSignal: this.exitSignal,
-      pendingClientRequestCount: this.pending.size,
+      ...diagnostics,
       pendingServerRequestCount: this.pendingServerRequests.size,
-      sentClientRequestCount: this.sentClientRequestCount,
-      completedClientRequestCount: this.completedClientRequestCount,
-      failedClientRequestCount: this.failedClientRequestCount,
-      notificationCount: this.notificationCount,
-      serverRequestCount: this.serverRequestCount,
-      notificationCountsByMethod: Object.fromEntries(
-        Array.from(this.notificationCountsByMethod.entries()).sort((first, second) => first[0].localeCompare(second[0])),
-      ),
       pendingServerRequests: this.listDiagnosticServerRequests(),
       mcpServers: Array.from(this.mcpServers.values())
         .sort((first, second) => first.name.localeCompare(second.name)),
       mcpInventoryError: '',
-      recentLogs: [...this.recentLogs].reverse(),
+      recentLogs: [...this.recentLogs, ...coreLogs].sort((a, b) => b.createdAtIso.localeCompare(a.createdAtIso)),
     }
   }
 
   dispose(): void {
-    if (!this.process) return
-
-    const proc = this.process
-    this.stopping = true
-    this.process = null
-    this.initialized = false
-    this.initializePromise = null
-    this.readBuffer = ''
-
-    const failure = new Error('codex app-server stopped')
-    for (const request of this.pending.values()) {
-      request.reject(failure)
-    }
-    if (this.pending.size > 0) {
-      this.failedClientRequestCount += this.pending.size
-    }
-    this.pending.clear()
     this.pendingServerRequests.clear()
     this.pendingServerRequestApprovalScopes.clear()
-
-    try {
-      proc.stdin.end()
-    } catch {
-      // ignore close errors on shutdown
-    }
-
-    try {
-      proc.kill('SIGTERM')
-    } catch {
-      // ignore kill errors on shutdown
-    }
-
-    const forceKillTimer = setTimeout(() => {
-      if (!proc.killed) {
-        try {
-          proc.kill('SIGKILL')
-        } catch {
-          // ignore kill errors on shutdown
-        }
-      }
-    }, 1500)
-    forceKillTimer.unref()
+    void this.host.dispose()
   }
 }
 
