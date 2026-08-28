@@ -45,12 +45,12 @@ describe('AppSettingsPage', () => {
     const wrapper = mount(AppSettingsPage, { global: { stubs: globalStubs } })
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="feishu-panel"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="theme-panel"]').exists()).toBe(true)
     expect(wrapper.find('#settings-about').exists()).toBe(false)
-    expect(wrapper.get('[data-section="feishu"]').attributes('aria-current')).toBe('page')
+    expect(wrapper.get('[data-section="appearance"]').attributes('aria-current')).toBe('page')
 
     await wrapper.get('[data-section="about"]').trigger('click')
-    expect(wrapper.find('[data-testid="feishu-panel"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="theme-panel"]').exists()).toBe(false)
     expect(wrapper.find('#settings-about').exists()).toBe(true)
     expect(window.location.hash).toBe('#settings-about')
   })
