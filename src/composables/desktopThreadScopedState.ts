@@ -1,5 +1,5 @@
 import type { TurnActivityState, TurnErrorState } from './desktopMessageState'
-import { pruneServerRequestsToThreads } from './desktopServerRequests'
+import { pruneServerRequestsToThreads } from '@codycodeagent/cody-web-core/presentation'
 import { pruneThreadStateMap } from './threadGroupState'
 import type { ConversationScrollState } from '@codycodeagent/cody-web-core/conversation'
 import type { UiMessage, UiServerRequest } from '../types/codex'

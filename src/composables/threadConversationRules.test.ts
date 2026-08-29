@@ -18,20 +18,22 @@ import type { UiMessage, UiServerRequest, UiToolTimelineEntry } from '../types/c
 import {
   buildApprovalDecisionReply,
   buildApprovalScopeReply,
-  buildConversationRequestCards,
-  buildCopyText,
-  buildCopyTextAt,
   buildEmptyServerRequestReply,
   buildRejectedServerRequestReply,
+  buildServerRequestCards,
+  isServerApprovalRequestKind,
+  serverRequestActionKeyPrefix,
+  serverRequestKind,
+} from '@codycodeagent/cody-web-core/presentation'
+import {
+  buildCopyText,
+  buildCopyTextAt,
   buildToolCallFailureReply,
   buildToolCallSuccessReply,
   buildToolCopyText,
   buildToolUserInputReply,
-  conversationRequestActionKeyPrefix,
-  conversationRequestKind,
   hasLiveOverlayDetails,
   historyPageButtonLabel,
-  isConversationApprovalRequestKind,
   isCopyableMessage,
   liveOverlayDetailsToggleLabel,
   messageCopyAriaLabel,
@@ -192,18 +194,18 @@ describe('thread conversation rules', () => {
   })
 
   it('builds approval and tool request replies', () => {
-    expect(conversationRequestKind('item/commandExecution/requestApproval')).toBe('command_approval')
-    expect(conversationRequestKind('item/fileChange/requestApproval')).toBe('file_change_approval')
-    expect(conversationRequestKind('item/tool/requestUserInput')).toBe('tool_user_input')
-    expect(conversationRequestKind('item/tool/call')).toBe('tool_call')
-    expect(conversationRequestKind('custom/request')).toBe('unknown')
-    expect(isConversationApprovalRequestKind('command_approval')).toBe(true)
-    expect(isConversationApprovalRequestKind('file_change_approval')).toBe(true)
-    expect(isConversationApprovalRequestKind('tool_user_input')).toBe(false)
-    expect(conversationRequestActionKeyPrefix('command_approval')).toBe('command')
-    expect(conversationRequestActionKeyPrefix('file_change_approval')).toBe('file')
-    expect(conversationRequestActionKeyPrefix('tool_call')).toBe('request')
-    const requestCards = buildConversationRequestCards([
+    expect(serverRequestKind('item/commandExecution/requestApproval')).toBe('command_approval')
+    expect(serverRequestKind('item/fileChange/requestApproval')).toBe('file_change_approval')
+    expect(serverRequestKind('item/tool/requestUserInput')).toBe('tool_user_input')
+    expect(serverRequestKind('item/tool/call')).toBe('tool_call')
+    expect(serverRequestKind('custom/request')).toBe('unknown')
+    expect(isServerApprovalRequestKind('command_approval')).toBe(true)
+    expect(isServerApprovalRequestKind('file_change_approval')).toBe(true)
+    expect(isServerApprovalRequestKind('tool_user_input')).toBe(false)
+    expect(serverRequestActionKeyPrefix('command_approval')).toBe('command')
+    expect(serverRequestActionKeyPrefix('file_change_approval')).toBe('file')
+    expect(serverRequestActionKeyPrefix('tool_call')).toBe('request')
+    const requestCards = buildServerRequestCards([
       serverRequest({
         id: 1,
         method: 'item/commandExecution/requestApproval',

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const legacyBrandingTerms = [
@@ -88,7 +88,11 @@ function assertNoLegacyBrandingInReleaseSources() {
 
   const offenders = []
   for (const file of releaseSourceFiles) {
-    const text = readFileSync(join(process.cwd(), file), 'utf8')
+    const absolutePath = join(process.cwd(), file)
+    // A pre-commit verification run can legitimately contain tracked files
+    // staged for deletion. Only the release tree that still exists can ship.
+    if (!existsSync(absolutePath)) continue
+    const text = readFileSync(absolutePath, 'utf8')
     if (LEGACY_BRANDING_PATTERN.test(text)) {
       offenders.push(file)
     }

@@ -119,10 +119,10 @@
               </div>
               <p class="request-recommendation">{{ card.summary.recommendation }}</p>
 
-              <section v-if="isConversationApprovalRequestKind(card.kind)" class="request-actions">
+              <section v-if="isServerApprovalRequestKind(card.kind)" class="request-actions">
                 <button
                   v-for="scope in approvalScopeOptions"
-                  :key="`${card.request.id}:${conversationRequestActionKeyPrefix(card.kind)}:${scope.scope}`"
+                  :key="`${card.request.id}:${serverRequestActionKeyPrefix(card.kind)}:${scope.scope}`"
                   type="button"
                   class="request-button"
                   :class="{ 'request-button-primary': scope.scope === 'single', 'request-button-danger': scope.scope === 'permanent' }"
@@ -498,19 +498,24 @@ import {
 import type { UiLiveOverlay, UiMessage, UiServerRequest, UiServerRequestReply } from '../../types/codex'
 import {
   APPROVAL_SCOPE_OPTIONS,
+  buildApprovalDecisionReply,
+  buildApprovalScopeReply,
+  buildEmptyServerRequestReply,
+  buildRejectedServerRequestReply,
+  buildServerRequestCards,
+  isServerApprovalRequestKind,
+  serverRequestActionKeyPrefix,
+  serverRequestMetaLabel,
   type ApprovalDecision,
   type ApprovalDecisionScope,
 } from '@codycodeagent/cody-web-core/presentation'
 import {
-  buildConversationRequestCards,
   buildCopyTextAt as buildThreadCopyTextAt,
   buildToolCallFailureReply,
   buildToolCallSuccessReply,
   buildToolUserInputReply,
-  conversationRequestActionKeyPrefix,
   hasLiveOverlayDetails as hasThreadLiveOverlayDetails,
   historyPageButtonLabel,
-  isConversationApprovalRequestKind,
   liveOverlayDetailsToggleLabel,
   messageCopyAriaLabel,
   messageCopyTitle,
@@ -539,13 +544,6 @@ import {
   toolOutputToggleLabel,
   toolStatusTone,
 } from '@codycodeagent/cody-web-core/presentation'
-import {
-  buildApprovalDecisionReply,
-  buildApprovalScopeReply,
-  buildEmptyServerRequestReply,
-  buildRejectedServerRequestReply,
-  serverRequestMetaLabel,
-} from '../../composables/serverRequestRules'
 import IconTablerChevronDown from '../icons/IconTablerChevronDown.vue'
 import IconTablerChevronRight from '../icons/IconTablerChevronRight.vue'
 import IconTablerCheck from '../icons/IconTablerCheck.vue'
@@ -630,7 +628,7 @@ const hasLiveOverlayDetails = computed(() => {
   return hasThreadLiveOverlayDetails(props.liveOverlay)
 })
 const liveOverlayDetailsLabel = computed(() => liveOverlayDetailsToggleLabel(isLiveOverlayExpanded.value))
-const conversationRequestCards = computed(() => buildConversationRequestCards(props.pendingRequests))
+const conversationRequestCards = computed(() => buildServerRequestCards(props.pendingRequests))
 const normalizedVisibleMessagesCount = computed(() => props.messages.length)
 const visibleMessagesStartIndex = computed(() => 0)
 const hiddenMessagesCount = computed(() => props.hasMoreMessagesBefore === true

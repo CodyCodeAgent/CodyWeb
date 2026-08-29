@@ -1,4 +1,8 @@
-import type { ApprovalDecisionScope } from '@codycodeagent/cody-web-core/presentation'
+import type {
+  ApprovalDecisionScope,
+  NormalizedServerRequest,
+  ServerRequestReply,
+} from '@codycodeagent/cody-web-core/presentation'
 import type { ComposerContextAttachment, ComposerSkill } from '@codycodeagent/cody-web-core/composer'
 import type { ConversationMessage, ConversationTool } from '@codycodeagent/cody-web-core/conversation'
 
@@ -317,51 +321,9 @@ export type UiTrustedDeviceActionResult = {
   trustedAtIso?: string | null
 }
 
-export type UiCommandPolicyEvaluation = {
-  status: 'allowed' | 'denied' | 'not_configured' | 'not_git_workspace'
-  cwd: string
-  repoRoot: string
-  command: string
-  checkedValues: string[]
-  allowPatterns: string[]
-  denyPatterns: string[]
-  matchedPattern: string
-  reason: string
-}
+export type UiServerRequest = NormalizedServerRequest
 
-export type UiFileChangePolicyEvaluation = {
-  status: 'allowed' | 'denied' | 'not_git_workspace'
-  cwd: string
-  repoRoot: string
-  grantRoot: string
-  relativePath: string
-  sandboxMode: UiWorkspaceConfig['sandboxMode']
-  category: 'workspace' | 'outside_workspace' | 'sensitive' | 'ignored' | 'read_only' | 'missing_grant_root' | 'not_git_workspace'
-  matchedPattern: string
-  reason: string
-}
-
-export type UiServerRequest = {
-  id: number
-  method: string
-  threadId: string
-  turnId: string
-  itemId: string
-  receivedAtIso: string
-  params: unknown
-  commandPolicy?: UiCommandPolicyEvaluation | null
-  fileChangePolicy?: UiFileChangePolicyEvaluation | null
-}
-
-export type UiServerRequestReply = {
-  id: number
-  approvalScope?: ApprovalDecisionScope
-  result?: unknown
-  error?: {
-    code?: number
-    message: string
-  }
-}
+export type UiServerRequestReply = ServerRequestReply
 
 export type UiApprovalGrant = {
   id: string

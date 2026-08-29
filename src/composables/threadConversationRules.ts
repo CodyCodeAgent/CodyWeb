@@ -13,21 +13,6 @@ import type {
   UiToolTimelineEntry,
 } from '../types/codex'
 import { formatToolStatus } from '@codycodeagent/cody-web-core/presentation'
-import {
-  buildServerRequestCards,
-  isServerApprovalRequestKind,
-  serverRequestActionKeyPrefix,
-  serverRequestKind,
-  type UiServerRequestCard,
-  type UiServerRequestKind,
-} from './serverRequestRules'
-
-export {
-  buildApprovalDecisionReply,
-  buildApprovalScopeReply,
-  buildEmptyServerRequestReply,
-  buildRejectedServerRequestReply,
-} from './serverRequestRules'
 
 export type ParsedToolQuestion = {
   id: string
@@ -36,10 +21,6 @@ export type ParsedToolQuestion = {
   isOther: boolean
   options: string[]
 }
-
-export type ConversationRequestKind = UiServerRequestKind
-
-export type ConversationRequestCard = UiServerRequestCard
 
 export function visibleMessageWindowSummary(messageCount: number, visibleCount: number): string {
   const normalizedMessageCount = Math.max(Math.trunc(messageCount), 0)
@@ -222,22 +203,6 @@ export function shouldShowScrollToBottomButton(params: {
   if (!params.activeThreadId || params.isLoading) return false
   if (params.messageCount === 0 && params.pendingRequestCount === 0 && !params.hasLiveOverlay) return false
   return params.scrollState?.isAtBottom === false
-}
-
-export function conversationRequestKind(method: string): ConversationRequestKind {
-  return serverRequestKind(method)
-}
-
-export function isConversationApprovalRequestKind(kind: ConversationRequestKind): boolean {
-  return isServerApprovalRequestKind(kind)
-}
-
-export function conversationRequestActionKeyPrefix(kind: ConversationRequestKind): string {
-  return serverRequestActionKeyPrefix(kind)
-}
-
-export function buildConversationRequestCards(requests: UiServerRequest[]): ConversationRequestCard[] {
-  return buildServerRequestCards(requests)
 }
 
 export function toolQuestionKey(requestId: number, questionId: string): string {

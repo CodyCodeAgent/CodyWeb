@@ -403,20 +403,18 @@ import {
 } from '@codycodeagent/cody-web-core/presentation'
 import {
   APPROVAL_SCOPE_OPTIONS,
-  type ApprovalDecision,
-  type ApprovalDecisionScope,
-  type ApprovalRiskLevel,
-} from '@codycodeagent/cody-web-core/presentation'
-import { useLocale, type LocaleMessageKey } from '../../composables/useLocale'
-import {
   buildApprovalDecisionReply,
   buildApprovalScopeReply,
   buildEmptyServerRequestReply,
   buildRejectedServerRequestReply,
   serverRequestActionKeyPrefix,
   serverRequestMetaLabel,
-  type UiServerRequestCard,
-} from '../../composables/serverRequestRules'
+  type ApprovalDecision,
+  type ApprovalDecisionScope,
+  type ApprovalRiskLevel,
+  type ServerRequestCard,
+} from '@codycodeagent/cody-web-core/presentation'
+import { useLocale, type LocaleMessageKey } from '../../composables/useLocale'
 import { buildDiffReview, buildSplitDiffRows, sliceDiffHunkLines } from '../../composables/useDiffReview'
 import type { UiDiffLineKind, UiDiffReviewFile, UiDiffReviewLine, UiDiffSplitRow } from '../../composables/useDiffReview'
 import type { UiMessage, UiServerRequest, UiServerRequestReply, UiToolingRollbackFileResult } from '../../types/codex'
@@ -552,7 +550,7 @@ function formatRiskLevel(level: ApprovalRiskLevel): string {
   return t('workLog.risk.low')
 }
 
-function formatRequestCardTitle(card: UiServerRequestCard): string {
+function formatRequestCardTitle(card: ServerRequestCard<UiServerRequest>): string {
   if (card.kind === 'command_approval') return t('workLog.request.commandApproval')
   if (card.kind === 'file_change_approval') return t('workLog.request.fileChangeApproval')
   if (card.kind === 'tool_call' || card.kind === 'tool_user_input') return t('workLog.request.toolApproval')

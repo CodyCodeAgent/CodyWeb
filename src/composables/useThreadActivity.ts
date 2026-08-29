@@ -1,11 +1,12 @@
 import type { UiMessage, UiServerRequest, UiToolTimelineEntry } from '../types/codex'
 import type { UiDiffLineKind, UiDiffReview, UiDiffReviewFile } from './useDiffReview'
-import { isToolFailureStatus, type ApprovalRiskTranslator } from '@codycodeagent/cody-web-core/presentation'
 import {
   buildServerRequestCards,
   isServerApprovalRequest,
-  type UiServerRequestCard,
-} from './serverRequestRules'
+  isToolFailureStatus,
+  type ApprovalRiskTranslator,
+  type ServerRequestCard,
+} from '@codycodeagent/cody-web-core/presentation'
 export { isToolFailureStatus } from '@codycodeagent/cody-web-core/presentation'
 
 export type UiThreadActivityEntry = UiToolTimelineEntry & {
@@ -46,7 +47,7 @@ export type WorkLogDisplayPath = {
   title: string
 }
 
-export type PendingApprovalCard = UiServerRequestCard
+export type PendingApprovalCard = ServerRequestCard<UiServerRequest>
 
 export function buildThreadActivityEntries(messages: UiMessage[]): UiThreadActivityEntry[] {
   return messages

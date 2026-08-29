@@ -2,7 +2,14 @@ import { computed, ref, type Ref } from 'vue'
 import type { RpcNotification } from '../api/codexRealtimeClient'
 import { fetchPendingServerRequests, respondServerRequest } from '../api/codexBridgeClient'
 import type { UiServerRequest, UiServerRequestReply } from '../types/codex'
-import { flattenServerRequests, normalizeServerRequest, readResolvedServerRequestId, removeServerRequestById, selectServerRequestsForThread, upsertServerRequest } from './desktopServerRequests'
+import {
+  flattenServerRequests,
+  normalizeServerRequest,
+  readResolvedServerRequestId,
+  removeServerRequestById,
+  selectServerRequestsForThread,
+  upsertServerRequest,
+} from '@codycodeagent/cody-web-core/presentation'
 
 export function useServerRequestState(selectedThreadId: Ref<string>, onError?: (message: string) => void) {
   const byThreadId = ref<Record<string, UiServerRequest[]>>({})

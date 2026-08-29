@@ -141,10 +141,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { fetchApprovalGrants, revokeApprovalGrant } from '../../api/codexGatewayStatusClient'
 import {
   APPROVAL_SCOPE_OPTIONS,
-  type ApprovalDecision,
-  type ApprovalDecisionScope,
-} from '@codycodeagent/cody-web-core/presentation'
-import {
   approvalGrantSummaryText,
   buildApprovalDecisionReply,
   buildApprovalScopeReply,
@@ -155,7 +151,9 @@ import {
   serverRequestApprovalCenterSummary,
   serverRequestBadgeTone,
   serverRequestMetaLabel,
-} from '../../composables/serverRequestRules'
+  type ApprovalDecision,
+  type ApprovalDecisionScope,
+} from '@codycodeagent/cody-web-core/presentation'
 import type { UiApprovalGrant, UiServerRequest, UiServerRequestReply } from '../../types/codex'
 
 const props = defineProps<{
