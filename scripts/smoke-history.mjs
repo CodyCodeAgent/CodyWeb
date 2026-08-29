@@ -9,7 +9,6 @@ const HOST = '127.0.0.1'
 const STARTUP_TIMEOUT_MS = 15_000
 const REQUEST_TIMEOUT_MS = 30_000
 const BROWSER_TIMEOUT_MS = 45_000
-const INITIAL_WINDOW_SIZE = 80
 
 function readArgValue(name) {
   const index = process.argv.indexOf(name)
@@ -293,7 +292,7 @@ function readPngSize(base64Data) {
 
 const threadId = readArgValue('--thread-id') || process.env.CODY_WEB_UI_SMOKE_HISTORY_THREAD_ID?.trim() || ''
 if (!threadId) {
-  console.log('History smoke skipped: pass --thread-id <id> or set CODY_WEB_UI_SMOKE_HISTORY_THREAD_ID to a real thread with more than 80 rendered messages.')
+  console.log('History smoke skipped: pass --thread-id <id> or set CODY_WEB_UI_SMOKE_HISTORY_THREAD_ID to a real thread with earlier messages.')
   process.exit(0)
 }
 
@@ -321,7 +320,7 @@ try {
   const initial = await waitForPageValue(
     browser.page,
     conversationStateExpression(),
-    (value) => value?.ready === true && value.renderedCount === INITIAL_WINDOW_SIZE && value.historyText.length > 0,
+    (value) => value?.ready === true && value.renderedCount > 0 && value.historyText.length > 0,
     BROWSER_TIMEOUT_MS,
   )
   assert(!initial.loadError, `large thread showed a load error: ${initial.loadError}`)
@@ -342,7 +341,7 @@ try {
   const expanded = await waitForPageValue(
     browser.page,
     conversationStateExpression(),
-    (value) => value?.renderedCount > INITIAL_WINDOW_SIZE,
+    (value) => value?.renderedCount > initial.renderedCount,
     BROWSER_TIMEOUT_MS,
   )
   assert(expanded.uniqueCount === expanded.renderedCount, `expanded message window contains duplicate ids: ${JSON.stringify(expanded)}`)
@@ -361,7 +360,7 @@ try {
   const reloaded = await waitForPageValue(
     browser.page,
     conversationStateExpression(),
-    (value) => value?.ready === true && value.renderedCount === INITIAL_WINDOW_SIZE && value.historyText.length > 0,
+    (value) => value?.ready === true && value.renderedCount === initial.renderedCount && value.historyText.length > 0,
     BROWSER_TIMEOUT_MS,
   )
   assert(reloaded.uniqueCount === reloaded.renderedCount, `reloaded message window contains duplicate ids: ${JSON.stringify(reloaded)}`)

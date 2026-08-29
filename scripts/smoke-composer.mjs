@@ -404,7 +404,11 @@ function conversationStateExpression(expectedMessage) {
     const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
     const routeMatch = window.location.pathname.match(/^\\/thread\\/([^/]+)$/);
     const userMessages = Array.from(document.querySelectorAll('[data-testid="conversation-message"][data-role="user"]'));
-    const matchingUsers = userMessages.filter((element) => normalize(element.textContent) === ${expected});
+    // Message rows also contain controls such as copy/share actions. Assert
+    // against the rendered message body so UI chrome cannot turn a healthy
+    // conversation into a false-negative smoke failure.
+    const userText = (element) => normalize(element.querySelector('.cody-markdown-renderer')?.textContent);
+    const matchingUsers = userMessages.filter((element) => userText(element) === ${expected});
     const assistantMessages = Array.from(document.querySelectorAll('[data-testid="conversation-message"][data-role="assistant"]'));
     const assistantText = assistantMessages.map((element) => normalize(element.textContent)).filter(Boolean).join(' ');
     const input = document.querySelector('[data-testid="thread-composer-input"]');
