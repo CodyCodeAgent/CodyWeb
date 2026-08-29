@@ -3,16 +3,11 @@ import type { ComposerSubmission } from '@codycodeagent/cody-web-core/composer'
 import {
   buildPendingTurnActivity,
   buildSteeringTurnActivity,
-  buildCompletedTurnSummary,
-  clearActiveTurnForThread,
   normalizeComposerTurnInput,
   normalizeNewThreadTurnInput,
   normalizeThreadTextTurnInput,
-  setActiveTurnForThread,
-  shouldClearUnreadForStartedTurn,
 } from './desktopTurnState'
 import type { UiComposerContextKind } from '../types/codex'
-import type { TurnCompletedInfo, TurnStartedInfo } from './realtimeNotificationReaders'
 
 function payload(overrides: Partial<ComposerSubmission<UiComposerContextKind>> = {}): ComposerSubmission<UiComposerContextKind> {
   return {
@@ -95,51 +90,4 @@ describe('desktopTurnState', () => {
     })
   })
 
-  it('updates active turn ids without churn', () => {
-    const current = { 'thread-1': 'turn-1' }
-
-    expect(setActiveTurnForThread(current, 'thread-1', 'turn-1')).toBe(current)
-    expect(setActiveTurnForThread(current, 'thread-1', 'turn-2')).toEqual({
-      'thread-1': 'turn-2',
-    })
-    expect(setActiveTurnForThread(current, '', 'turn-2')).toBe(current)
-    expect(setActiveTurnForThread(current, 'thread-2', '')).toBe(current)
-
-    expect(clearActiveTurnForThread(current, 'missing')).toBe(current)
-    expect(clearActiveTurnForThread(current, 'thread-1')).toEqual({})
-  })
-
-  it('derives turn lifecycle state from realtime payloads', () => {
-    const startedTurn: TurnStartedInfo = {
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-      startedAtMs: 1_000,
-    }
-    const completedTurn: TurnCompletedInfo = {
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-      completedAtMs: 4_500,
-    }
-
-    expect(shouldClearUnreadForStartedTurn({ 'thread-1': true }, startedTurn)).toBe(true)
-    expect(shouldClearUnreadForStartedTurn({ 'thread-2': true }, startedTurn)).toBe(false)
-    expect(buildCompletedTurnSummary({
-      completedTurn,
-      startedTurn,
-      explicitDurationMs: null,
-      turnDurationMs: null,
-    })).toEqual({
-      turnId: 'turn-1',
-      durationMs: 3_500,
-    })
-    expect(buildCompletedTurnSummary({
-      completedTurn,
-      startedTurn: undefined,
-      explicitDurationMs: 120,
-      turnDurationMs: null,
-    })).toEqual({
-      turnId: 'turn-1',
-      durationMs: 120,
-    })
-  })
 })

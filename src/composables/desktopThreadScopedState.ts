@@ -1,4 +1,4 @@
-import type { TurnActivityState, TurnErrorState, TurnSummaryState } from './desktopMessageState'
+import type { TurnActivityState, TurnErrorState } from './desktopMessageState'
 import { pruneServerRequestsToThreads } from './desktopServerRequests'
 import { pruneThreadStateMap } from './threadGroupState'
 import type { ConversationScrollState } from '@codycodeagent/cody-web-core/conversation'
@@ -11,10 +11,8 @@ export type DesktopThreadScopedState = {
   loadedVersionByThreadId: Record<string, string>
   resumedThreadById: Record<string, boolean>
   persistedMessagesByThreadId: Record<string, UiMessage[]>
-  turnSummaryByThreadId: Record<string, TurnSummaryState>
   turnActivityByThreadId: Record<string, TurnActivityState>
   turnErrorByThreadId: Record<string, TurnErrorState>
-  activeTurnIdByThreadId: Record<string, string>
   eventUnreadByThreadId: Record<string, boolean>
   inProgressById: Record<string, boolean>
   pendingServerRequestsByThreadId: Record<string, UiServerRequest[]>
@@ -74,10 +72,8 @@ export function pruneDesktopThreadScopedState(
     loadedVersionByThreadId: pruneThreadStateMap(state.loadedVersionByThreadId, activeThreadIds),
     resumedThreadById: pruneThreadStateMap(state.resumedThreadById, activeThreadIds),
     persistedMessagesByThreadId: pruneThreadStateMap(state.persistedMessagesByThreadId, activeThreadIds),
-    turnSummaryByThreadId: pruneThreadStateMap(state.turnSummaryByThreadId, activeThreadIds),
     turnActivityByThreadId: pruneThreadStateMap(state.turnActivityByThreadId, activeThreadIds),
     turnErrorByThreadId: pruneThreadStateMap(state.turnErrorByThreadId, activeThreadIds),
-    activeTurnIdByThreadId: pruneThreadStateMap(state.activeTurnIdByThreadId, activeThreadIds),
     eventUnreadByThreadId: pruneThreadStateMap(state.eventUnreadByThreadId, activeThreadIds),
     inProgressById: pruneThreadStateMap(state.inProgressById, activeThreadIds),
     pendingServerRequestsByThreadId: pruneServerRequestsToThreads(

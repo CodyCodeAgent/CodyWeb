@@ -6,10 +6,6 @@ import {
   normalizeRealtimeNotification,
   readRateLimitSnapshotPayload,
   readStartedThread,
-  readThreadContextUsageUpdate,
-  readTurnCompletedInfo,
-  readTurnDurationHints,
-  readTurnStartedInfo,
   readUserMessageCompleted,
 } from './realtimeNotificationReaders'
 
@@ -37,53 +33,6 @@ describe('realtime notification readers', () => {
     expect(extractThreadIdFromNotification(notification('turn/started', { conversationId: 'thread-e' }))).toBe('thread-e')
   })
 
-  it('reads turn lifecycle and failure state', () => {
-    const started = readTurnStartedInfo(notification('turn/started', {
-      turn: {
-        id: 'turn-1',
-        threadId: 'thread-1',
-        startedAt: '2026-07-07T01:00:00.000Z',
-      },
-    }))
-
-    expect(started).toMatchObject({
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-      startedAtMs: new Date('2026-07-07T01:00:00.000Z').getTime(),
-    })
-    expect(readTurnStartedInfo(notification('turn/started', {
-      thread_id: 'thread-raw',
-      turn_id: 'turn-raw',
-    }))).toMatchObject({
-      threadId: 'thread-raw',
-      turnId: 'turn-raw',
-    })
-
-    const completed = readTurnCompletedInfo(notification('turn/completed', {
-      turn: {
-        id: 'turn-1',
-        threadId: 'thread-1',
-        startedAt: '2026-07-07T01:00:00.000Z',
-        completedAt: '2026-07-07T01:00:05.000Z',
-      },
-    }))
-
-    expect(completed).toMatchObject({
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-      completedAtMs: new Date('2026-07-07T01:00:05.000Z').getTime(),
-      startedAtMs: new Date('2026-07-07T01:00:00.000Z').getTime(),
-    })
-
-    expect(readTurnDurationHints(notification('turn/completed', {
-      durationMs: 1200,
-      turn: { durationMs: 1000 },
-    }))).toEqual({
-      explicitDurationMs: 1200,
-      turnDurationMs: 1000,
-    })
-  })
-
   it('reads rate limit update payloads without leaking protocol parsing into state', () => {
     const rateLimits = { limitId: 'codex', primary: { usedPercent: 10 } }
 
@@ -91,39 +40,6 @@ describe('realtime notification readers', () => {
       rateLimits,
     }))).toBe(rateLimits)
     expect(readRateLimitSnapshotPayload(notification('turn/started', {}))).toBeNull()
-  })
-
-  it('reads current thread context usage and model window from token notifications', () => {
-    expect(readThreadContextUsageUpdate(notification('thread/tokenUsage/updated', {
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-      tokenUsage: {
-        last: {
-          inputTokens: 118_000,
-          totalTokens: 120_000,
-        },
-        modelContextWindow: 200_000,
-      },
-    }))).toMatchObject({
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-      inputTokens: 118_000,
-      usedTokens: 120_000,
-      contextWindow: 200_000,
-      compactionState: 'idle',
-    })
-
-    expect(readThreadContextUsageUpdate(notification('thread/tokenUsage/updated', {
-      thread_id: 'thread-2',
-      token_usage: {
-        last: { input_tokens: '99000', total_tokens: '100000' },
-        model_context_window: '128000',
-      },
-    }))).toMatchObject({
-      threadId: 'thread-2',
-      usedTokens: 100_000,
-      contextWindow: 128_000,
-    })
   })
 
   it('reads started thread notifications for immediate sidebar updates', () => {

@@ -6,11 +6,14 @@ import {
   type ComposerSubmission,
 } from '@codycodeagent/cody-web-core/composer'
 import {
+  conversationFeedFromState,
   conversationLiveOverlayFromState,
   conversationOverlayMessagesFromState,
   conversationStateFromRegistry,
+  latestTerminalTurnEvent,
   pruneConversationStateRegistry,
   reduceConversationRegistryEvents,
+  type CodexEvent,
   type ConversationScrollState,
   type ConversationStateRegistry,
 } from '@codycodeagent/cody-web-core/conversation'
@@ -39,13 +42,7 @@ import {
   isAgentContentEvent,
   normalizeRealtimeNotification,
   readStartedThread,
-  readThreadCompaction,
-  readThreadContextUsageUpdate,
-  readTurnCompletedInfo,
-  readTurnDurationHints,
-  readTurnStartedInfo,
   readUserMessageCompleted,
-  type TurnStartedInfo,
 } from './realtimeNotificationReaders'
 import { useServerRequestState } from './useServerRequestState'
 import { useDesktopComposerState } from './useDesktopComposerState'
@@ -73,7 +70,6 @@ import {
   upsertMessage,
   updateTurnActivityState,
   updateTurnErrorState,
-  updateTurnSummaryState,
   type TurnActivityState,
   type TurnErrorState,
   type TurnSummaryState,
@@ -86,15 +82,11 @@ import {
 } from './desktopThreadScopedState'
 import { buildTurnPermissionOverride } from './desktopTurnPermissions'
 import {
-  buildCompletedTurnSummary,
   buildPendingTurnActivity,
   buildSteeringTurnActivity,
-  clearActiveTurnForThread,
   normalizeComposerTurnInput,
   normalizeNewThreadTurnInput,
   normalizeThreadTextTurnInput,
-  setActiveTurnForThread,
-  shouldClearUnreadForStartedTurn,
 } from './desktopTurnState'
 import {
   buildLocalMessageOutboxItem,
@@ -115,7 +107,6 @@ import {
   moveProjectInOrder,
   omitKey,
   orderGroupsByProjectOrder,
-  pruneThreadStateMap,
   reconcileOptimisticThreads,
   renameProjectDisplayName,
   renameThreadInGroups,
@@ -152,12 +143,9 @@ export function useDesktopState() {
     hydrate: hydrateTurnPreferencesFromSettingsStore, refreshCollaborationModes, refreshModelPreferences,
     setSelectedModelId, setSelectedReasoningEffort, setSelectedCollaborationModeName, setSelectedPermissionMode,
     setSelectedSubmitMode } = composerState
-  const turnSummaryByThreadId = ref<Record<string, TurnSummaryState>>({})
   const turnActivityByThreadId = ref<Record<string, TurnActivityState>>({})
-  const contextUsageByThreadId = ref<Record<string, UiThreadContextUsage>>({})
   const outboxItemsByThreadId = ref<Record<string, LocalMessageOutboxItem[]>>({})
   const turnErrorByThreadId = ref<Record<string, TurnErrorState>>({})
-  const activeTurnIdByThreadId = ref<Record<string, string>>({})
   const conversationStateByThreadId = ref<ConversationStateRegistry>({})
   const serverRequestState = useServerRequestState(selectedThreadId, (message) => { error.value = message })
   const pendingServerRequestsByThreadId = serverRequestState.byThreadId
@@ -187,7 +175,7 @@ export function useDesktopState() {
   let eventSyncTimer: number | null = null
   const realtimeSyncQueue = createDesktopRealtimeSyncQueue()
   let shouldAutoScrollOnNextAgentEvent = false
-  const pendingTurnStartsById = new Map<string, TurnStartedInfo>()
+  let localCoreEventSequence = 0
   const optimisticUserMessageIdsByTurnId = new Map<string, string[]>()
   const pendingOptimisticUserMessageIdsByThreadId = new Map<string, string[]>()
   const latestMessageLoadRequestIdByThreadId = new Map<string, number>()
@@ -246,10 +234,11 @@ export function useDesktopState() {
   })
   const selectedMessageLoadError = computed(() => messageLoadErrorByThreadId.value[selectedThreadId.value] ?? '')
   const selectedThreadContextUsage = computed<UiThreadContextUsage | null>(() => {
-    const usage = contextUsageByThreadId.value[selectedThreadId.value]
+    const usage = selectedCoreConversation.value.contextUsage
     if (!usage) return null
     return {
       ...usage,
+      threadId: selectedCoreConversation.value.threadId || selectedThreadId.value,
       contextWindow: usage.contextWindow ?? modelContextWindow.value,
       autoCompactTokenLimit: usage.autoCompactTokenLimit ?? autoCompactTokenLimit.value,
     }
@@ -265,7 +254,7 @@ export function useDesktopState() {
       ) as UiMessage[],
       persisted,
     )
-    return buildDisplayedMessages(persisted, liveAgent, turnSummaryByThreadId.value[threadId])
+    return buildDisplayedMessages(persisted, liveAgent, completedTurnSummaryForThread(threadId))
   })
   const selectedQueuedMessages = computed<UiQueuedMessage[]>(() => queuedMessagesForThread(selectedThreadId.value))
 
@@ -361,10 +350,8 @@ export function useDesktopState() {
       loadedVersionByThreadId: loadedVersionByThreadId.value,
       resumedThreadById: resumedThreadById.value,
       persistedMessagesByThreadId: persistedMessagesByThreadId.value,
-      turnSummaryByThreadId: turnSummaryByThreadId.value,
       turnActivityByThreadId: turnActivityByThreadId.value,
       turnErrorByThreadId: turnErrorByThreadId.value,
-      activeTurnIdByThreadId: activeTurnIdByThreadId.value,
       eventUnreadByThreadId: eventUnreadByThreadId.value,
       inProgressById: inProgressById.value,
       pendingServerRequestsByThreadId: pendingServerRequestsByThreadId.value,
@@ -382,7 +369,6 @@ export function useDesktopState() {
     loadedVersionByThreadId.value = pruned.loadedVersionByThreadId
     resumedThreadById.value = pruned.resumedThreadById
     persistedMessagesByThreadId.value = pruned.persistedMessagesByThreadId
-    turnSummaryByThreadId.value = pruned.turnSummaryByThreadId
     turnActivityByThreadId.value = pruned.turnActivityByThreadId
     turnErrorByThreadId.value = pruned.turnErrorByThreadId
     messageLoadErrorByThreadId.value = Object.fromEntries(
@@ -391,7 +377,6 @@ export function useDesktopState() {
     messagePageByThreadId.value = Object.fromEntries(
       Object.entries(messagePageByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
     )
-    activeTurnIdByThreadId.value = pruned.activeTurnIdByThreadId
     eventUnreadByThreadId.value = pruned.eventUnreadByThreadId
     inProgressById.value = pruned.inProgressById
     pendingServerRequestsByThreadId.value = pruned.pendingServerRequestsByThreadId
@@ -399,7 +384,6 @@ export function useDesktopState() {
       conversationStateByThreadId.value,
       activeThreadIds,
     )
-    contextUsageByThreadId.value = pruneThreadStateMap(contextUsageByThreadId.value, activeThreadIds)
     loadingMessagesByThreadId.value = Object.fromEntries(
       Object.entries(loadingMessagesByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
     )
@@ -430,13 +414,6 @@ export function useDesktopState() {
     }
     if (didChange) {
       applyThreadFlags()
-    }
-  }
-
-  function setTurnSummaryForThread(threadId: string, summary: TurnSummaryState | null): void {
-    const nextState = updateTurnSummaryState(turnSummaryByThreadId.value, threadId, summary)
-    if (nextState !== turnSummaryByThreadId.value) {
-      turnSummaryByThreadId.value = nextState
     }
   }
 
@@ -676,7 +653,6 @@ export function useDesktopState() {
     mode: ComposerCollaborationModeOption = selectedCollaborationMode.value,
   ): void {
     shouldAutoScrollOnNextAgentEvent = true
-    setTurnSummaryForThread(threadId, null)
     setTurnActivityForThread(
       threadId,
       buildPendingTurnActivity({
@@ -719,10 +695,7 @@ export function useDesktopState() {
     // Establish one Core event snapshot at the transport boundary. Every
     // reader below consumes this exact snapshot instead of reparsing payloads.
     const conversationEvents = normalizeRealtimeNotification(notification)
-    conversationStateByThreadId.value = reduceConversationRegistryEvents(
-      conversationStateByThreadId.value,
-      conversationEvents,
-    )
+    applyCoreConversationEvents(conversationEvents)
 
     if (handleRateLimitNotification(notification)) {
       return
@@ -737,67 +710,26 @@ export function useDesktopState() {
       return
     }
 
-    const contextUsageUpdate = readThreadContextUsageUpdate(notification)
-    if (contextUsageUpdate) {
-      const previous = contextUsageByThreadId.value[contextUsageUpdate.threadId]
-      contextUsageByThreadId.value = {
-        ...contextUsageByThreadId.value,
-        [contextUsageUpdate.threadId]: {
-          ...contextUsageUpdate,
-          contextWindow:
-            contextUsageUpdate.contextWindow ??
-            previous?.contextWindow ??
-            modelContextWindow.value,
-          autoCompactTokenLimit:
-            previous?.autoCompactTokenLimit ??
-            autoCompactTokenLimit.value,
-        },
-      }
-    }
-
-    const startedTurn = readTurnStartedInfo(notification)
-    if (startedTurn) {
+    const startedTurn = conversationEvents.find((event) => event.type === 'turn.started' && Boolean(event.turnId))
+    if (startedTurn?.turnId) {
       const pendingOptimisticId = (pendingOptimisticUserMessageIdsByThreadId.get(startedTurn.threadId) ?? [])[0]
       if (pendingOptimisticId) bindOptimisticUserMessageToTurn(startedTurn.threadId, startedTurn.turnId, pendingOptimisticId)
-      pendingTurnStartsById.set(startedTurn.turnId, startedTurn)
-      activeTurnIdByThreadId.value = setActiveTurnForThread(
-        activeTurnIdByThreadId.value,
-        startedTurn.threadId,
-        startedTurn.turnId,
-      )
-      setTurnSummaryForThread(startedTurn.threadId, null)
       setTurnErrorForThread(startedTurn.threadId, null)
       setThreadInProgress(startedTurn.threadId, true)
-      if (shouldClearUnreadForStartedTurn(eventUnreadByThreadId.value, startedTurn)) {
+      if (eventUnreadByThreadId.value[startedTurn.threadId] === true) {
         eventUnreadByThreadId.value = omitKey(eventUnreadByThreadId.value, startedTurn.threadId)
       }
     }
 
-    const completedTurn = readTurnCompletedInfo(notification)
-    if (completedTurn) {
-      const startedTurnState = pendingTurnStartsById.get(completedTurn.turnId)
-      if (startedTurnState) {
-        pendingTurnStartsById.delete(completedTurn.turnId)
-      }
-
-      const durationHints = readTurnDurationHints(notification)
-      setTurnSummaryForThread(completedTurn.threadId, buildCompletedTurnSummary({
-        completedTurn,
-        startedTurn: startedTurnState,
-        explicitDurationMs: durationHints.explicitDurationMs,
-        turnDurationMs: durationHints.turnDurationMs,
-      }))
-      activeTurnIdByThreadId.value = clearActiveTurnForThread(
-        activeTurnIdByThreadId.value,
-        completedTurn.threadId,
-      )
+    const completedTurn = latestTerminalTurnEvent(conversationEvents)
+    if (completedTurn?.turnId) {
       setThreadInProgress(completedTurn.threadId, false)
       setTurnActivityForThread(completedTurn.threadId, null)
       markThreadUnreadByEvent(completedTurn.threadId)
       void drainOutboxForThread(completedTurn.threadId)
     }
 
-    const coreTurnError = completedTurn
+    const coreTurnError = completedTurn?.turnId
       ? conversationStateFromRegistry(conversationStateByThreadId.value, completedTurn.threadId).turns[completedTurn.turnId]?.error ?? ''
       : ''
     if (coreTurnError) {
@@ -806,27 +738,11 @@ export function useDesktopState() {
       setTurnErrorForThread(completedTurn.threadId, null)
     }
 
-    const compaction = readThreadCompaction(notification)
+    const compaction = conversationEvents.find((event) => event.type === 'thread.compacted')
     if (compaction) {
-      const previousUsage = contextUsageByThreadId.value[compaction.threadId]
-        contextUsageByThreadId.value = {
-          ...contextUsageByThreadId.value,
-          [compaction.threadId]: {
-            threadId: compaction.threadId,
-            turnId: previousUsage?.turnId ?? '',
-            usedTokens: previousUsage?.usedTokens ?? 0,
-            inputTokens: previousUsage?.inputTokens ?? 0,
-            contextWindow: previousUsage?.contextWindow ?? modelContextWindow.value,
-            autoCompactTokenLimit:
-              previousUsage?.autoCompactTokenLimit ??
-              autoCompactTokenLimit.value,
-            updatedAtIso: compaction.updatedAtIso,
-            compactionState: 'compacted',
-          },
-        }
-        setThreadInProgress(compaction.threadId, false)
-        setTurnActivityForThread(compaction.threadId, null)
-        setTurnErrorForThread(compaction.threadId, null)
+      setThreadInProgress(compaction.threadId, false)
+      setTurnActivityForThread(compaction.threadId, null)
+      setTurnErrorForThread(compaction.threadId, null)
     }
 
     const notificationThreadId = extractThreadIdFromNotification(notification)
@@ -1125,38 +1041,23 @@ export function useDesktopState() {
   }
 
   async function compactThreadById(threadId: string): Promise<void> {
+    const previousUsage = conversationStateFromRegistry(conversationStateByThreadId.value, threadId).contextUsage
     try {
-      const previousUsage = contextUsageByThreadId.value[threadId]
-      contextUsageByThreadId.value = {
-        ...contextUsageByThreadId.value,
-        [threadId]: {
-          threadId,
-          turnId: previousUsage?.turnId ?? '',
-          usedTokens: previousUsage?.usedTokens ?? 0,
-          inputTokens: previousUsage?.inputTokens ?? 0,
-          contextWindow: previousUsage?.contextWindow ?? modelContextWindow.value,
-          autoCompactTokenLimit:
-            previousUsage?.autoCompactTokenLimit ??
-            autoCompactTokenLimit.value,
-          updatedAtIso: new Date().toISOString(),
-          compactionState: 'compacting',
-        },
-      }
-      setTurnSummaryForThread(threadId, null)
-      setTurnActivityForThread(threadId, { label: 'Compacting context', details: [] })
+      applyLocalConversationEvent('thread.compaction.started', threadId)
       setTurnErrorForThread(threadId, null)
       setThreadInProgress(threadId, true)
       await compactThread(threadId)
       queueDesktopRealtimeSync(realtimeSyncQueue, threadId)
       await syncFromNotifications()
     } catch (unknownError) {
-      const previousUsage = contextUsageByThreadId.value[threadId]
-      if (previousUsage) {
-        contextUsageByThreadId.value = {
-          ...contextUsageByThreadId.value,
-          [threadId]: { ...previousUsage, compactionState: 'idle' },
-        }
-      }
+      applyLocalConversationEvent('thread.context.updated', threadId, previousUsage?.turnId ?? '', {
+        turnId: previousUsage?.turnId ?? '',
+        usedTokens: previousUsage?.usedTokens ?? 0,
+        inputTokens: previousUsage?.inputTokens ?? 0,
+        contextWindow: previousUsage?.contextWindow ?? null,
+        autoCompactTokenLimit: previousUsage?.autoCompactTokenLimit ?? null,
+      })
+      applyLocalConversationEvent('turn.activity', threadId, '', { label: '', details: [] })
       setThreadInProgress(threadId, false)
       setTurnActivityForThread(threadId, null)
       const errorMessage = unknownError instanceof Error ? unknownError.message : 'Failed to compact thread'
@@ -1370,7 +1271,7 @@ export function useDesktopState() {
     nextImages: ComposerSubmission<UiComposerContextKind>['images'],
     nextSkills: ComposerSubmission<UiComposerContextKind>['skills'],
   ): Promise<void> {
-    const turnId = activeTurnIdByThreadId.value[threadId]
+    const turnId = activeTurnIdForThread(threadId)
     if (!turnId) {
       const errorMessage = 'The current turn is still starting. Wait a moment and try again.'
       setTurnErrorForThread(threadId, errorMessage)
@@ -1503,11 +1404,7 @@ export function useDesktopState() {
           reasoningEffort || undefined,
           collaborationMode,
         )
-      activeTurnIdByThreadId.value = setActiveTurnForThread(
-        activeTurnIdByThreadId.value,
-        threadId,
-        turnId,
-      )
+      applyLocalConversationEvent('turn.started', threadId, turnId, { optimistic: true })
 
       resumedThreadById.value = {
         ...resumedThreadById.value,
@@ -1525,7 +1422,7 @@ export function useDesktopState() {
   async function interruptTurnForThread(threadId: string): Promise<void> {
     if (!threadId) return
     if (inProgressById.value[threadId] !== true) return
-    const turnId = activeTurnIdByThreadId.value[threadId]
+    const turnId = activeTurnIdForThread(threadId)
     if (!turnId) {
       const errorMessage = 'The current turn is still starting. Wait a moment before interrupting.'
       setTurnErrorForThread(threadId, errorMessage)
@@ -1540,7 +1437,7 @@ export function useDesktopState() {
       setThreadInProgress(threadId, false)
       setTurnActivityForThread(threadId, null)
       setTurnErrorForThread(threadId, null)
-      activeTurnIdByThreadId.value = clearActiveTurnForThread(activeTurnIdByThreadId.value, threadId)
+      applyLocalConversationEvent('turn.interrupted', threadId, turnId, { optimistic: true })
       queueDesktopRealtimeSync(realtimeSyncQueue, threadId)
       await syncFromNotifications()
     } catch (unknownError) {
@@ -1691,7 +1588,6 @@ export function useDesktopState() {
 
   function resetRealtimeDomainState(): void {
     clearDesktopRealtimeSyncQueue(realtimeSyncQueue)
-    pendingTurnStartsById.clear()
     latestMessageLoadRequestIdByThreadId.clear()
     if (eventSyncTimer !== null && typeof window !== 'undefined') {
       window.clearTimeout(eventSyncTimer)
@@ -1702,12 +1598,9 @@ export function useDesktopState() {
     loadingEarlierMessagesByThreadId.value = {}
     persistedMessagesByThreadId.value = {}
     turnActivityByThreadId.value = {}
-    contextUsageByThreadId.value = {}
-    turnSummaryByThreadId.value = {}
     turnErrorByThreadId.value = {}
     messageLoadErrorByThreadId.value = {}
     messagePageByThreadId.value = {}
-    activeTurnIdByThreadId.value = {}
     conversationStateByThreadId.value = {}
     for (const timerId of outboxRetryTimersByThreadId.values()) {
       if (typeof window !== 'undefined') window.clearTimeout(timerId)
@@ -1726,6 +1619,46 @@ export function useDesktopState() {
     resetDomainState: resetRealtimeDomainState,
   })
   const { isAutoRefreshEnabled, autoRefreshSecondsLeft, toggleAutoRefreshTimer, startRealtimeSync, stopRealtimeSync } = realtimeState
+
+  function applyCoreConversationEvents(events: readonly CodexEvent[]): void {
+    conversationStateByThreadId.value = reduceConversationRegistryEvents(
+      conversationStateByThreadId.value,
+      events,
+    )
+  }
+
+  function applyLocalConversationEvent(
+    type: CodexEvent['type'],
+    threadId: string,
+    turnId = '',
+    data: Record<string, unknown> = {},
+  ): void {
+    if (!threadId) return
+    localCoreEventSequence += 1
+    applyCoreConversationEvents([{
+      id: `codyweb:local:${String(localCoreEventSequence)}:${type}:${threadId}:${turnId}`,
+      type,
+      threadId,
+      ...(turnId ? { turnId } : {}),
+      atIso: new Date().toISOString(),
+      data,
+    }])
+  }
+
+  function activeTurnIdForThread(threadId: string): string {
+    return conversationStateFromRegistry(conversationStateByThreadId.value, threadId).activeTurnId
+  }
+
+  function completedTurnSummaryForThread(threadId: string): TurnSummaryState | null {
+    const feed = conversationFeedFromState(conversationStateFromRegistry(conversationStateByThreadId.value, threadId))
+    for (let index = feed.length - 1; index >= 0; index -= 1) {
+      const entry = feed[index]
+      if (entry?.kind === 'turn' && entry.status === 'completed' && entry.durationMs !== null) {
+        return { turnId: entry.turnId, durationMs: entry.durationMs }
+      }
+    }
+    return null
+  }
 
   return {
     projectGroups,

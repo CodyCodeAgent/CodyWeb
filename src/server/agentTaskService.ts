@@ -43,6 +43,8 @@ import {
 } from './agentTaskStore.js'
 import { parseAgentTaskInstruction, type AgentTaskDraft } from './agentTaskNaturalLanguage.js'
 import { listCatalog } from './catalogStore.js'
+import { latestAssistantTextFromEvents, latestTerminalTurnEvent, type CodexEvent } from '@codycodeagent/cody-web-core/conversation'
+import { normalizeCodexNotification, normalizeThreadHistory } from '@codycodeagent/cody-web-core/session'
 
 type Rpc = (method: string, params: unknown) => Promise<unknown>
 type CodexNotification = { method: string; params: unknown }
@@ -70,48 +72,16 @@ function nestedId(params: unknown, name: 'thread' | 'turn'): string {
     || readString(inner?.[`${name}Id`]) || readString(record(inner?.[name])?.id)
 }
 
-function readTurnError(params: unknown): string {
-  const row = record(params)
-  const turn = record(row?.turn)
-  const error = record(row?.error) ?? record(turn?.error)
-  const status = readString(turn?.status || row?.status)
-  return readString(error?.message) || readString(row?.error) || (['failed', 'error'].includes(status) ? `Turn ${status}` : '')
-}
-
-function readTurnStatus(params: unknown): string {
-  const row = record(params)
-  return readString(record(row?.turn)?.status || row?.status)
-}
-
-function readUsage(params: unknown): { inputTokens: number; outputTokens: number; totalTokens: number } {
-  const row = record(params)
-  const turn = record(row?.turn)
-  const usage = record(row?.usage) ?? record(row?.tokenUsage) ?? record(turn?.usage) ?? record(turn?.tokenUsage)
-  const last = record(usage?.last) ?? usage
-  const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0
-  const inputTokens = number(last?.inputTokens ?? last?.input_tokens)
-  const outputTokens = number(last?.outputTokens ?? last?.output_tokens)
-  return { inputTokens, outputTokens, totalTokens: number(last?.totalTokens ?? last?.total_tokens) || inputTokens + outputTokens }
-}
-
-function readAgentMessage(params: unknown): string {
-  const row = record(params)
-  const item = record(row?.item)
-  if (readString(item?.type) !== 'agentMessage') return ''
-  const direct = readString(item?.text) || readString(item?.message)
-  if (direct) return direct
-  const content = Array.isArray(item?.content) ? item.content : []
-  return content.map((value) => readString(record(value)?.text)).filter(Boolean).join('\n').trim()
-}
-
-function readFinalAgentMessage(params: unknown): string {
-  const items = record(record(params)?.turn)?.items
-  if (!Array.isArray(items)) return ''
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const text = readAgentMessage({ item: items[index] })
-    if (text) return text
+function usageFromEvents(events: readonly CodexEvent[]): { inputTokens: number; outputTokens: number; totalTokens: number } | null {
+  let event: CodexEvent | undefined
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.type === 'thread.context.updated') { event = events[index]; break }
   }
-  return ''
+  if (!event) return null
+  const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0
+  const inputTokens = number(event.data.inputTokens)
+  const outputTokens = number(event.data.outputTokens)
+  return { inputTokens, outputTokens, totalTokens: number(event.data.totalTokens ?? event.data.usedTokens) || inputTokens + outputTokens }
 }
 
 function parseRpcId(payload: unknown, name: 'thread' | 'turn'): string {
@@ -312,6 +282,10 @@ export class AgentTaskService {
       run.turnId = turnId
       this.activeRunsByTurn.set(turnId, run)
     }
+    const events = normalizeCodexNotification(notification, {
+      fallbackThreadId: threadId || run.threadId,
+      fallbackTurnId: turnId || run.turnId,
+    })
 
     if (notification.method === 'server/request') {
       this.waitingApprovalRunIds.add(run.id)
@@ -324,35 +298,27 @@ export class AgentTaskService {
       void updateAgentTaskRunState(run.id, 'running')
       return
     }
-    if (notification.method === 'item/completed') {
-      const summary = readAgentMessage(notification.params)
-      if (summary) {
-        run.summary = summary
-        void updateAgentTaskRunState(run.id, 'running', summary)
-      }
-      return
+    const summary = latestAssistantTextFromEvents(events)
+    if (summary) {
+      run.summary = summary
+      void updateAgentTaskRunState(run.id, 'running', summary)
     }
-    if (notification.method === 'thread/tokenUsage/updated') {
-      const usage = readUsage(notification.params)
-      if (usage.totalTokens > 0) {
-        Object.assign(run, usage)
-        void updateAgentTaskRunUsage(run.id, usage)
-        void this.enforceTokenLimit(run, usage.totalTokens)
-      }
-      return
+    const usage = usageFromEvents(events)
+    if (usage?.totalTokens) {
+      Object.assign(run, usage)
+      void updateAgentTaskRunUsage(run.id, usage)
+      void this.enforceTokenLimit(run, usage.totalTokens)
     }
-    if (notification.method !== 'turn/completed') return
-    const error = readTurnError(notification.params)
-    const turnStatus = readTurnStatus(notification.params)
-    const usage = readUsage(notification.params)
-    const summary = run.summary || readFinalAgentMessage(notification.params)
+    const terminal = latestTerminalTurnEvent(events)
+    if (!terminal) return
+    const error = terminal.type === 'turn.failed' ? readString(terminal.data.error) || 'Codex turn failed' : ''
     void this.finish(run, {
-      status: turnStatus === 'interrupted' ? 'cancelled' : error ? 'failed' : 'succeeded',
+      status: terminal.type === 'turn.interrupted' ? 'cancelled' : terminal.type === 'turn.failed' ? 'failed' : 'succeeded',
       error,
-      summary,
-      inputTokens: usage.inputTokens || run.inputTokens,
-      outputTokens: usage.outputTokens || run.outputTokens,
-      totalTokens: usage.totalTokens || run.totalTokens,
+      summary: summary || run.summary,
+      inputTokens: usage?.inputTokens || run.inputTokens,
+      outputTokens: usage?.outputTokens || run.outputTokens,
+      totalTokens: usage?.totalTokens || run.totalTokens,
     })
   }
 
@@ -492,17 +458,14 @@ export class AgentTaskService {
   private async recoverRun(task: AgentTask, run: AgentTaskRun): Promise<void> {
     try {
       const payload = record(await this.rpc('thread/read', { threadId: run.threadId, includeTurns: true }))
-      const turns = record(payload?.thread)?.turns
-      const turn = Array.isArray(turns)
-        ? turns.map(record).find((value) => readString(value?.id) === run.turnId)
-        : null
-      const status = readString(turn?.status)
-      if (status && status !== 'inProgress') {
-        const error = readTurnError({ turn })
+      const events = normalizeThreadHistory(payload, run.threadId).filter((event) => event.turnId === run.turnId)
+      const terminal = latestTerminalTurnEvent(events)
+      if (terminal) {
+        const error = terminal.type === 'turn.failed' ? readString(terminal.data.error) || 'Codex turn failed' : ''
         await this.finish(run, {
-          status: status === 'interrupted' ? 'cancelled' : error || status === 'failed' ? 'failed' : 'succeeded',
+          status: terminal.type === 'turn.interrupted' ? 'cancelled' : terminal.type === 'turn.failed' ? 'failed' : 'succeeded',
           error,
-          summary: readFinalAgentMessage({ turn }) || run.summary,
+          summary: latestAssistantTextFromEvents(events) || run.summary,
         })
         return
       }

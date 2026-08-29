@@ -1,5 +1,5 @@
 import type { RpcNotification } from '../api/codexRealtimeClient'
-import type { UiMessage, UiThread, UiThreadContextUsage } from '../types/codex'
+import type { UiMessage, UiThread } from '../types/codex'
 import { normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
 import {
   readThreadId as readCoreThreadId,
@@ -8,24 +8,9 @@ import {
 import { buildUserMessageContentMessages } from '../api/normalizers/userMessageContent'
 import {
   asRecord,
-  readIsoTimestampMs,
   readIsoTimestampString,
-  readNumber,
   readString,
 } from '../api/protocolValueReaders'
-
-export type TurnStartedInfo = {
-  threadId: string
-  turnId: string
-  startedAtMs: number
-}
-
-export type TurnCompletedInfo = {
-  threadId: string
-  turnId: string
-  completedAtMs: number
-  startedAtMs?: number
-}
 
 const normalizedEventsByNotification = new WeakMap<RpcNotification, ReturnType<typeof normalizeCodexNotification>>()
 
@@ -49,27 +34,6 @@ function readProtocolId(record: Record<string, unknown> | null | undefined, came
   return readString(record?.[camelKey]) || readString(record?.[snakeKey])
 }
 
-export function readThreadContextUsageUpdate(notification: RpcNotification): UiThreadContextUsage | null {
-  const event = conversationEvents(notification).find((candidate) => candidate.type === 'thread.context.updated')
-  if (!event || typeof event.data.usedTokens !== 'number') return null
-
-  return {
-    threadId: event.threadId,
-    turnId: typeof event.data.turnId === 'string' ? event.data.turnId : event.turnId ?? '',
-    usedTokens: event.data.usedTokens,
-    inputTokens: typeof event.data.inputTokens === 'number' ? event.data.inputTokens : 0,
-    contextWindow: typeof event.data.contextWindow === 'number' ? event.data.contextWindow : null,
-    autoCompactTokenLimit: typeof event.data.autoCompactTokenLimit === 'number' ? event.data.autoCompactTokenLimit : null,
-    updatedAtIso: event.atIso,
-    compactionState: 'idle',
-  }
-}
-
-export function readThreadCompaction(notification: RpcNotification): { threadId: string; updatedAtIso: string } | null {
-  const event = conversationEvents(notification).find((candidate) => candidate.type === 'thread.compacted')
-  return event ? { threadId: event.threadId, updatedAtIso: event.atIso } : null
-}
-
 export function extractTurnIdFromNotification(notification: RpcNotification): string {
   return readCoreTurnId(notification.params)
 }
@@ -78,55 +42,6 @@ export function extractThreadIdFromNotification(notification: RpcNotification): 
   const params = asRecord(notification.params)
   return readCoreThreadId(notification.params)
     || readProtocolId(params, 'conversationId', 'conversation_id')
-}
-
-export function readTurnStartedInfo(notification: RpcNotification): TurnStartedInfo | null {
-  const event = conversationEvents(notification).find((candidate) => candidate.type === 'turn.started')
-  if (!event?.turnId) return null
-  const params = asRecord(notification.params)
-  if (!params) return null
-  const turnPayload = asRecord(params.turn)
-  const startedAtMs =
-    readIsoTimestampMs(turnPayload?.startedAt) ??
-    readIsoTimestampMs(params.startedAt) ??
-    readIsoTimestampMs(notification.atIso) ??
-    Date.now()
-
-  return { threadId: event.threadId, turnId: event.turnId, startedAtMs }
-}
-
-export function readTurnCompletedInfo(notification: RpcNotification): TurnCompletedInfo | null {
-  const event = conversationEvents(notification).find((candidate) => (
-    candidate.type === 'turn.completed' || candidate.type === 'turn.failed' || candidate.type === 'turn.interrupted'
-  ))
-  if (!event?.turnId) return null
-  const params = asRecord(notification.params)
-  if (!params) return null
-  const turnPayload = asRecord(params.turn)
-  const completedAtMs =
-    readIsoTimestampMs(turnPayload?.completedAt) ??
-    readIsoTimestampMs(params.completedAt) ??
-    readIsoTimestampMs(notification.atIso) ??
-    Date.now()
-
-  const startedAtMs =
-    readIsoTimestampMs(turnPayload?.startedAt) ??
-    readIsoTimestampMs(params.startedAt) ??
-    undefined
-
-  return { threadId: event.threadId, turnId: event.turnId, completedAtMs, startedAtMs }
-}
-
-export function readTurnDurationHints(notification: RpcNotification): {
-  explicitDurationMs: number | null
-  turnDurationMs: number | null
-} {
-  const params = asRecord(notification.params)
-  const turn = asRecord(params?.turn)
-  return {
-    explicitDurationMs: readNumber(params?.durationMs),
-    turnDurationMs: readNumber(turn?.durationMs),
-  }
 }
 
 export function readRateLimitSnapshotPayload(notification: RpcNotification): unknown | null {

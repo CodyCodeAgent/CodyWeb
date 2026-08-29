@@ -1,4 +1,6 @@
 import type { CatalogProject, CatalogSnapshot, CatalogThread } from './catalogStore.js'
+import { latestAssistantTextFromEvents, latestTerminalTurnEvent } from '@codycodeagent/cody-web-core/conversation'
+import { normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
 
 type Rpc = (method: string, params: unknown) => Promise<unknown>
 type RespondToServerRequest = (payload: unknown) => Promise<void>
@@ -52,16 +54,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
-}
-
-function readAgentMessage(params: unknown): string {
-  const row = asRecord(params)
-  const item = asRecord(row?.item)
-  if (readString(item?.type) !== 'agentMessage') return ''
-  const direct = readString(item?.text || item?.message)
-  if (direct) return direct
-  const content = Array.isArray(item?.content) ? item.content : []
-  return content.map((value) => readString(asRecord(value)?.text)).filter(Boolean).join('\n').trim()
 }
 
 function parseAutoRouteAnalysis(text: string): FeishuAutoRouteAnalysis {
@@ -171,22 +163,17 @@ export class FeishuCodexGateway {
         if (value instanceof Error) reject(value); else resolve(value)
       }
       unsubscribe = this.dependencies.subscribe?.((notification) => {
-        const params = asRecord(notification.params)
-        if (readString(params?.threadId) !== threadId) return
-        if (notification.method === 'item/completed') {
-          const message = readAgentMessage(notification.params)
-          if (!message) return
-          try { finish(parseScenarioPackageDraft(message, uniqueSkills)) } catch { /* wait for turn/completed */ }
+        const events = normalizeCodexNotification(notification, { fallbackThreadId: threadId })
+          .filter((event) => event.threadId === threadId)
+        const message = latestAssistantTextFromEvents(events)
+        const terminal = latestTerminalTurnEvent(events)
+        if (!terminal) {
+          if (message) try { finish(parseScenarioPackageDraft(message, uniqueSkills)) } catch { /* terminal event reports invalid output */ }
           return
         }
-        if (notification.method !== 'turn/completed') return
-        const turn = asRecord(params?.turn)
-        const error = readString(asRecord(turn?.error)?.message || asRecord(params?.error)?.message)
-        if (error || readString(turn?.status || params?.status) === 'failed') {
-          finish(new Error(error || 'Codex scenario package draft failed')); return
+        if (terminal.type !== 'turn.completed') {
+          finish(new Error(readString(terminal.data.error) || 'Codex scenario package draft failed')); return
         }
-        const items = Array.isArray(turn?.items) ? turn.items : []
-        const message = items.map((item) => readAgentMessage({ item })).filter(Boolean).at(-1) ?? ''
         try { finish(parseScenarioPackageDraft(message, uniqueSkills)) } catch (parseError) {
           finish(parseError instanceof Error ? parseError : new Error(String(parseError)))
         }
@@ -269,24 +256,18 @@ export class FeishuCodexGateway {
         else resolve(value)
       }
       unsubscribe = this.dependencies.subscribe?.((notification) => {
-        const params = asRecord(notification.params)
-        if (readString(params?.threadId) !== threadId) return
-        if (notification.method === 'item/completed') {
-          const message = readAgentMessage(notification.params)
-          if (!message) return
-          try { finish(parseAutoRouteAnalysis(message)) } catch { /* turn/completed reports the final failure */ }
+        const events = normalizeCodexNotification(notification, { fallbackThreadId: threadId })
+          .filter((event) => event.threadId === threadId)
+        const message = latestAssistantTextFromEvents(events)
+        const terminal = latestTerminalTurnEvent(events)
+        if (!terminal) {
+          if (message) try { finish(parseAutoRouteAnalysis(message)) } catch { /* terminal event reports invalid output */ }
           return
         }
-        if (notification.method !== 'turn/completed') return
-        const turn = asRecord(params?.turn)
-        const status = readString(turn?.status || params?.status)
-        const error = readString(asRecord(turn?.error)?.message || asRecord(params?.error)?.message)
-        if (error || status === 'failed') {
-          finish(new Error(error || 'Codex card route analysis failed'))
+        if (terminal.type !== 'turn.completed') {
+          finish(new Error(readString(terminal.data.error) || 'Codex card route analysis failed'))
           return
         }
-        const items = Array.isArray(turn?.items) ? turn.items : []
-        const message = items.map((item) => readAgentMessage({ item })).filter(Boolean).at(-1) ?? ''
         try { finish(parseAutoRouteAnalysis(message)) } catch (parseError) {
           finish(parseError instanceof Error ? parseError : new Error(String(parseError)))
         }
