@@ -8,7 +8,6 @@ import {
   normalizeMessageText as coreNormalizeMessageText,
   removeDuplicateAdjacentUserMessages as coreRemoveDuplicateAdjacentUserMessages,
   removeRedundantLiveAssistantMessages as coreRemoveRedundantLiveAssistantMessages,
-  upsertLiveDelta as coreUpsertLiveDelta,
 } from '@codycodeagent/cody-web-core/conversation'
 
 const WORKED_MESSAGE_TYPE = 'worked'
@@ -26,8 +25,6 @@ export type TurnActivityState = {
   label: string
   details: string[]
 }
-
-export type LiveAssistantMessageType = 'agentMessage.live' | 'plan.live'
 
 export function areMessageArraysEqual(first: UiMessage[], second: UiMessage[]): boolean {
   return areConversationMessageArraysStable(first, second)
@@ -51,60 +48,6 @@ export function replaceMessageById(messages: UiMessage[], messageId: string, rep
   if (replacementIndex < 0) return messages
   next.splice(replacementIndex, 1, replacement)
   return next
-}
-
-export function removeLivePlanMessagesForTurn(
-  messages: UiMessage[],
-  turnId: string,
-  planMessageId?: string,
-): UiMessage[] {
-  if (!turnId) return messages
-  const fallbackPlanMessageId = `plan:${turnId}:live`
-  const removableIds = new Set([fallbackPlanMessageId])
-  const normalizedPlanMessageId = planMessageId?.trim()
-  if (normalizedPlanMessageId) {
-    removableIds.add(normalizedPlanMessageId)
-  }
-
-  const next = messages.filter((message) => {
-    return message.messageType !== 'plan.live' || !removableIds.has(message.id)
-  })
-  return next.length === messages.length ? messages : next
-}
-
-export function finalizeLiveMessagesForTurn(
-  persistedMessages: UiMessage[],
-  liveMessages: UiMessage[],
-  turnId: string,
-): { persistedMessages: UiMessage[]; liveMessages: UiMessage[] } {
-  if (!turnId) {
-    return { persistedMessages, liveMessages }
-  }
-
-  // The live layer is only an overlay for the currently running turn. A
-  // history refresh may contain the final answer already, so reconcile against
-  // the complete loaded window before promoting anything. This avoids relying
-  // on the newest (small) server page to clean up realtime copies.
-  const unreconciledLiveMessages = removeRedundantLiveAgentMessages(liveMessages, persistedMessages)
-  const completedAgentMessages = unreconciledLiveMessages
-    .filter((message) => {
-      return message.messageType === 'agentMessage.live'
-        && (!message.turnId || message.turnId === turnId)
-    })
-    .map((message): UiMessage => ({
-      ...message,
-      messageType: 'agentMessage',
-    }))
-
-  return {
-    persistedMessages: completedAgentMessages.length > 0
-      ? mergeMessages(persistedMessages, completedAgentMessages, { preserveMissing: true })
-      : persistedMessages,
-    // A thread can only have one active turn. Once it completes, any remaining
-    // live rows belong either to that turn or to an older stale overlay and
-    // must not be appended to the end of the conversation forever.
-    liveMessages: [],
-  }
 }
 
 function omitRecordKey<TValue>(record: Record<string, TValue>, key: string): Record<string, TValue> {
@@ -166,98 +109,6 @@ export function updateMessagesForThread(
     ...state,
     [threadId]: nextMessages,
   }
-}
-
-export function upsertLiveAssistantDelta(
-  previous: UiMessage[],
-  delta: {
-    messageId: string
-    textDelta: string
-    messageType: LiveAssistantMessageType
-    turnId?: string
-  },
-): UiMessage[] {
-  return coreUpsertLiveDelta(previous, delta)
-}
-
-export function upsertLiveAssistantDeltaForThread(
-  state: Record<string, UiMessage[]>,
-  threadId: string,
-  delta: {
-    messageId: string
-    textDelta: string
-    messageType: LiveAssistantMessageType
-    turnId?: string
-  },
-): Record<string, UiMessage[]> {
-  if (!threadId) return state
-  return updateMessagesForThread(
-    state,
-    threadId,
-    upsertLiveAssistantDelta(state[threadId] ?? [], delta),
-  )
-}
-
-export function normalizeLiveReasoningTextForStorage(text: string): string {
-  return text.trim().length === 0 ? '' : text
-}
-
-export function appendLiveReasoningDelta(previous: string, delta: string): string {
-  return normalizeLiveReasoningTextForStorage(`${previous}${delta}`)
-}
-
-export function appendLiveReasoningSectionBreak(current: string): string {
-  if (current.trim().length === 0 || current.endsWith('\n\n')) return current
-  return `${current}\n\n`
-}
-
-export function updateLiveReasoningTextForThread(
-  state: Record<string, string>,
-  threadId: string,
-  text: string,
-): Record<string, string> {
-  if (!threadId) return state
-  const normalized = normalizeLiveReasoningTextForStorage(text)
-  const previous = state[threadId] ?? ''
-  if (normalized.length === 0) return previous ? omitRecordKey(state, threadId) : state
-  if (previous === normalized) return state
-  return {
-    ...state,
-    [threadId]: normalized,
-  }
-}
-
-export function appendLiveReasoningDeltaForThread(
-  state: Record<string, string>,
-  threadId: string,
-  delta: string,
-): Record<string, string> {
-  if (!threadId) return state
-  return updateLiveReasoningTextForThread(
-    state,
-    threadId,
-    appendLiveReasoningDelta(state[threadId] ?? '', delta),
-  )
-}
-
-export function appendLiveReasoningSectionBreakForThread(
-  state: Record<string, string>,
-  threadId: string,
-): Record<string, string> {
-  if (!threadId) return state
-  return updateLiveReasoningTextForThread(
-    state,
-    threadId,
-    appendLiveReasoningSectionBreak(state[threadId] ?? ''),
-  )
-}
-
-export function clearLiveReasoningTextForThread(
-  state: Record<string, string>,
-  threadId: string,
-): Record<string, string> {
-  if (!threadId || !(threadId in state)) return state
-  return omitRecordKey(state, threadId)
 }
 
 export function buildDisplayedMessages(
@@ -371,20 +222,18 @@ export function updateTurnErrorState(
 export function buildLiveOverlay(
   threadId: string,
   activityByThreadId: Record<string, TurnActivityState>,
-  reasoningTextByThreadId: Record<string, string>,
   errorByThreadId: Record<string, TurnErrorState>,
 ): UiLiveOverlay | null {
   if (!threadId) return null
 
   const activity = activityByThreadId[threadId]
-  const reasoningText = (reasoningTextByThreadId[threadId] ?? '').trim()
   const errorText = (errorByThreadId[threadId]?.message ?? '').trim()
 
-  if (!activity && !reasoningText && !errorText) return null
+  if (!activity && !errorText) return null
   return {
     activityLabel: activity?.label || 'Thinking',
     activityDetails: activity?.details ?? [],
-    reasoningText,
+    reasoningText: '',
     errorText,
   }
 }

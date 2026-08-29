@@ -19,8 +19,6 @@ function state(): DesktopThreadScopedState {
     loadedVersionByThreadId: { keep: 'v1', drop: 'v2' },
     resumedThreadById: { keep: true, drop: true },
     persistedMessagesByThreadId: { keep: [], drop: [] },
-    liveAgentMessagesByThreadId: { keep: [], drop: [] },
-    liveReasoningTextByThreadId: { keep: 'thinking', drop: 'stale' },
     turnSummaryByThreadId: { keep: { turnId: 'turn-1', durationMs: 1 }, drop: { turnId: 'turn-2', durationMs: 2 } },
     turnActivityByThreadId: { keep: { label: 'Thinking', details: [] }, drop: { label: 'Writing', details: [] } },
     turnErrorByThreadId: { keep: { message: 'still here' }, drop: { message: 'stale' } },
@@ -93,8 +91,6 @@ describe('desktopThreadScopedState', () => {
     expect(Object.keys(pruned.loadedVersionByThreadId)).toEqual(['keep'])
     expect(Object.keys(pruned.resumedThreadById)).toEqual(['keep'])
     expect(Object.keys(pruned.persistedMessagesByThreadId)).toEqual(['keep'])
-    expect(Object.keys(pruned.liveAgentMessagesByThreadId)).toEqual(['keep'])
-    expect(Object.keys(pruned.liveReasoningTextByThreadId)).toEqual(['keep'])
     expect(Object.keys(pruned.turnSummaryByThreadId)).toEqual(['keep'])
     expect(Object.keys(pruned.turnActivityByThreadId)).toEqual(['keep'])
     expect(Object.keys(pruned.turnErrorByThreadId)).toEqual(['keep'])

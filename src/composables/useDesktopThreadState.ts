@@ -18,8 +18,6 @@ export function useDesktopThreadState() {
   const selectedThreadId = ref(loadSelectedThreadId())
   const isHiddenView = ref(false)
   const persistedMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
-  const liveAgentMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
-  const liveReasoningTextByThreadId = ref<Record<string, string>>({})
   const inProgressById = ref<Record<string, boolean>>({})
   const eventUnreadByThreadId = ref<Record<string, boolean>>({})
   const readStateByThreadId = ref<Record<string, string>>(loadReadStateMap())
@@ -41,7 +39,7 @@ export function useDesktopThreadState() {
 
   return {
     projectGroups, sourceGroups, optimisticThreadById, selectedThreadId, isHiddenView,
-    persistedMessagesByThreadId, liveAgentMessagesByThreadId, liveReasoningTextByThreadId,
+    persistedMessagesByThreadId,
     inProgressById, eventUnreadByThreadId, readStateByThreadId, scrollStateByThreadId,
     projectOrder, projectDisplayNameById, loadedVersionByThreadId, loadedMessagesByThreadId,
     resumedThreadById, allThreads, selectedThread, selectedThreadScrollState, setSelectedThreadId,

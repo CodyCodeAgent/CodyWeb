@@ -11,8 +11,6 @@ export type DesktopThreadScopedState = {
   loadedVersionByThreadId: Record<string, string>
   resumedThreadById: Record<string, boolean>
   persistedMessagesByThreadId: Record<string, UiMessage[]>
-  liveAgentMessagesByThreadId: Record<string, UiMessage[]>
-  liveReasoningTextByThreadId: Record<string, string>
   turnSummaryByThreadId: Record<string, TurnSummaryState>
   turnActivityByThreadId: Record<string, TurnActivityState>
   turnErrorByThreadId: Record<string, TurnErrorState>
@@ -76,8 +74,6 @@ export function pruneDesktopThreadScopedState(
     loadedVersionByThreadId: pruneThreadStateMap(state.loadedVersionByThreadId, activeThreadIds),
     resumedThreadById: pruneThreadStateMap(state.resumedThreadById, activeThreadIds),
     persistedMessagesByThreadId: pruneThreadStateMap(state.persistedMessagesByThreadId, activeThreadIds),
-    liveAgentMessagesByThreadId: pruneThreadStateMap(state.liveAgentMessagesByThreadId, activeThreadIds),
-    liveReasoningTextByThreadId: pruneThreadStateMap(state.liveReasoningTextByThreadId, activeThreadIds),
     turnSummaryByThreadId: pruneThreadStateMap(state.turnSummaryByThreadId, activeThreadIds),
     turnActivityByThreadId: pruneThreadStateMap(state.turnActivityByThreadId, activeThreadIds),
     turnErrorByThreadId: pruneThreadStateMap(state.turnErrorByThreadId, activeThreadIds),

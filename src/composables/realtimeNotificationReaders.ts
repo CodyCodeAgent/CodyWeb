@@ -185,20 +185,6 @@ export function readStartedThread(notification: RpcNotification): UiThread | nul
   }
 }
 
-export function readAgentMessageDelta(notification: RpcNotification): { messageId: string; turnId?: string; delta: string } | null {
-  const event = conversationEvents(notification).find((candidate) => candidate.type === 'assistant.delta')
-  const delta = typeof event?.data.text === 'string' ? event.data.text : ''
-  if (!event?.itemId || !delta) return null
-  return { messageId: event.itemId, ...(event.turnId ? { turnId: event.turnId } : {}), delta }
-}
-
-export function readAgentMessageCompleted(notification: RpcNotification): UiMessage | null {
-  const event = conversationEvents(notification).find((candidate) => candidate.type === 'assistant.completed')
-  const text = typeof event?.data.text === 'string' ? event.data.text : ''
-  if (!event?.itemId || !text) return null
-  return { id: event.itemId, turnId: event.turnId, role: 'assistant', text, messageType: 'agentMessage.live' }
-}
-
 export function readUserMessageCompleted(notification: RpcNotification): UiMessage[] {
   const params = asRecord(notification.params)
   if (!params || notification.method !== 'item/completed') return []
@@ -209,40 +195,6 @@ export function readUserMessageCompleted(notification: RpcNotification): UiMessa
   const turnId = readProtocolId(params, 'turnId', 'turn_id')
   if (!itemId || !Array.isArray(item.content)) return []
   return buildUserMessageContentMessages(itemId, item.content, 'userMessage', turnId)
-}
-
-export function readPlanMessageDelta(notification: RpcNotification): { messageId: string; turnId: string; delta: string } | null {
-  const event = conversationEvents(notification).find((candidate) => candidate.type === 'plan.delta')
-  const delta = typeof event?.data.text === 'string' ? event.data.text : ''
-  return event?.itemId && event.turnId && delta
-    ? { messageId: event.itemId, turnId: event.turnId, delta }
-    : null
-}
-
-export function readPlanMessageCompleted(notification: RpcNotification): UiMessage | null {
-  const event = conversationEvents(notification).find((candidate) => candidate.type === 'plan.replaced')
-  if (notification.method !== 'item/completed') return null
-  const text = typeof event?.data.text === 'string' ? event.data.text : ''
-  if (!event?.itemId || !text) return null
-  return { id: event.itemId, turnId: event.turnId, role: 'assistant', text, messageType: 'plan.live' }
-}
-
-export function readPlanUpdatedMessage(
-  notification: RpcNotification,
-  planMessageIdForTurn: (turnId: string) => string | undefined,
-): UiMessage | null {
-  const event = conversationEvents(notification).find((candidate) => candidate.type === 'plan.replaced')
-  if (!event?.turnId || notification.method !== 'turn/plan/updated') return null
-  const text = typeof event.data.text === 'string' ? event.data.text.trim() : ''
-  if (!text) return null
-
-  return {
-    id: planMessageIdForTurn(event.turnId) ?? `plan:${event.turnId}:live`,
-    turnId: event.turnId,
-    role: 'assistant',
-    text,
-    messageType: 'plan.live',
-  }
 }
 
 export function isAgentContentEvent(notification: RpcNotification): boolean {

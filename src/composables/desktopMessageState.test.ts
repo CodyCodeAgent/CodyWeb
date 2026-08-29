@@ -2,31 +2,21 @@ import { describe, expect, it } from 'vitest'
 import {
   areMessageArraysEqual,
   areTurnActivitiesEqual,
-  appendLiveReasoningDelta,
-  appendLiveReasoningDeltaForThread,
-  appendLiveReasoningSectionBreak,
-  appendLiveReasoningSectionBreakForThread,
   buildDisplayedMessages,
   buildRollbackAuditMessage,
   buildLiveOverlay,
   buildTurnSummaryMessage,
-  clearLiveReasoningTextForThread,
-  finalizeLiveMessagesForTurn,
   formatTurnDuration,
   insertTurnSummaryMessage,
   mergeMessages,
   mergeTurnActivity,
   normalizeMessageText,
   removeDuplicateAdjacentUserMessages,
-  removeLivePlanMessagesForTurn,
   removeMessageById,
   replaceMessageById,
   removeRedundantLiveAgentMessages,
   resolveTurnDurationMs,
-  updateLiveReasoningTextForThread,
   updateMessagesForThread,
-  upsertLiveAssistantDelta,
-  upsertLiveAssistantDeltaForThread,
   upsertMessage,
   upsertMessages,
   updateTurnActivityState,
@@ -404,113 +394,6 @@ describe('desktopMessageState', () => {
     })
   })
 
-  it('appends live assistant deltas without duplicating message rows', () => {
-    const first = upsertLiveAssistantDelta([], {
-      messageId: 'agent-1',
-      textDelta: 'hello',
-      messageType: 'agentMessage.live',
-    })
-    const second = upsertLiveAssistantDelta(first, {
-      messageId: 'agent-1',
-      textDelta: ' world',
-      messageType: 'agentMessage.live',
-    })
-
-    expect(second).toHaveLength(1)
-    expect(second[0]).toMatchObject({
-      id: 'agent-1',
-      role: 'assistant',
-      text: 'hello world',
-      messageType: 'agentMessage.live',
-    })
-  })
-
-  it('applies live assistant deltas to the thread message map', () => {
-    const first = upsertLiveAssistantDeltaForThread({}, 'thread-1', {
-      messageId: 'agent-1',
-      textDelta: 'hello',
-      messageType: 'agentMessage.live',
-    })
-    const second = upsertLiveAssistantDeltaForThread(first, 'thread-1', {
-      messageId: 'agent-1',
-      textDelta: ' plan',
-      messageType: 'plan.live',
-    })
-
-    expect(second['thread-1']).toHaveLength(1)
-    expect(second['thread-1'][0]).toMatchObject({
-      id: 'agent-1',
-      text: 'hello plan',
-      messageType: 'plan.live',
-    })
-    expect(upsertLiveAssistantDeltaForThread(second, '', {
-      messageId: 'agent-2',
-      textDelta: 'ignored',
-      messageType: 'agentMessage.live',
-    })).toBe(second)
-  })
-
-  it('removes only the live plan for a completed turn', () => {
-    const messages = [
-      message({ id: 'answer-live', text: 'answer', messageType: 'agentMessage.live' }),
-      message({ id: 'plan-live', text: 'plan', messageType: 'plan.live' }),
-      message({ id: 'plan:turn-1:live', text: 'fallback plan', messageType: 'plan.live' }),
-      message({ id: 'plan:turn-2:live', text: 'other turn plan', messageType: 'plan.live' }),
-      message({ id: 'persisted-plan', text: 'persisted', messageType: 'plan' }),
-    ]
-
-    expect(removeLivePlanMessagesForTurn(messages, 'turn-1', 'plan-live')).toEqual([
-      message({ id: 'answer-live', text: 'answer', messageType: 'agentMessage.live' }),
-      message({ id: 'plan:turn-2:live', text: 'other turn plan', messageType: 'plan.live' }),
-      message({ id: 'persisted-plan', text: 'persisted', messageType: 'plan' }),
-    ])
-    expect(removeLivePlanMessagesForTurn(messages, '', 'plan-live')).toBe(messages)
-  })
-
-  it('promotes the completed answer and clears stale live rows for the thread', () => {
-    const persisted = [
-      message({ id: 'user-1', turnId: 'turn-1', role: 'user', text: 'first', messageType: 'userMessage' }),
-      message({ id: 'agent-1', turnId: 'turn-1', text: 'first answer', messageType: 'agentMessage' }),
-      message({ id: 'user-2', turnId: 'turn-2', role: 'user', text: 'second', messageType: 'userMessage' }),
-    ]
-    const live = [
-      message({ id: 'agent-1-live-copy', turnId: 'turn-1', text: 'first answer', messageType: 'agentMessage.live' }),
-      message({ id: 'agent-2', turnId: 'turn-2', text: 'second answer', messageType: 'agentMessage.live' }),
-      message({ id: 'plan:turn-2:live', turnId: 'turn-2', text: 'plan', messageType: 'plan.live' }),
-    ]
-
-    const finalized = finalizeLiveMessagesForTurn(persisted, live, 'turn-2')
-
-    expect(finalized.liveMessages).toEqual([])
-    expect(finalized.persistedMessages.map((row) => [row.id, row.messageType])).toEqual([
-      ['user-1', 'userMessage'],
-      ['agent-1', 'agentMessage'],
-      ['user-2', 'userMessage'],
-      ['agent-2', 'agentMessage'],
-    ])
-  })
-
-  it('preserves live reasoning whitespace until display time', () => {
-    expect(appendLiveReasoningDelta('', '  thinking')).toBe('  thinking')
-    expect(appendLiveReasoningDelta('  thinking', '\nnext')).toBe('  thinking\nnext')
-    expect(appendLiveReasoningDelta('', '   ')).toBe('')
-    expect(appendLiveReasoningSectionBreak('  thinking')).toBe('  thinking\n\n')
-    expect(appendLiveReasoningSectionBreak('  thinking\n\n')).toBe('  thinking\n\n')
-  })
-
-  it('updates live reasoning maps without losing meaningful whitespace', () => {
-    const state = updateLiveReasoningTextForThread({}, 'thread-1', '  thinking')
-    const withDelta = appendLiveReasoningDeltaForThread(state, 'thread-1', '\nnext')
-    const withBreak = appendLiveReasoningSectionBreakForThread(withDelta, 'thread-1')
-
-    expect(state).toEqual({ 'thread-1': '  thinking' })
-    expect(withDelta).toEqual({ 'thread-1': '  thinking\nnext' })
-    expect(withBreak).toEqual({ 'thread-1': '  thinking\nnext\n\n' })
-    expect(updateLiveReasoningTextForThread(withBreak, 'thread-1', '   ')).toEqual({})
-    expect(clearLiveReasoningTextForThread(withBreak, 'thread-1')).toEqual({})
-    expect(clearLiveReasoningTextForThread(withBreak, 'missing')).toBe(withBreak)
-  })
-
   it('shows live assistant output before it is persisted by thread/read', () => {
     const persisted = [message({ id: 'user-1', role: 'user', text: 'question' })]
     const live = [
@@ -632,25 +515,18 @@ describe('desktopMessageState', () => {
   })
 
   it('builds live overlay only when selected thread has live state', () => {
-    expect(buildLiveOverlay('', {}, {}, {})).toBeNull()
-    expect(buildLiveOverlay('thread-1', {}, {}, {})).toBeNull()
+    expect(buildLiveOverlay('', {}, {})).toBeNull()
+    expect(buildLiveOverlay('thread-1', {}, {})).toBeNull()
     expect(buildLiveOverlay(
       'thread-1',
       { 'thread-1': { label: 'Writing', details: ['tool'] } },
-      { 'thread-1': '  reasoning  ' },
       { 'thread-1': { message: '  failed  ' } },
     )).toEqual({
       activityLabel: 'Writing',
       activityDetails: ['tool'],
-      reasoningText: 'reasoning',
+      reasoningText: '',
       errorText: 'failed',
     })
-    expect(buildLiveOverlay(
-      'thread-1',
-      {},
-      { 'thread-1': 'thinking' },
-      {},
-    )?.activityLabel).toBe('Thinking')
   })
 
   it('resolves turn duration from the strongest available source', () => {

@@ -4,9 +4,6 @@ import {
   extractThreadIdFromNotification,
   isAgentContentEvent,
   normalizeRealtimeNotification,
-  readAgentMessageCompleted,
-  readAgentMessageDelta,
-  readPlanUpdatedMessage,
   readRateLimitSnapshotPayload,
   readStartedThread,
   readThreadContextUsageUpdate,
@@ -164,54 +161,6 @@ describe('realtime notification readers', () => {
     })
   })
 
-  it('reads live assistant message deltas', () => {
-    expect(readAgentMessageDelta(notification('item/agentMessage/delta', {
-      threadId: 'thread-1',
-      itemId: 'item-1',
-      delta: 'hello',
-    }))).toEqual({
-      messageId: 'item-1',
-      delta: 'hello',
-    })
-    expect(readAgentMessageDelta(notification('item/agentMessage/delta', {
-      thread_id: 'thread-1',
-      item_id: 'item-raw',
-      delta: ' raw',
-    }))).toEqual({
-      messageId: 'item-raw',
-      delta: ' raw',
-    })
-    expect(readAgentMessageDelta(notification('item/agentMessage/delta', {
-      threadId: 'thread-1',
-      item: { id: 'item-nested' },
-      textDelta: ' nested',
-    }))).toEqual({
-      messageId: 'item-nested',
-      delta: ' nested',
-    })
-    expect(readAgentMessageDelta(notification('item/agentMessage/delta', {
-      threadId: 'thread-1',
-      item_id: 'item-snake-delta',
-      text_delta: ' snake',
-    }))).toEqual({
-      messageId: 'item-snake-delta',
-      delta: ' snake',
-    })
-
-    expect(readAgentMessageCompleted(notification('item/completed', {
-      item: {
-        type: 'agentMessage',
-        id: 'item-1',
-        text: 'hello world',
-      },
-    }))).toMatchObject({
-      id: 'item-1',
-      role: 'assistant',
-      text: 'hello world',
-      messageType: 'agentMessage.live',
-    })
-  })
-
   it('reads completed user messages for immediate conversation rendering', () => {
     const messages = readUserMessageCompleted(notification('item/completed', {
       turnId: 'turn-1',
@@ -253,21 +202,7 @@ describe('realtime notification readers', () => {
     })
   })
 
-  it('reads plan updates', () => {
-    expect(readPlanUpdatedMessage(notification('turn/plan/updated', {
-      turnId: 'turn-1',
-      explanation: 'Plan changed',
-      plan: [
-        { status: 'completed', step: 'Read code' },
-        { status: 'inProgress', step: 'Patch code' },
-        { status: 'pending', step: 'Run tests' },
-      ],
-    }), () => 'plan-message-1')).toMatchObject({
-      id: 'plan-message-1',
-      role: 'assistant',
-      messageType: 'plan.live',
-      text: 'Plan changed\n\n1. [done] Read code\n2. [doing] Patch code\n3. [todo] Run tests',
-    })
+  it('identifies agent content events', () => {
     expect(isAgentContentEvent(notification('turn/plan/updated', { turnId: 'turn-1' }))).toBe(true)
     expect(isAgentContentEvent(notification('account/rateLimits/updated', {}))).toBe(false)
   })
