@@ -485,11 +485,12 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import type { ThreadScrollState, UiApprovalDecisionScope, UiLiveOverlay, UiMessage, UiServerRequest, UiServerRequestReply } from '../../types/codex'
+import type { ThreadScrollState, UiLiveOverlay, UiMessage, UiServerRequest, UiServerRequestReply } from '../../types/codex'
 import {
   APPROVAL_SCOPE_OPTIONS,
-  type UiApprovalDecision,
-} from '../../composables/useApprovalRisk'
+  type ApprovalDecision,
+  type ApprovalDecisionScope,
+} from '@codycodeagent/cody-web-core/presentation'
 import {
   buildConversationScrollMetrics,
   buildConversationRequestCards,
@@ -910,11 +911,11 @@ function onQuestionOtherAnswerInput(requestId: number, questionId: string, event
   }
 }
 
-function onRespondApproval(requestId: number, decision: UiApprovalDecision): void {
+function onRespondApproval(requestId: number, decision: ApprovalDecision): void {
   emit('respondServerRequest', buildApprovalDecisionReply(requestId, decision))
 }
 
-function onRespondApprovalScope(requestId: number, scope: UiApprovalDecisionScope): void {
+function onRespondApprovalScope(requestId: number, scope: ApprovalDecisionScope): void {
   emit('respondServerRequest', buildApprovalScopeReply(requestId, scope))
 }
 

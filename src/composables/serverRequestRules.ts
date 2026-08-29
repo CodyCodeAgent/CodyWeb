@@ -2,11 +2,12 @@ import {
   approvalDecisionForScope,
   approvalScopeForDecision,
   buildApprovalRiskSummary,
+  type ApprovalDecision,
+  type ApprovalDecisionScope,
+  type ApprovalRiskSummary,
   type ApprovalRiskTranslator,
-  type UiApprovalDecision,
-  type UiApprovalRiskSummary,
-} from './useApprovalRisk'
-import type { UiApprovalDecisionScope, UiApprovalGrant, UiServerRequest, UiServerRequestReply } from '../types/codex'
+} from '@codycodeagent/cody-web-core/presentation'
+import type { UiApprovalGrant, UiServerRequest, UiServerRequestReply } from '../types/codex'
 import {
   TOOL_CALL_REQUEST_METHOD,
   TOOL_USER_INPUT_REQUEST_METHOD,
@@ -14,14 +15,14 @@ import {
   isFileChangeApprovalRequestMethod,
   isToolCallRequestMethod,
   isToolUserInputRequestMethod,
-} from '../api/codexServerRequestMethods'
+} from '@codycodeagent/cody-web-core/protocol'
 
 export {
   TOOL_CALL_REQUEST_METHOD,
   TOOL_USER_INPUT_REQUEST_METHOD,
   isToolCallRequestMethod,
   isToolUserInputRequestMethod,
-} from '../api/codexServerRequestMethods'
+} from '@codycodeagent/cody-web-core/protocol'
 
 export type UiServerRequestKind =
   | 'command_approval'
@@ -32,7 +33,7 @@ export type UiServerRequestKind =
 
 export type UiServerRequestCard = {
   request: UiServerRequest
-  summary: UiApprovalRiskSummary
+  summary: ApprovalRiskSummary
   kind: UiServerRequestKind
   isApprovalRequest: boolean
 }
@@ -128,7 +129,7 @@ export function approvalGrantSummaryText(cwd: string, grants: Pick<UiApprovalGra
   return `${String(grants.length)} active · ${String(permanentCount)} permanent`
 }
 
-export function buildApprovalDecisionReply(requestId: number, decision: UiApprovalDecision): UiServerRequestReply {
+export function buildApprovalDecisionReply(requestId: number, decision: ApprovalDecision): UiServerRequestReply {
   return {
     id: requestId,
     approvalScope: approvalScopeForDecision(decision),
@@ -136,7 +137,7 @@ export function buildApprovalDecisionReply(requestId: number, decision: UiApprov
   }
 }
 
-export function buildApprovalScopeReply(requestId: number, scope: UiApprovalDecisionScope): UiServerRequestReply {
+export function buildApprovalScopeReply(requestId: number, scope: ApprovalDecisionScope): UiServerRequestReply {
   return {
     id: requestId,
     approvalScope: scope,

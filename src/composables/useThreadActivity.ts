@@ -1,7 +1,6 @@
 import type { UiMessage, UiServerRequest, UiToolTimelineEntry } from '../types/codex'
 import type { UiDiffLineKind, UiDiffReview, UiDiffReviewFile } from './useDiffReview'
-import type { ApprovalRiskTranslator } from './useApprovalRisk'
-import { isToolFailureStatus } from '@codycodeagent/cody-web-core/presentation'
+import { isToolFailureStatus, type ApprovalRiskTranslator } from '@codycodeagent/cody-web-core/presentation'
 import {
   buildServerRequestCards,
   isServerApprovalRequest,

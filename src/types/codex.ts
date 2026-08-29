@@ -1,3 +1,5 @@
+import type { ApprovalDecisionScope } from '@codycodeagent/cody-web-core/presentation'
+
 export type RpcEnvelope<T> = {
   result: T
 }
@@ -426,7 +428,7 @@ export type UiServerRequest = {
 
 export type UiServerRequestReply = {
   id: number
-  approvalScope?: UiApprovalDecisionScope
+  approvalScope?: ApprovalDecisionScope
   result?: unknown
   error?: {
     code?: number
@@ -434,13 +436,11 @@ export type UiServerRequestReply = {
   }
 }
 
-export type UiApprovalDecisionScope = 'single' | 'session' | 'workspace' | 'permanent'
-
 export type UiApprovalGrant = {
   id: string
   cwd: string
   repoRoot: string
-  scope: Extract<UiApprovalDecisionScope, 'workspace' | 'permanent'>
+  scope: Extract<ApprovalDecisionScope, 'workspace' | 'permanent'>
   method: string
   subject: string
   key: string

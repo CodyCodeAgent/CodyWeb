@@ -141,8 +141,9 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { fetchApprovalGrants, revokeApprovalGrant } from '../../api/codexGatewayStatusClient'
 import {
   APPROVAL_SCOPE_OPTIONS,
-  type UiApprovalDecision,
-} from '../../composables/useApprovalRisk'
+  type ApprovalDecision,
+  type ApprovalDecisionScope,
+} from '@codycodeagent/cody-web-core/presentation'
 import {
   approvalGrantSummaryText,
   buildApprovalDecisionReply,
@@ -155,7 +156,7 @@ import {
   serverRequestBadgeTone,
   serverRequestMetaLabel,
 } from '../../composables/serverRequestRules'
-import type { UiApprovalDecisionScope, UiApprovalGrant, UiServerRequest, UiServerRequestReply } from '../../types/codex'
+import type { UiApprovalGrant, UiServerRequest, UiServerRequestReply } from '../../types/codex'
 
 const props = defineProps<{
   cwd: string
@@ -171,7 +172,7 @@ const approvalGrants = ref<UiApprovalGrant[]>([])
 const isLoadingGrants = ref(false)
 const isRevokingGrant = ref('')
 
-function approvalActionLabel(scope: UiApprovalDecisionScope): string {
+function approvalActionLabel(scope: ApprovalDecisionScope): string {
   return ({
     single: 'Allow this once',
     session: 'Allow for this task',
@@ -185,11 +186,11 @@ const badgeTone = computed(() => serverRequestBadgeTone(approvalCards.value))
 const summaryText = computed(() => serverRequestApprovalCenterSummary(approvalCards.value))
 const grantSummaryText = computed(() => approvalGrantSummaryText(props.cwd, approvalGrants.value))
 
-function respondApproval(requestId: number, decision: UiApprovalDecision): void {
+function respondApproval(requestId: number, decision: ApprovalDecision): void {
   emit('respondServerRequest', buildApprovalDecisionReply(requestId, decision))
 }
 
-function respondApprovalScope(requestId: number, scope: UiApprovalDecisionScope): void {
+function respondApprovalScope(requestId: number, scope: ApprovalDecisionScope): void {
   emit('respondServerRequest', buildApprovalScopeReply(requestId, scope))
 }
 

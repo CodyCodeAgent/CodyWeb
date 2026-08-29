@@ -403,9 +403,10 @@ import {
 } from '@codycodeagent/cody-web-core/presentation'
 import {
   APPROVAL_SCOPE_OPTIONS,
-  type UiApprovalDecision,
-  type UiApprovalRiskLevel,
-} from '../../composables/useApprovalRisk'
+  type ApprovalDecision,
+  type ApprovalDecisionScope,
+  type ApprovalRiskLevel,
+} from '@codycodeagent/cody-web-core/presentation'
 import { useLocale, type LocaleMessageKey } from '../../composables/useLocale'
 import {
   buildApprovalDecisionReply,
@@ -418,7 +419,7 @@ import {
 } from '../../composables/serverRequestRules'
 import { buildDiffReview, buildSplitDiffRows, sliceDiffHunkLines } from '../../composables/useDiffReview'
 import type { UiDiffLineKind, UiDiffReviewFile, UiDiffReviewLine, UiDiffSplitRow } from '../../composables/useDiffReview'
-import type { UiApprovalDecisionScope, UiMessage, UiServerRequest, UiServerRequestReply, UiToolingRollbackFileResult } from '../../types/codex'
+import type { UiMessage, UiServerRequest, UiServerRequestReply, UiToolingRollbackFileResult } from '../../types/codex'
 
 const props = defineProps<{
   messages: UiMessage[]
@@ -518,11 +519,11 @@ const statusText = computed(() => {
   return t('workLog.status.empty')
 })
 
-function onRespondApproval(requestId: number, decision: UiApprovalDecision): void {
+function onRespondApproval(requestId: number, decision: ApprovalDecision): void {
   emit('respondServerRequest', buildApprovalDecisionReply(requestId, decision))
 }
 
-function onRespondApprovalScope(requestId: number, scope: UiApprovalDecisionScope): void {
+function onRespondApprovalScope(requestId: number, scope: ApprovalDecisionScope): void {
   emit('respondServerRequest', buildApprovalScopeReply(requestId, scope))
 }
 
@@ -545,7 +546,7 @@ function diffLinePrefix(kind: UiDiffLineKind): string {
   return workLogDiffLinePrefix(kind)
 }
 
-function formatRiskLevel(level: UiApprovalRiskLevel): string {
+function formatRiskLevel(level: ApprovalRiskLevel): string {
   if (level === 'high') return t('workLog.risk.high')
   if (level === 'medium') return t('workLog.risk.medium')
   return t('workLog.risk.low')

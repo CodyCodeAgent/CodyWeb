@@ -1,7 +1,5 @@
-import type {
-  UiApprovalDecisionScope,
-  UiDirectoryListing,
-} from '../types/codex'
+import type { ApprovalDecisionScope } from '@codycodeagent/cody-web-core/presentation'
+import type { UiDirectoryListing } from '../types/codex'
 import { CodexApiError } from './codexErrors'
 import {
   asRecord,
@@ -13,7 +11,7 @@ import {
 
 export type ServerRequestReplyBody = {
   id: number
-  approvalScope?: UiApprovalDecisionScope
+  approvalScope?: ApprovalDecisionScope
   result?: unknown
   error?: {
     code?: number

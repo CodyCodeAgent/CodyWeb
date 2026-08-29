@@ -17,7 +17,7 @@ import {
   isApprovalRequestMethod,
   isCommandApprovalRequestMethod,
   isFileChangeApprovalRequestMethod,
-} from '../api/codexServerRequestMethods.js'
+} from '@codycodeagent/cody-web-core/protocol'
 import { NotificationDispatcher, type NotificationDispatchEvent } from './notificationDispatchService.js'
 import { buildSecurityAccessSnapshot } from './securityAccess.js'
 import { appendCodexSessionEvent } from './sessionEventStore.js'
