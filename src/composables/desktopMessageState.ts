@@ -1,9 +1,14 @@
 import type { TurnActivityState } from './realtimeNotificationReaders'
 import type { UiLiveOverlay, UiMessage, UiToolingRollbackFileResult } from '../types/codex'
 import {
+  areConversationMessageArraysStable,
+  areConversationMessageFieldsEqual,
+  compactConversationMessages,
   formatTurnDuration as coreFormatTurnDuration,
   mergeMessages as coreMergeMessages,
   normalizeMessageText as coreNormalizeMessageText,
+  removeDuplicateAdjacentUserMessages as coreRemoveDuplicateAdjacentUserMessages,
+  removeRedundantLiveAssistantMessages as coreRemoveRedundantLiveAssistantMessages,
   upsertLiveDelta as coreUpsertLiveDelta,
 } from '@codycodeagent/cody-web-core/conversation'
 
@@ -20,175 +25,12 @@ export type TurnErrorState = {
 
 export type LiveAssistantMessageType = 'agentMessage.live' | 'plan.live'
 
-function areStringArraysEqual(first?: string[], second?: string[]): boolean {
-  const left = Array.isArray(first) ? first : []
-  const right = Array.isArray(second) ? second : []
-  if (left.length !== right.length) return false
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) return false
-  }
-  return true
-}
-
-function areMessageSkillsEqual(first?: UiMessage['skills'], second?: UiMessage['skills']): boolean {
-  const left = Array.isArray(first) ? first : []
-  const right = Array.isArray(second) ? second : []
-  if (left.length !== right.length) return false
-  for (let index = 0; index < left.length; index += 1) {
-    if (
-      left[index]?.name !== right[index]?.name ||
-      left[index]?.path !== right[index]?.path
-    ) {
-      return false
-    }
-  }
-  return true
-}
-
-function normalizeImageIdentity(value: string): string {
-  const normalized = value.trim()
-  const prefix = '/codex-api/local-image?path='
-  if (!normalized.startsWith(prefix)) return normalized
-  try { return decodeURIComponent(normalized.slice(prefix.length)) } catch { return normalized }
-}
-
-function areMessageImagesEqual(first?: string[], second?: string[]): boolean {
-  const left = Array.isArray(first) ? first.map(normalizeImageIdentity) : []
-  const right = Array.isArray(second) ? second.map(normalizeImageIdentity) : []
-  return areStringArraysEqual(left, right)
-}
-
-function areMessageToolsEqual(first: UiMessage['tool'], second: UiMessage['tool']): boolean {
-  if (!first && !second) return true
-  if (!first || !second) return false
-  if (
-    first.kind !== second.kind ||
-    first.title !== second.title ||
-    first.status !== second.status ||
-    first.summary !== second.summary ||
-    first.output !== second.output ||
-    first.outputLabel !== second.outputLabel
-  ) {
-    return false
-  }
-  return areStringArraysEqual(first.details, second.details)
-}
-
-function areMessageOutboxStatesEqual(first: UiMessage['outbox'], second: UiMessage['outbox']): boolean {
-  if (!first && !second) return true
-  if (!first || !second) return false
-  return first.status === second.status && first.lastError === second.lastError
-}
-
-function areMessageFieldsEqual(first: UiMessage, second: UiMessage): boolean {
-  return (
-    first.id === second.id &&
-    first.turnId === second.turnId &&
-    first.role === second.role &&
-    first.text === second.text &&
-    areStringArraysEqual(first.images, second.images) &&
-    areMessageSkillsEqual(first.skills, second.skills) &&
-    areMessageOutboxStatesEqual(first.outbox, second.outbox) &&
-    areMessageToolsEqual(first.tool, second.tool) &&
-    first.messageType === second.messageType &&
-    first.rawPayload === second.rawPayload &&
-    first.isUnhandled === second.isUnhandled
-  )
-}
-
 export function areMessageArraysEqual(first: UiMessage[], second: UiMessage[]): boolean {
-  if (first.length !== second.length) return false
-  for (let index = 0; index < first.length; index += 1) {
-    if (first[index] !== second[index]) return false
-  }
-  return true
-}
-
-function isDuplicateAdjacentUserMessage(previous: UiMessage | undefined, next: UiMessage): boolean {
-  if (!previous) return false
-  return isMatchingUserMessage(previous, next)
-}
-
-function isLocalPendingUserMessage(message: UiMessage): boolean {
-  return message.role === 'user' && (
-    message.messageType === 'userMessage.optimistic' ||
-    message.messageType?.startsWith('userMessage.outbox.') === true
-  )
-}
-
-function isPersistedUserMessage(message: UiMessage): boolean {
-  return message.role === 'user' && !isLocalPendingUserMessage(message)
-}
-
-function isMatchingUserMessage(first: UiMessage, second: UiMessage): boolean {
-  if (first.role !== 'user' || second.role !== 'user') return false
-  if (normalizeMessageText(first.text) !== normalizeMessageText(second.text)) return false
-  if (!areMessageImagesEqual(first.images, second.images)) return false
-  if (!areMessageSkillsEqual(first.skills, second.skills)) return false
-  return true
-}
-
-function isMatchingTurnUserMessage(first: UiMessage, second: UiMessage): boolean {
-  return Boolean(
-    first.turnId &&
-    second.turnId &&
-    first.turnId === second.turnId &&
-    isPersistedUserMessage(first) &&
-    isPersistedUserMessage(second) &&
-    isMatchingUserMessage(first, second),
-  )
-}
-
-function turnUserIdentity(message: UiMessage): string {
-  if (!message.turnId || !isPersistedUserMessage(message)) return ''
-  const images = (message.images ?? []).map(normalizeImageIdentity).join('\u0001')
-  const skills = (message.skills ?? []).map((skill) => `${skill.name}\u0002${skill.path}`).join('\u0001')
-  return `${message.turnId}\u0000${normalizeMessageText(message.text)}\u0000${images}\u0000${skills}`
-}
-
-function insertIncomingRowsAtProtocolPosition(base: UiMessage[], rows: UiMessage[], incoming: UiMessage[]): UiMessage[] {
-  if (rows.length === 0) return base
-  const result = [...base]
-  const incomingIndex = new Map(incoming.map((message, index) => [message.id, index]))
-  for (const row of rows) {
-    const position = incomingIndex.get(row.id) ?? incoming.length
-    let insertionIndex = -1
-    for (let index = position - 1; index >= 0; index -= 1) {
-      const anchor = result.findIndex((message) => message.id === incoming[index]?.id)
-      if (anchor >= 0) { insertionIndex = anchor + 1; break }
-    }
-    if (insertionIndex < 0) {
-      for (let index = position + 1; index < incoming.length; index += 1) {
-        const anchor = result.findIndex((message) => message.id === incoming[index]?.id)
-        if (anchor >= 0) { insertionIndex = anchor; break }
-      }
-    }
-    if (insertionIndex < 0 && row.turnId) {
-      const receipt = result.findIndex((message) => message.turnId === row.turnId && message.messageType === WORKED_MESSAGE_TYPE)
-      if (receipt >= 0) insertionIndex = receipt
-    }
-    result.splice(insertionIndex < 0 ? result.length : insertionIndex, 0, row)
-  }
-  return result
+  return areConversationMessageArraysStable(first, second)
 }
 
 export function removeDuplicateAdjacentUserMessages(messages: UiMessage[]): UiMessage[] {
-  const next: UiMessage[] = []
-  let changed = false
-
-  for (const message of messages) {
-    const previous = next.at(-1)
-    if (isDuplicateAdjacentUserMessage(previous, message)) {
-      changed = true
-      if (previous && isLocalPendingUserMessage(previous) && !isLocalPendingUserMessage(message)) {
-        next.splice(next.length - 1, 1, message)
-      }
-      continue
-    }
-    next.push(message)
-  }
-
-  return changed ? next : messages
+  return coreRemoveDuplicateAdjacentUserMessages(messages)
 }
 
 export function removeMessageById(messages: UiMessage[], messageId: string): UiMessage[] {
@@ -261,35 +103,6 @@ export function finalizeLiveMessagesForTurn(
   }
 }
 
-function replaceOptimisticUserMessages(
-  previous: UiMessage[],
-  incoming: UiMessage[],
-): {
-  messages: UiMessage[]
-  consumedIncomingIds: Set<string>
-} {
-  const consumedIncomingIds = new Set<string>()
-  let changed = false
-  const messages = previous.map((previousMessage) => {
-    if (!isLocalPendingUserMessage(previousMessage)) return previousMessage
-
-    const replacement = incoming.find((incomingMessage) => {
-      if (consumedIncomingIds.has(incomingMessage.id)) return false
-      return isPersistedUserMessage(incomingMessage) && isMatchingUserMessage(previousMessage, incomingMessage)
-    })
-    if (!replacement) return previousMessage
-
-    changed = true
-    consumedIncomingIds.add(replacement.id)
-    return replacement
-  })
-
-  return {
-    messages: changed ? messages : previous,
-    consumedIncomingIds,
-  }
-}
-
 function omitRecordKey<TValue>(record: Record<string, TValue>, key: string): Record<string, TValue> {
   if (!(key in record)) return record
   const next = { ...record }
@@ -302,89 +115,7 @@ export function mergeMessages(
   incoming: UiMessage[],
   options: { preserveMissing?: boolean } = {},
 ): UiMessage[] {
-  const previousById = new Map(previous.map((message) => [message.id, message]))
-  const dedupedIncoming = removeDuplicateMessageIds(incoming)
-  const incomingById = new Map(dedupedIncoming.map((message) => [message.id, message]))
-
-  const mergedIncoming = dedupedIncoming.map((incomingMessage) => {
-    const previousMessage = previousById.get(incomingMessage.id)
-    if (previousMessage && areMessageFieldsEqual(previousMessage, incomingMessage)) {
-      return previousMessage
-    }
-    return incomingMessage
-  })
-
-  if (options.preserveMissing !== true) {
-    const compacted = removeDuplicateAdjacentUserMessages(coreMergeMessages([], mergedIncoming))
-    return areMessageArraysEqual(previous, compacted) ? previous : compacted
-  }
-
-  const optimisticReplacements = replaceOptimisticUserMessages(previous, mergedIncoming)
-
-  // Codex history and realtime notifications both expose a parent turnId. An
-  // item can occasionally be replayed with a different/transient item id; in
-  // that case replace the row in its original turn instead of appending the
-  // historical message at the bottom of the conversation.
-  const consumedTurnLinkedIncomingIds = new Set<string>()
-  const turnLinkedIncoming = new Map<string, UiMessage[]>()
-  for (const incomingMessage of mergedIncoming) {
-    const key = turnUserIdentity(incomingMessage)
-    if (!key) continue
-    const matches = turnLinkedIncoming.get(key)
-    if (matches) matches.push(incomingMessage)
-    else turnLinkedIncoming.set(key, [incomingMessage])
-  }
-
-  const mergedFromPrevious = optimisticReplacements.messages.map((previousMessage) => {
-    const nextMessage = incomingById.get(previousMessage.id)
-    if (nextMessage) {
-      if (areMessageFieldsEqual(previousMessage, nextMessage)) {
-        return previousMessage
-      }
-      return nextMessage
-    }
-
-    const key = turnUserIdentity(previousMessage)
-    const turnLinkedReplacement = (key ? turnLinkedIncoming.get(key) : undefined)
-      ?.find((incomingMessage) => !consumedTurnLinkedIncomingIds.has(incomingMessage.id) && isMatchingTurnUserMessage(previousMessage, incomingMessage))
-    if (turnLinkedReplacement) {
-      consumedTurnLinkedIncomingIds.add(turnLinkedReplacement.id)
-      return turnLinkedReplacement
-    }
-    return previousMessage
-  })
-
-  const previousIdSet = new Set(optimisticReplacements.messages.map((message) => message.id))
-  let lastTurnBoundaryIndex = -1
-  for (let index = optimisticReplacements.messages.length - 1; index >= 0; index -= 1) {
-    if (optimisticReplacements.messages[index]?.messageType === WORKED_MESSAGE_TYPE) {
-      lastTurnBoundaryIndex = index
-      break
-    }
-  }
-  const currentTurnUsers = optimisticReplacements.messages
-    .slice(lastTurnBoundaryIndex + 1)
-    .filter(isPersistedUserMessage)
-  const appended = mergedIncoming.filter((message) => {
-    if (
-      previousIdSet.has(message.id) ||
-      optimisticReplacements.consumedIncomingIds.has(message.id) ||
-      consumedTurnLinkedIncomingIds.has(message.id)
-    ) return false
-    // Silent history refreshes and item/completed notifications can deliver
-    // the same user item with different transient ids. Do not append it below
-    // an already-streaming assistant response. A Worked receipt is the turn
-    // boundary, so intentionally repeating the same prompt on a later turn is
-    // still preserved.
-    if (isPersistedUserMessage(message) && currentTurnUsers.some((existing) => isMatchingUserMessage(existing, message))) {
-      return false
-    }
-    return true
-  })
-  const ordered = insertIncomingRowsAtProtocolPosition(mergedFromPrevious, appended, mergedIncoming)
-  const merged = removeDuplicateAdjacentUserMessages(removeDuplicateMessageIds(ordered))
-
-  return areMessageArraysEqual(previous, merged) ? previous : merged
+  return coreMergeMessages(previous, incoming, options)
 }
 
 export function normalizeMessageText(value: string): string {
@@ -392,89 +123,7 @@ export function normalizeMessageText(value: string): string {
 }
 
 export function removeRedundantLiveAgentMessages(previous: UiMessage[], incoming: UiMessage[]): UiMessage[] {
-  const incomingAssistantIds = new Set(
-    incoming
-      .filter((message) => message.role === 'assistant' && message.id.trim().length > 0)
-      .map((message) => message.id),
-  )
-  const incomingAssistantTexts = new Set(
-    incoming
-      .filter((message) => message.role === 'assistant')
-      .map((message) => normalizeMessageText(message.text))
-      .filter((text) => text.length > 0),
-  )
-
-  if (incomingAssistantIds.size === 0 && incomingAssistantTexts.size === 0) {
-    return previous
-  }
-
-  const next = previous.filter((message) => {
-    if (message.messageType !== 'agentMessage.live' && message.messageType !== 'plan.live') return true
-    if (incomingAssistantIds.has(message.id)) return false
-    const normalized = normalizeMessageText(message.text)
-    if (normalized.length === 0) return false
-    return !incomingAssistantTexts.has(normalized)
-  })
-
-  return next.length === previous.length ? previous : next
-}
-
-function removeDuplicateMessageIds(messages: UiMessage[]): UiMessage[] {
-  const seenIds = new Set<string>()
-  const next: UiMessage[] = []
-  let changed = false
-
-  for (const message of messages) {
-    if (message.id.trim().length > 0 && seenIds.has(message.id)) {
-      changed = true
-      continue
-    }
-    if (message.id.trim().length > 0) {
-      seenIds.add(message.id)
-    }
-    next.push(message)
-  }
-
-  return changed ? next : messages
-}
-
-function removeSupersededOptimisticUserMessages(messages: UiMessage[]): UiMessage[] {
-  const persistedUsers = messages.filter(isPersistedUserMessage)
-  if (persistedUsers.length === 0) return messages
-
-  const consumedPersistedIds = new Set<string>()
-  const next: UiMessage[] = []
-  let changed = false
-
-  for (const message of messages) {
-    if (consumedPersistedIds.has(message.id)) {
-      changed = true
-      continue
-    }
-
-    if (!isLocalPendingUserMessage(message)) {
-      next.push(message)
-      continue
-    }
-
-    const replacement = persistedUsers.find((persisted) => {
-      if (consumedPersistedIds.has(persisted.id)) return false
-      return isMatchingUserMessage(message, persisted)
-    })
-    if (!replacement) {
-      next.push(message)
-      continue
-    }
-
-    changed = true
-    const alreadyDisplayed = next.some((displayed) => isPersistedUserMessage(displayed) && isMatchingUserMessage(displayed, replacement))
-    if (!alreadyDisplayed) {
-      next.push(replacement)
-    }
-    consumedPersistedIds.add(replacement.id)
-  }
-
-  return changed ? next : messages
+  return coreRemoveRedundantLiveAssistantMessages(previous, incoming)
 }
 
 export function upsertMessage(previous: UiMessage[], nextMessage: UiMessage): UiMessage[] {
@@ -484,7 +133,7 @@ export function upsertMessage(previous: UiMessage[], nextMessage: UiMessage): Ui
   }
 
   const existing = previous[existingIndex]
-  if (areMessageFieldsEqual(existing, nextMessage)) {
+  if (areConversationMessageFieldsEqual(existing, nextMessage)) {
     return previous
   }
 
@@ -615,9 +264,7 @@ export function buildDisplayedMessages(
   const combined = persistedMessages === liveAgentMessages
     ? persistedMessages
     : [...persistedMessages, ...liveAgentMessages]
-  const compacted = removeSupersededOptimisticUserMessages(
-    removeDuplicateAdjacentUserMessages(removeDuplicateMessageIds(combined)),
-  )
+  const compacted = compactConversationMessages(combined)
 
   return turnSummary ? insertTurnSummaryMessage(compacted, turnSummary) : compacted
 }
