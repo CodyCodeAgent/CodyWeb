@@ -1,6 +1,6 @@
 import type { ApprovalDecisionScope } from '@codycodeagent/cody-web-core/presentation'
 import type { ComposerContextAttachment, ComposerSkill } from '@codycodeagent/cody-web-core/composer'
-import type { ConversationTool } from '@codycodeagent/cody-web-core/conversation'
+import type { ConversationMessage, ConversationTool } from '@codycodeagent/cody-web-core/conversation'
 
 export type RpcEnvelope<T> = {
   result: T
@@ -83,22 +83,8 @@ export type UiThreadContextUsage = {
   compactionState: 'idle' | 'compacting' | 'compacted'
 }
 
-export type UiMessage = {
-  id: string
-  /** Parent Codex turn. Used to reconcile realtime items with history safely. */
-  turnId?: string
-  role: 'user' | 'assistant' | 'system'
-  text: string
-  images?: string[]
-  skills?: ComposerSkill[]
-  outbox?: {
-    status: 'queued' | 'sending' | 'failed'
-    lastError?: string
-  }
-  tool?: UiToolTimelineEntry
-  messageType?: string
-  rawPayload?: string
-  isUnhandled?: boolean
+export type UiMessage = Omit<ConversationMessage, 'skills'> & {
+  skills?: Array<{ name: string; path: string; displayName?: string; description?: string }>
 }
 
 export type UiQueuedMessage = {

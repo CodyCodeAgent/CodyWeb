@@ -1238,6 +1238,10 @@ onBeforeUnmount(() => {
 })
 function turnReceiptPayload(message: UiMessage): Record<string, unknown> | null {
   if (!message.rawPayload) return null
+  if (typeof message.rawPayload === 'object' && !Array.isArray(message.rawPayload)) {
+    return message.rawPayload as Record<string, unknown>
+  }
+  if (typeof message.rawPayload !== 'string') return null
   try {
     const value = JSON.parse(message.rawPayload) as unknown
     return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null

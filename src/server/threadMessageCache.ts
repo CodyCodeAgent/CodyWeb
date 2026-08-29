@@ -1,6 +1,12 @@
 import type { ThreadReadResponse } from '../api/appServerDtos.js'
-import { normalizeThreadMessagesV2 } from '../api/normalizers/v2.js'
+import { toLocalImagePreviewUrl } from '../api/normalizers/userMessageContent.js'
 import type { UiMessage, UiThreadMessagePage } from '../types/codex.js'
+import { normalizeThreadHistory } from '@codycodeagent/cody-web-core/session'
+import {
+  conversationTranscriptFromState,
+  createConversationState,
+  reduceConversationEvents,
+} from '@codycodeagent/cody-web-core/conversation'
 
 export type ThreadMessageCacheStatus = 'loading' | 'ready' | 'refreshing' | 'failed'
 
@@ -31,6 +37,27 @@ const DEFAULT_REFRESH_INTERVAL_MS = 10 * 60_000
 
 function asThreadReadResponse(value: unknown): ThreadReadResponse {
   return value as ThreadReadResponse
+}
+
+function normalizeThreadMessages(payload: ThreadReadResponse): UiMessage[] {
+  const threadId = payload.thread.id
+  const state = reduceConversationEvents(
+    createConversationState(threadId),
+    normalizeThreadHistory(payload, threadId),
+  )
+  return conversationTranscriptFromState(state).map((message): UiMessage => ({
+    ...message,
+    ...(message.images?.length ? {
+      images: message.images.map((image) => image.startsWith('/') ? toLocalImagePreviewUrl(image) : image),
+    } : {}),
+    ...(message.skills?.length ? {
+      skills: message.skills.map((skill) => ({
+        ...skill,
+        displayName: skill.displayName ?? skill.name,
+        description: '',
+      })),
+    } : {}),
+  }))
 }
 
 function normalizeLimit(value: number): number {
@@ -210,7 +237,7 @@ export class ThreadMessageCache {
         includeTurns: true,
       }))
       const nowIso = this.now().toISOString()
-      const messages = normalizeThreadMessagesV2(payload)
+      const messages = normalizeThreadMessages(payload)
       entry.messages = messages
       entry.total = messages.length
       entry.status = 'ready'

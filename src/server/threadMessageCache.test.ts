@@ -42,6 +42,31 @@ function deferred<T>() {
 }
 
 describe('ThreadMessageCache', () => {
+  it('renders native history through the shared Core transcript', async () => {
+    const payload = threadReadResponse('thread-1', 1) as unknown as ThreadReadResponse
+    payload.thread.turns = [{
+      id: 'turn-1',
+      status: 'completed',
+      error: null,
+      items: [{
+        type: 'commandExecution', id: 'cmd-1', command: 'npm test', cwd: '/repo',
+        processId: 'pty-1', status: 'completed', commandActions: [], aggregatedOutput: '2 passed',
+        exitCode: 0, durationMs: 1_200,
+      }, { type: 'agentMessage', id: 'answer-1', text: 'Done.' }],
+    }]
+    const cache = new ThreadMessageCache({ rpc: vi.fn(async () => payload) })
+
+    const page = await cache.getMessagesPage({ threadId: 'thread-1', limit: 10 })
+
+    expect(page.messages).toEqual([
+      expect.objectContaining({
+        id: 'tool:cmd-1', messageType: 'tool.command',
+        tool: expect.objectContaining({ summary: 'npm test', output: '2 passed', status: 'completed' }),
+      }),
+      expect.objectContaining({ id: 'agent:answer-1', role: 'assistant', text: 'Done.' }),
+    ])
+  })
+
   it('hydrates once on cache miss and pages newest messages by offset', async () => {
     const rpc = vi.fn(async () => threadReadResponse('thread-1', 25))
     const cache = new ThreadMessageCache({ rpc })
@@ -52,15 +77,15 @@ describe('ThreadMessageCache', () => {
     expect(rpc).toHaveBeenCalledTimes(1)
     expect(rpc).toHaveBeenCalledWith('thread/read', { threadId: 'thread-1', includeTurns: true })
     expect(firstPage.messages.map((message) => message.id)).toEqual([
-      'message-16', 'message-17', 'message-18', 'message-19', 'message-20',
-      'message-21', 'message-22', 'message-23', 'message-24', 'message-25',
+      'agent:message-16', 'agent:message-17', 'agent:message-18', 'agent:message-19', 'agent:message-20',
+      'agent:message-21', 'agent:message-22', 'agent:message-23', 'agent:message-24', 'agent:message-25',
     ])
     expect(firstPage.total).toBe(25)
     expect(firstPage.nextOffset).toBe(10)
     expect(firstPage.hasMoreBefore).toBe(true)
     expect(secondPage.messages.map((message) => message.id)).toEqual([
-      'message-6', 'message-7', 'message-8', 'message-9', 'message-10',
-      'message-11', 'message-12', 'message-13', 'message-14', 'message-15',
+      'agent:message-6', 'agent:message-7', 'agent:message-8', 'agent:message-9', 'agent:message-10',
+      'agent:message-11', 'agent:message-12', 'agent:message-13', 'agent:message-14', 'agent:message-15',
     ])
     expect(secondPage.nextOffset).toBe(20)
     expect(secondPage.hasMoreBefore).toBe(true)
@@ -72,7 +97,7 @@ describe('ThreadMessageCache', () => {
     const cache = new ThreadMessageCache({ rpc })
 
     const latestPage = await cache.getMessagesPage({ threadId: 'thread-1', limit: 10 })
-    expect(latestPage.nextBeforeMessageId).toBe('message-16')
+    expect(latestPage.nextBeforeMessageId).toBe('agent:message-16')
 
     messageCount = 27
     cache.markDirty('thread-1')
@@ -84,11 +109,11 @@ describe('ThreadMessageCache', () => {
     })
 
     expect(earlierPage.messages.map((message) => message.id)).toEqual([
-      'message-6', 'message-7', 'message-8', 'message-9', 'message-10',
-      'message-11', 'message-12', 'message-13', 'message-14', 'message-15',
+      'agent:message-6', 'agent:message-7', 'agent:message-8', 'agent:message-9', 'agent:message-10',
+      'agent:message-11', 'agent:message-12', 'agent:message-13', 'agent:message-14', 'agent:message-15',
     ])
     expect(earlierPage.remainingBefore).toBe(5)
-    expect(earlierPage.nextBeforeMessageId).toBe('message-6')
+    expect(earlierPage.nextBeforeMessageId).toBe('agent:message-6')
   })
 
   it('shares one hydration promise for concurrent requests to the same thread', async () => {
@@ -153,7 +178,7 @@ describe('ThreadMessageCache', () => {
       includeTurns: true,
     })
     expect(page.total).toBe(11)
-    expect(page.messages.at(-1)?.id).toBe('message-11')
+    expect(page.messages.at(-1)?.id).toBe('agent:message-11')
   })
 
   it('refreshes a cached dirty thread on the next request', async () => {
