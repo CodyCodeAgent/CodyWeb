@@ -1,12 +1,12 @@
 import { CodexApiError } from './codexErrors'
 import { asRecord, fetchCodexResultRecord, jsonPostInit } from './codexHttpClient'
 import type { PromptTemplate } from '../composables/promptLibraryRules'
-import type { UiComposerSkill } from '../types/codex'
+import type { ComposerSkill } from '@codycodeagent/cody-web-core/composer'
 
 const PROMPT_MUTATION_TIMEOUT_MS = 12_000
 
 export type ScenarioPackageDraft = Pick<PromptTemplate, 'title' | 'description' | 'category' | 'content'> & {
-  primarySkill: UiComposerSkill | null
+  primarySkill: ComposerSkill | null
   reason: string
 }
 

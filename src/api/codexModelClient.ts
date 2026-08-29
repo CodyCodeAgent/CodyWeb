@@ -2,15 +2,18 @@ import type {
   CollaborationModeListResponse,
   ConfigReadResponse,
   ModelListResponse,
-  ReasoningEffort,
 } from './appServerDtos'
+import {
+  isKnownReasoningEffort,
+  type ComposerCollaborationModeOption,
+  type KnownReasoningEffort,
+} from '@codycodeagent/cody-web-core/composer'
 import { normalizeCodexApiError } from './codexErrors'
 import { rpcCall } from './codexRpcClient'
-import type { UiCollaborationModeOption } from '../types/codex'
 
 export type CurrentModelConfig = {
   model: string
-  reasoningEffort: ReasoningEffort | ''
+  reasoningEffort: KnownReasoningEffort | ''
   modelContextWindow: number | null
   autoCompactTokenLimit: number | null
 }
@@ -32,11 +35,8 @@ async function callRpc<T>(method: string, params?: unknown): Promise<T> {
   }
 }
 
-export function normalizeReasoningEffort(value: unknown): ReasoningEffort | '' {
-  const allowed: ReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
-  return typeof value === 'string' && allowed.includes(value as ReasoningEffort)
-    ? (value as ReasoningEffort)
-    : ''
+export function normalizeReasoningEffort(value: unknown): KnownReasoningEffort | '' {
+  return typeof value === 'string' && isKnownReasoningEffort(value) ? value : ''
 }
 
 export function normalizeTokenLimit(value: unknown): number | null {
@@ -51,7 +51,7 @@ export function normalizeTokenLimit(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null
 }
 
-function normalizeCollaborationModeLabel(name: string, mode: UiCollaborationModeOption['mode']): string {
+function normalizeCollaborationModeLabel(name: string, mode: ComposerCollaborationModeOption['mode']): string {
   const normalizedName = name.trim()
   if (normalizedName.length > 0) {
     return normalizedName
@@ -63,7 +63,7 @@ function normalizeCollaborationModeLabel(name: string, mode: UiCollaborationMode
 
 export function normalizeCollaborationModeOption(
   row: CollaborationModeRow,
-): UiCollaborationModeOption | null {
+): ComposerCollaborationModeOption | null {
   const mode = row.mode === 'plan' || row.mode === 'default' ? row.mode : null
   if (!mode) return null
   const name = row.name.trim() || mode
@@ -79,9 +79,9 @@ export function normalizeCollaborationModeOption(
   }
 }
 
-export async function getCollaborationModes(): Promise<UiCollaborationModeOption[]> {
+export async function getCollaborationModes(): Promise<ComposerCollaborationModeOption[]> {
   const payload = await callRpc<CollaborationModeListResponse>('collaborationMode/list', {})
-  const options: UiCollaborationModeOption[] = []
+  const options: ComposerCollaborationModeOption[] = []
   const seen = new Set<string>()
 
   for (const row of payload.data) {

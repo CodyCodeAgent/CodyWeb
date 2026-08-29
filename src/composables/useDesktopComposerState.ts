@@ -1,10 +1,4 @@
 import { computed, ref } from 'vue'
-import { getAvailableModelIds, getCollaborationModes, getCurrentModelConfig } from '../api/codexModelClient'
-import { fetchUserSetting, writeUserSetting } from '../api/codexSettingsClient'
-import type { ReasoningEffort, UiCollaborationModeOption, UiComposerPermissionMode, UiComposerSubmitMode } from '../types/codex'
-import { DESKTOP_SETTING_KEYS } from './desktopSettingsKeys'
-import { loadDesktopTurnPreferences, normalizeDesktopTurnPreferences, saveDesktopTurnPreferences } from './desktopStateStorage'
-import { normalizeComposerPermissionMode } from './desktopTurnPermissions'
 import {
   DEFAULT_COLLABORATION_MODE,
   FALLBACK_PLAN_COLLABORATION_MODE,
@@ -15,19 +9,28 @@ import {
   selectCollaborationModeName,
   selectModelId,
   selectReasoningEffortFromPreference,
+  type ComposerCollaborationModeOption,
+  type ComposerSubmitMode,
   type CurrentModelPreference,
-} from './desktopTurnPreferences'
+  type KnownReasoningEffort,
+} from '@codycodeagent/cody-web-core/composer'
+import { getAvailableModelIds, getCollaborationModes, getCurrentModelConfig } from '../api/codexModelClient'
+import { fetchUserSetting, writeUserSetting } from '../api/codexSettingsClient'
+import type { UiComposerPermissionMode } from '../types/codex'
+import { DESKTOP_SETTING_KEYS } from './desktopSettingsKeys'
+import { loadDesktopTurnPreferences, normalizeDesktopTurnPreferences, saveDesktopTurnPreferences } from './desktopStateStorage'
+import { normalizeComposerPermissionMode } from './desktopTurnPermissions'
 
 export function useDesktopComposerState() {
   const initial = loadDesktopTurnPreferences()
   const availableModelIds = ref<string[]>([])
   const selectedModelId = ref(initial.modelId)
-  const selectedReasoningEffort = ref<ReasoningEffort | ''>(initial.reasoningEffort)
+  const selectedReasoningEffort = ref<KnownReasoningEffort | ''>(initial.reasoningEffort)
   const selectedPermissionMode = ref<UiComposerPermissionMode>(initial.permissionMode)
-  const selectedSubmitMode = ref<UiComposerSubmitMode>(initial.submitMode)
+  const selectedSubmitMode = ref<ComposerSubmitMode>(initial.submitMode)
   const modelContextWindow = ref<number | null>(null)
   const autoCompactTokenLimit = ref<number | null>(null)
-  const collaborationModeOptions = ref<UiCollaborationModeOption[]>([DEFAULT_COLLABORATION_MODE, FALLBACK_PLAN_COLLABORATION_MODE])
+  const collaborationModeOptions = ref<ComposerCollaborationModeOption[]>([DEFAULT_COLLABORATION_MODE, FALLBACK_PLAN_COLLABORATION_MODE])
   const selectedCollaborationModeName = ref(initial.collaborationModeName)
   const selectedCollaborationMode = computed(() => collaborationModeOptions.value.find((option) => option.name === selectedCollaborationModeName.value) ?? DEFAULT_COLLABORATION_MODE)
   let hydrated = false
@@ -52,12 +55,12 @@ export function useDesktopComposerState() {
     void writeUserSetting(DESKTOP_SETTING_KEYS.turnPreferences, preferences).catch(() => undefined)
   }
   function setSelectedModelId(value: string): void { selectedModelId.value = value.trim(); persist() }
-  function setSelectedReasoningEffort(value: ReasoningEffort | ''): void { const normalized = normalizeSelectedReasoningEffort(value); if (normalized !== null) { selectedReasoningEffort.value = normalized; persist() } }
+  function setSelectedReasoningEffort(value: KnownReasoningEffort | ''): void { const normalized = normalizeSelectedReasoningEffort(value); if (normalized !== null) { selectedReasoningEffort.value = normalized; persist() } }
   function setSelectedCollaborationModeName(value: string): void { const normalized = selectCollaborationModeName(value, collaborationModeOptions.value); if (normalized) { selectedCollaborationModeName.value = normalized; persist() } }
   function setSelectedPermissionMode(value: UiComposerPermissionMode): void { selectedPermissionMode.value = normalizeComposerPermissionMode(value); persist() }
-  function setSelectedSubmitMode(value: UiComposerSubmitMode): void { selectedSubmitMode.value = value === 'guide' ? 'guide' : 'queue'; persist() }
+  function setSelectedSubmitMode(value: ComposerSubmitMode): void { selectedSubmitMode.value = value === 'steer' ? 'steer' : 'queue'; persist() }
   async function refreshCollaborationModes(): Promise<void> {
-    let remote: UiCollaborationModeOption[] = []; try { remote = await getCollaborationModes() } catch { remote = [] }
+    let remote: ComposerCollaborationModeOption[] = []; try { remote = await getCollaborationModes() } catch { remote = [] }
     collaborationModeOptions.value = mergeCollaborationModeOptions(remote)
     selectedCollaborationModeName.value = reconcileSelectedCollaborationModeName(selectedCollaborationModeName.value, collaborationModeOptions.value); persist()
   }

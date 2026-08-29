@@ -5,7 +5,7 @@ import type {
 import { uploadLocalImage, type UploadedLocalImage } from './codexBridgeClient'
 import { normalizeCodexApiError } from './codexErrors'
 import { rpcCall } from './codexRpcClient'
-import type { UiComposerSkill } from '../types/codex'
+import type { ComposerSkill } from '@codycodeagent/cody-web-core/composer'
 
 export type SkillCatalogEntry = SkillsListResponse['data'][number]
 
@@ -17,7 +17,7 @@ async function callRpc<T>(method: string, params?: unknown): Promise<T> {
   }
 }
 
-export function toComposerSkill(skill: SkillMetadata): UiComposerSkill | null {
+export function toComposerSkill(skill: SkillMetadata): ComposerSkill | null {
   const name = skill.name.trim()
   const path = skill.path.trim()
   if (!name || !path || skill.enabled !== true) return null
@@ -36,7 +36,7 @@ export function toComposerSkill(skill: SkillMetadata): UiComposerSkill | null {
   }
 }
 
-export async function getAvailableSkills(cwd?: string): Promise<UiComposerSkill[]> {
+export async function getAvailableSkills(cwd?: string): Promise<ComposerSkill[]> {
   try {
     const params: Record<string, unknown> = {}
     const normalizedCwd = cwd?.trim() ?? ''
@@ -45,7 +45,7 @@ export async function getAvailableSkills(cwd?: string): Promise<UiComposerSkill[
     }
 
     const payload = await callRpc<SkillsListResponse>('skills/list', params)
-    const byKey = new Map<string, UiComposerSkill>()
+    const byKey = new Map<string, ComposerSkill>()
     for (const entry of payload.data) {
       for (const skill of entry.skills) {
         const normalized = toComposerSkill(skill)

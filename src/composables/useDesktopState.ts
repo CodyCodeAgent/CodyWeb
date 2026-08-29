@@ -1,5 +1,11 @@
 import { computed, ref } from 'vue'
 import {
+  buildTurnCollaborationMode,
+  resolveComposerSubmitMode,
+  type ComposerCollaborationModeOption,
+  type ComposerSubmission,
+} from '@codycodeagent/cody-web-core/composer'
+import {
   compactThread,
   forkThread,
   getThreadMessagesPage,
@@ -90,9 +96,6 @@ import {
   setThreadLoadedVersion,
   shouldShowMessagesLoading,
 } from './desktopThreadScopedState'
-import {
-  buildTurnCollaborationMode,
-} from './desktopTurnPreferences'
 import { buildTurnPermissionOverride } from './desktopTurnPermissions'
 import {
   buildCompletedTurnSummary,
@@ -132,9 +135,8 @@ import {
   upsertThreadInGroups,
 } from './threadGroupState'
 import type {
-  UiCollaborationModeOption,
-  UiComposerSubmitPayload,
   ThreadScrollState,
+  UiComposerContextKind,
   UiMessage,
   UiQueuedMessage,
   UiServerRequestReply,
@@ -595,8 +597,8 @@ export function useDesktopState() {
     threadId: string,
     turnInput: {
       text: string
-      images: UiComposerSubmitPayload['images']
-      skills: UiComposerSubmitPayload['skills']
+      images: ComposerSubmission<UiComposerContextKind>['images']
+      skills: ComposerSubmission<UiComposerContextKind>['skills']
     },
   ): string {
     if (!threadId) return ''
@@ -665,7 +667,7 @@ export function useDesktopState() {
 
   function beginPendingTurnForThread(
     threadId: string,
-    mode: UiCollaborationModeOption = selectedCollaborationMode.value,
+    mode: ComposerCollaborationModeOption = selectedCollaborationMode.value,
   ): void {
     shouldAutoScrollOnNextAgentEvent = true
     setTurnSummaryForThread(threadId, null)
@@ -1372,7 +1374,7 @@ export function useDesktopState() {
 
   async function enqueueMessageForThread(
     threadId: string,
-    payload: UiComposerSubmitPayload,
+    payload: ComposerSubmission<UiComposerContextKind>,
   ): Promise<LocalMessageOutboxItem | null> {
     const turnInput = normalizeComposerTurnInput(payload)
     if (!threadId || !turnInput.hasContent) return null
@@ -1450,14 +1452,14 @@ export function useDesktopState() {
   }
 
   async function sendMessageToSelectedThread(
-    payload: UiComposerSubmitPayload,
+    payload: ComposerSubmission<UiComposerContextKind>,
     options: { onAccepted?: () => void } = {},
   ): Promise<void> {
     const threadId = selectedThreadId.value
     const turnInput = normalizeComposerTurnInput(payload)
     if (!threadId || !turnInput.hasContent) return
 
-    if (selectedSubmitMode.value === 'guide' && inProgressById.value[threadId] === true) {
+    if (resolveComposerSubmitMode(inProgressById.value[threadId] === true, selectedSubmitMode.value) === 'steer') {
       await steerActiveTurn(threadId, turnInput.text, turnInput.images, turnInput.skills)
       options.onAccepted?.()
       return
@@ -1519,8 +1521,8 @@ export function useDesktopState() {
   async function steerActiveTurn(
     threadId: string,
     nextText: string,
-    nextImages: UiComposerSubmitPayload['images'],
-    nextSkills: UiComposerSubmitPayload['skills'],
+    nextImages: ComposerSubmission<UiComposerContextKind>['images'],
+    nextSkills: ComposerSubmission<UiComposerContextKind>['skills'],
   ): Promise<void> {
     const turnId = activeTurnIdByThreadId.value[threadId]
     if (!turnId) {
@@ -1556,7 +1558,7 @@ export function useDesktopState() {
     }
   }
 
-  async function sendMessageToNewThread(payload: UiComposerSubmitPayload, cwd: string): Promise<string> {
+  async function sendMessageToNewThread(payload: ComposerSubmission<UiComposerContextKind>, cwd: string): Promise<string> {
     const turnInput = normalizeNewThreadTurnInput(payload, cwd)
     const selectedModel = selectedModelId.value.trim()
     if (!turnInput.hasContent) return ''
@@ -1618,8 +1620,8 @@ export function useDesktopState() {
   async function startTurnForThread(
     threadId: string,
     nextText: string,
-    nextImages: UiComposerSubmitPayload['images'],
-    nextSkills: UiComposerSubmitPayload['skills'],
+    nextImages: ComposerSubmission<UiComposerContextKind>['images'],
+    nextSkills: ComposerSubmission<UiComposerContextKind>['skills'],
   ): Promise<string> {
     const modelId = selectedModelId.value.trim()
     const reasoningEffort = selectedReasoningEffort.value

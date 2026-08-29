@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
-  findContextTrigger,
-  getContextOptionsForQuery,
+  findComposerTrigger,
   materializeComposerContextText,
+} from '@codycodeagent/cody-web-core/composer'
+import {
+  getContextOptionsForQuery,
   summarizeDiffContext,
   summarizeFileContext,
   summarizeFolderContext,
@@ -14,7 +16,6 @@ import {
   summarizeWorkspaceRulesContext,
 } from './useComposerContext'
 import type {
-  UiComposerContextAttachment,
   UiPortsSnapshot,
   UiProjectGroup,
   UiTerminalSessionList,
@@ -24,17 +25,18 @@ import type {
   UiWorkspaceScriptRun,
   UiWorkspaceSnapshot,
   UiWorkspaceValidationRunHistory,
+  WorkspaceComposerContext,
 } from '../types/codex'
 
 describe('useComposerContext helpers', () => {
   it('detects an @ context trigger before the cursor', () => {
-    expect(findContextTrigger('please inspect @di', 'please inspect @di'.length)).toEqual({
+    expect(findComposerTrigger('please inspect @di', 'please inspect @di'.length, '@')).toEqual({
       query: 'di',
       start: 'please inspect '.length,
       end: 'please inspect @di'.length,
     })
-    expect(findContextTrigger('email@example.com', 'email@example.com'.length)).toBeNull()
-    expect(findContextTrigger('no trigger here', 'no trigger here'.length)).toBeNull()
+    expect(findComposerTrigger('email@example.com', 'email@example.com'.length, '@')).toBeNull()
+    expect(findComposerTrigger('no trigger here', 'no trigger here'.length, '@')).toBeNull()
   })
 
   it('builds file context options from @file:path queries', () => {
@@ -425,7 +427,7 @@ describe('useComposerContext helpers', () => {
   })
 
   it('materializes selected contexts after the user draft', () => {
-    const context: UiComposerContextAttachment = {
+    const context: WorkspaceComposerContext = {
       id: 'diff:1',
       kind: 'diff',
       label: '@diff',

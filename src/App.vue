@@ -402,15 +402,18 @@ import { fetchUserSetting, writeUserSetting } from './api/codexSettingsClient'
 import { getSkillCatalog } from './api/codexComposerClient'
 import { useTheme } from './theme/useTheme'
 import type {
-  ReasoningEffort,
+  ComposerSubmission,
+  ComposerSubmitMode,
+  KnownReasoningEffort,
+} from '@codycodeagent/cody-web-core/composer'
+import type {
   ThreadScrollState,
+  UiComposerContextKind,
   UiComposerPermissionMode,
-  UiComposerContextAttachment,
   UiComposerSubmitAck,
-  UiComposerSubmitMode,
-  UiComposerSubmitPayload,
   UiServerRequestReply,
   UiToolingRollbackFileResult,
+  WorkspaceComposerContext,
 } from './types/codex'
 import type { PromptInsertion } from './composables/promptLibraryRules'
 
@@ -509,7 +512,7 @@ const isConversationShareOpen = ref(false)
 const isConversationShareSelecting = ref(false)
 const conversationShareSelectedMessageIds = ref<string[]>([])
 const promptInsertion = ref<PromptInsertion | null>(null)
-const contextInsertion = ref<UiComposerContextAttachment | null>(null)
+const contextInsertion = ref<WorkspaceComposerContext | null>(null)
 const isSidebarCollapsed = ref(loadSidebarCollapsed())
 const isMobileViewport = ref(false)
 const sidebarSearchQuery = ref('')
@@ -594,7 +597,7 @@ function openChatView(): void {
   void router.push({ name: 'thread', params: { threadId: routeThreadId.value }, query })
 }
 
-function onAskCode(attachment: UiComposerContextAttachment): void {
+function onAskCode(attachment: WorkspaceComposerContext): void {
   contextInsertion.value = attachment
 }
 
@@ -971,7 +974,7 @@ function onWindowKeyDown(event: KeyboardEvent): void {
   setSidebarCollapsed(!isSidebarCollapsed.value)
 }
 
-function onSubmitThreadMessage(payload: UiComposerSubmitPayload, ack: UiComposerSubmitAck): void {
+function onSubmitThreadMessage(payload: ComposerSubmission<UiComposerContextKind>, ack: UiComposerSubmitAck): void {
   if (isHomeRoute.value) {
     void submitFirstMessageForNewThread(payload, ack)
     return
@@ -989,7 +992,7 @@ function onSelectModel(modelId: string): void {
   setSelectedModelId(modelId)
 }
 
-function onSelectReasoningEffort(effort: ReasoningEffort | ''): void {
+function onSelectReasoningEffort(effort: KnownReasoningEffort | ''): void {
   setSelectedReasoningEffort(effort)
 }
 
@@ -1001,7 +1004,7 @@ function onSelectPermissionMode(mode: UiComposerPermissionMode): void {
   setSelectedPermissionMode(mode)
 }
 
-function onSelectSubmitMode(mode: UiComposerSubmitMode): void {
+function onSelectSubmitMode(mode: ComposerSubmitMode): void {
   setSelectedSubmitMode(mode)
 }
 
@@ -1179,7 +1182,7 @@ watch(
   { immediate: true },
 )
 
-async function submitFirstMessageForNewThread(payload: UiComposerSubmitPayload, ack: UiComposerSubmitAck): Promise<void> {
+async function submitFirstMessageForNewThread(payload: ComposerSubmission<UiComposerContextKind>, ack: UiComposerSubmitAck): Promise<void> {
   try {
     const threadName = pendingNewThreadName.value.trim()
     const threadId = await sendMessageToNewThread(payload, newThreadCwd.value)

@@ -4,9 +4,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { DEFAULT_COMPOSER_IMAGE_POLICY } from '@codycodeagent/cody-web-core/composer'
 
 const MAX_JSON_BODY_BYTES = 30 * 1024 * 1024
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const IMAGE_UPLOAD_DIR = join(tmpdir(), 'cody-web-ui-images')
 const IMAGE_MIME_TO_EXT: Record<string, string> = {
   'image/png': '.png',
@@ -102,7 +102,7 @@ export async function handleImageUpload(req: IncomingMessage, res: ServerRespons
     return
   }
 
-  if (parsed.buffer.byteLength === 0 || parsed.buffer.byteLength > MAX_IMAGE_BYTES) {
+  if (parsed.buffer.byteLength === 0 || parsed.buffer.byteLength > DEFAULT_COMPOSER_IMAGE_POLICY.maxBytes) {
     setJson(res, 413, { error: 'Image must be between 1 byte and 20 MB' })
     return
   }
@@ -139,7 +139,7 @@ export async function handleLocalImage(reqUrl: URL, res: ServerResponse, method:
     return
   }
 
-  if (!fileStat.isFile() || fileStat.size > MAX_IMAGE_BYTES) {
+  if (!fileStat.isFile() || fileStat.size > DEFAULT_COMPOSER_IMAGE_POLICY.maxBytes) {
     setJson(res, 400, { error: 'Invalid local image file' })
     return
   }

@@ -341,7 +341,7 @@ describe('useDesktopState realtime messages', () => {
         reasoningEffort: 'high',
         collaborationModeName: 'plan',
         permissionMode: 'yolo',
-        submitMode: 'guide',
+        submitMode: 'steer',
       },
       updatedAtIso: '2026-07-07T00:00:00.000Z',
     })
@@ -355,7 +355,7 @@ describe('useDesktopState realtime messages', () => {
     expect(state.selectedReasoningEffort.value).toBe('high')
     expect(state.selectedCollaborationModeName.value).toBe('plan')
     expect(state.selectedPermissionMode.value).toBe('yolo')
-    expect(state.selectedSubmitMode.value).toBe('guide')
+    expect(state.selectedSubmitMode.value).toBe('steer')
 
     state.setSelectedReasoningEffort('xhigh')
 
@@ -366,7 +366,7 @@ describe('useDesktopState realtime messages', () => {
         reasoningEffort: 'xhigh',
         collaborationModeName: 'plan',
         permissionMode: 'yolo',
-        submitMode: 'guide',
+        submitMode: 'steer',
       },
     )
   })
@@ -1240,10 +1240,10 @@ describe('useDesktopState realtime messages', () => {
     state.stopRealtimeSync()
   })
 
-  it('guides the active turn when submit mode is guide', async () => {
+  it('steers the active turn when submit mode is steer', async () => {
     installBrowserGlobals('thread-a')
     const state = useDesktopState()
-    state.setSelectedSubmitMode('guide')
+    state.setSelectedSubmitMode('steer')
     state.startRealtimeSync()
     codexApiMock.getNotificationListener()?.({
       method: 'turn/started',

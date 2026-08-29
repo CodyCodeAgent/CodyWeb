@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { ComposerSubmission } from '@codycodeagent/cody-web-core/composer'
 import {
   buildPendingTurnActivity,
   buildSteeringTurnActivity,
@@ -10,10 +11,10 @@ import {
   setActiveTurnForThread,
   shouldClearUnreadForStartedTurn,
 } from './desktopTurnState'
-import type { UiComposerSubmitPayload } from '../types/codex'
+import type { UiComposerContextKind } from '../types/codex'
 import type { TurnCompletedInfo, TurnStartedInfo } from './realtimeNotificationReaders'
 
-function payload(overrides: Partial<UiComposerSubmitPayload> = {}): UiComposerSubmitPayload {
+function payload(overrides: Partial<ComposerSubmission<UiComposerContextKind>> = {}): ComposerSubmission<UiComposerContextKind> {
   return {
     text: '',
     images: [],

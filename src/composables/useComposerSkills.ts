@@ -1,33 +1,18 @@
 import { computed, ref } from 'vue'
 import { getAvailableSkills } from '../api/codexComposerClient'
-import type { UiComposerSkill } from '../types/codex'
-
-type SkillTrigger = {
-  query: string
-  start: number
-  end: number
-}
-
-function findSkillTrigger(text: string, cursor: number): SkillTrigger | null {
-  const beforeCursor = text.slice(0, cursor)
-  const match = beforeCursor.match(/(^|\s)\$([^\s$]*)$/u)
-  if (!match || typeof match.index !== 'number') return null
-
-  const prefixLength = match[1].length
-  const start = match.index + prefixLength
-  return {
-    query: match[2].toLowerCase(),
-    start,
-    end: cursor,
-  }
-}
+import {
+  findComposerTrigger,
+  removeComposerTrigger,
+  type ComposerSkill,
+  type ComposerTrigger,
+} from '@codycodeagent/cody-web-core/composer'
 
 export function useComposerSkills() {
-  const selectedSkills = ref<UiComposerSkill[]>([])
-  const availableSkills = ref<UiComposerSkill[]>([])
+  const selectedSkills = ref<ComposerSkill[]>([])
+  const availableSkills = ref<ComposerSkill[]>([])
   const skillError = ref('')
   const isLoadingSkills = ref(false)
-  const activeTrigger = ref<SkillTrigger | null>(null)
+  const activeTrigger = ref<ComposerTrigger | null>(null)
   let loadedCwd = ''
 
   const filteredSkills = computed(() => {
@@ -69,13 +54,13 @@ export function useComposerSkills() {
   }
 
   async function updateSkillTrigger(text: string, cursor: number, cwd: string): Promise<void> {
-    const trigger = findSkillTrigger(text, cursor)
+    const trigger = findComposerTrigger(text, cursor, '$')
     activeTrigger.value = trigger
     if (!trigger) return
     await ensureSkillsLoaded(cwd)
   }
 
-  function selectSkill(skill: UiComposerSkill, draft: string): { text: string; cursor: number } {
+  function selectSkill(skill: ComposerSkill, draft: string): { text: string; cursor: number } {
     const trigger = activeTrigger.value
     if (!trigger) return { text: draft, cursor: draft.length }
 
@@ -84,22 +69,18 @@ export function useComposerSkills() {
       selectedSkills.value = [...selectedSkills.value, skill]
     }
 
-    const before = draft.slice(0, trigger.start)
-    const after = draft.slice(trigger.end)
-    const needsSpace = before.length > 0 && !/\s$/u.test(before) && after.length > 0 && !/^\s/u.test(after)
-    const nextText = `${before}${needsSpace ? ' ' : ''}${after}`.replace(/[ \t]{2,}/gu, ' ')
-    const nextCursor = Math.min(before.length + (needsSpace ? 1 : 0), nextText.length)
+    const nextDraft = removeComposerTrigger(draft, trigger)
     activeTrigger.value = null
-    return { text: nextText, cursor: nextCursor }
+    return nextDraft
   }
 
-  function removeSkill(skill: UiComposerSkill): void {
+  function removeSkill(skill: ComposerSkill): void {
     selectedSkills.value = selectedSkills.value.filter(
       (selected) => selected.name !== skill.name || selected.path !== skill.path,
     )
   }
 
-  function addSkill(skill: UiComposerSkill): void {
+  function addSkill(skill: ComposerSkill): void {
     const name = skill.name.trim()
     const path = skill.path.trim()
     if (!name || !path) return

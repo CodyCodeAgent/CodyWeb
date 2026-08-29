@@ -1,25 +1,25 @@
-import type {
-  ReasoningEffort,
-  UiCollaborationModeOption,
-  UiComposerSubmitPayload,
-} from '../types/codex'
+import {
+  DEFAULT_COLLABORATION_MODE,
+  composerHasContent,
+  normalizeComposerSubmission,
+  type ComposerCollaborationModeOption,
+  type ComposerSubmission,
+  type KnownReasoningEffort,
+} from '@codycodeagent/cody-web-core/composer'
+import type { UiComposerContextKind } from '../types/codex'
 import type {
   TurnActivityState,
   TurnCompletedInfo,
   TurnStartedInfo,
 } from './realtimeNotificationReaders'
 import type { TurnSummaryState } from './desktopMessageState'
-import {
-  DEFAULT_COLLABORATION_MODE,
-  buildPendingTurnDetails,
-} from './desktopTurnPreferences'
 import { resolveTurnDurationMs } from './desktopMessageState'
 import { omitKey } from './threadGroupState'
 
 export type NormalizedComposerTurnInput = {
   text: string
-  images: UiComposerSubmitPayload['images']
-  skills: UiComposerSubmitPayload['skills']
+  images: ComposerSubmission<UiComposerContextKind>['images']
+  skills: ComposerSubmission<UiComposerContextKind>['skills']
   hasContent: boolean
 }
 
@@ -31,19 +31,13 @@ export type NormalizedNewThreadTurnInput = NormalizedComposerTurnInput & {
   targetCwd: string
 }
 
-function hasTurnContent(input: Pick<NormalizedComposerTurnInput, 'text' | 'images' | 'skills'>): boolean {
-  return input.text.length > 0 || input.images.length > 0 || input.skills.length > 0
-}
-
-export function normalizeComposerTurnInput(payload: UiComposerSubmitPayload): NormalizedComposerTurnInput {
-  const input = {
-    text: payload.text.trim(),
-    images: payload.images,
-    skills: payload.skills,
-  }
+export function normalizeComposerTurnInput(payload: ComposerSubmission<UiComposerContextKind>): NormalizedComposerTurnInput {
+  const input = normalizeComposerSubmission(payload)
   return {
-    ...input,
-    hasContent: hasTurnContent(input),
+    text: input.text,
+    images: input.images,
+    skills: input.skills,
+    hasContent: input.hasContent,
   }
 }
 
@@ -56,12 +50,12 @@ export function normalizeThreadTextTurnInput(threadId: string, text: string): No
   }
   return {
     ...input,
-    hasContent: hasTurnContent(input),
+    hasContent: composerHasContent(input),
   }
 }
 
 export function normalizeNewThreadTurnInput(
-  payload: UiComposerSubmitPayload,
+  payload: ComposerSubmission<UiComposerContextKind>,
   cwd: string,
 ): NormalizedNewThreadTurnInput {
   return {
@@ -70,10 +64,23 @@ export function normalizeNewThreadTurnInput(
   }
 }
 
+function buildPendingTurnDetails(
+  modelId: string,
+  effort: KnownReasoningEffort | '',
+  mode: ComposerCollaborationModeOption = DEFAULT_COLLABORATION_MODE,
+): string[] {
+  const details = [
+    `Model: ${modelId.trim() || 'default'}`,
+    `Thinking: ${effort || 'default'}`,
+  ]
+  if (mode.mode !== 'default') details.unshift(`Mode: ${mode.label}`)
+  return details
+}
+
 export function buildPendingTurnActivity(params: {
   modelId: string
-  reasoningEffort: ReasoningEffort | ''
-  mode: UiCollaborationModeOption
+  reasoningEffort: KnownReasoningEffort | ''
+  mode: ComposerCollaborationModeOption
 }): TurnActivityState {
   return {
     label: 'Thinking',
@@ -83,7 +90,7 @@ export function buildPendingTurnActivity(params: {
 
 export function buildSteeringTurnActivity(params: {
   modelId: string
-  reasoningEffort: ReasoningEffort | ''
+  reasoningEffort: KnownReasoningEffort | ''
 }): TurnActivityState {
   return {
     label: 'Steering response',

@@ -80,9 +80,15 @@
 
 <script setup lang="ts">
 import { defineAsyncComponent } from 'vue'
+import type {
+  ComposerCollaborationModeOption,
+  ComposerSubmission,
+  ComposerSubmitMode,
+  KnownReasoningEffort,
+} from '@codycodeagent/cody-web-core/composer'
 import type { PromptInsertion } from '../../composables/promptLibraryRules'
 import { useLocale } from '../../composables/useLocale'
-import type { ReasoningEffort, ThreadScrollState, UiCollaborationModeOption, UiComposerContextAttachment, UiComposerPermissionMode, UiComposerSubmitAck, UiComposerSubmitMode, UiComposerSubmitPayload, UiLiveOverlay, UiMessage, UiQueuedMessage, UiServerRequest, UiServerRequestReply, UiThread } from '../../types/codex'
+import type { ThreadScrollState, UiComposerContextKind, UiComposerPermissionMode, UiComposerSubmitAck, UiLiveOverlay, UiMessage, UiQueuedMessage, UiServerRequest, UiServerRequestReply, UiThread, WorkspaceComposerContext } from '../../types/codex'
 import ComposerDropdown from '../content/ComposerDropdown.vue'
 import ThreadComposer from '../content/ThreadComposer.vue'
 import ThreadConversation from '../content/ThreadConversation.vue'
@@ -97,9 +103,9 @@ defineProps<{
   newThreadProjectOptions: NewThreadProjectOption[]; skillsCwd: string; skillsProjectLabel: string
   newThreadCwd: string; newThreadFolderOptions: { value: string; label: string }[]
   composerThreadContextId: string; isSendingMessage: boolean; promptInsertion: PromptInsertion | null; availableModelIds: string[]
-  contextInsertion: UiComposerContextAttachment | null
-  selectedModelId: string; selectedReasoningEffort: ReasoningEffort | ''; collaborationModeOptions: UiCollaborationModeOption[]
-  selectedCollaborationModeName: string; selectedPermissionMode: UiComposerPermissionMode; selectedSubmitMode: UiComposerSubmitMode
+  contextInsertion: WorkspaceComposerContext | null
+  selectedModelId: string; selectedReasoningEffort: KnownReasoningEffort | ''; collaborationModeOptions: ComposerCollaborationModeOption[]
+  selectedCollaborationModeName: string; selectedPermissionMode: UiComposerPermissionMode; selectedSubmitMode: ComposerSubmitMode
   homeComposerBusyLabel: string
   filteredMessages: UiMessage[]; isLoadingMessages: boolean; selectedThread: UiThread | null; selectedMessageLoadError: string
   isLoadingEarlierMessages: boolean; selectedThreadHasMoreMessagesBefore: boolean; selectedThreadEarlierMessageCount: number
@@ -111,21 +117,21 @@ defineProps<{
 }>()
 const emit = defineEmits<{
   selectThread: [string]; respondServerRequest: [UiServerRequestReply]; selectNewThreadFolder: [string]
-  submitMessage: [UiComposerSubmitPayload, UiComposerSubmitAck]; selectModel: [string]; selectReasoningEffort: [ReasoningEffort | '']
+  submitMessage: [ComposerSubmission<UiComposerContextKind>, UiComposerSubmitAck]; selectModel: [string]; selectReasoningEffort: [KnownReasoningEffort | '']
   selectCollaborationMode: [string]; selectPermissionMode: [UiComposerPermissionMode]
-  selectSubmitMode: [UiComposerSubmitMode]
+  selectSubmitMode: [ComposerSubmitMode]
   updateScrollState: [{ threadId: string; state: ThreadScrollState }]; retryLoad: []; interrupt: []
   loadEarlierMessages: [threadId: string]
   sendQueuedMessageNow: [payload: { threadId: string; messageId: string }]
   deleteQueuedMessage: [payload: { threadId: string; messageId: string }]
   openCode: [location: { path?: string; line?: number; mode?: 'file' | 'diff' }]
-  askCode: [attachment: UiComposerContextAttachment]
+  askCode: [attachment: WorkspaceComposerContext]
   confirmShareSelection: [messageIds: string[]]
   cancelShareSelection: []
 }>()
 const { t } = useLocale()
 
-function emitSubmitMessage(payload: UiComposerSubmitPayload, ack: UiComposerSubmitAck): void {
+function emitSubmitMessage(payload: ComposerSubmission<UiComposerContextKind>, ack: UiComposerSubmitAck): void {
   emit('submitMessage', payload, ack)
 }
 </script>

@@ -78,10 +78,10 @@ describe('ThreadComposer', () => {
     const wrapper = mountComposer()
     const dropdowns = wrapper.findAllComponents({ name: 'ComposerDropdown' })
 
-    await dropdowns[1]?.vm.$emit('update:modelValue', 'guide')
+    await dropdowns[1]?.vm.$emit('update:modelValue', 'steer')
     await dropdowns[4]?.vm.$emit('update:modelValue', 'yolo')
 
-    expect(wrapper.emitted('update:selected-submit-mode')).toEqual([['guide']])
+    expect(wrapper.emitted('update:selected-submit-mode')).toEqual([['steer']])
     expect(wrapper.emitted('update:selected-permission-mode')).toEqual([['yolo']])
   })
 
@@ -139,6 +139,22 @@ describe('ThreadComposer', () => {
     expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({
       text: 'Investigate the alert with evidence.', skills: [skill],
     })
+  })
+
+  it('allows a Skill-only turn without manufacturing prompt text', async () => {
+    const wrapper = mountComposer()
+    const skill = {
+      name: 'alert-triage', path: '/repo/.codex/skills/alert-triage/SKILL.md',
+      displayName: 'Alert triage', description: 'Investigate structured alerts.',
+    }
+    await wrapper.setProps({ promptInsertion: {
+      id: 1, text: '', skills: [skill], mode: 'replace',
+    } })
+
+    const submit = wrapper.get('[data-testid="thread-composer-submit"]')
+    expect((submit.element as HTMLButtonElement).disabled).toBe(false)
+    await wrapper.get('[data-testid="thread-composer"]').trigger('submit')
+    expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({ text: '', skills: [skill] })
   })
 
   it('attaches an externally selected code range to the current thread composer', async () => {

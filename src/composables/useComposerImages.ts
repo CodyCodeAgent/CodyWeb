@@ -1,13 +1,13 @@
 import { ref } from 'vue'
 import { uploadComposerImage } from '../api/codexComposerClient'
-import type { UiComposerImage } from '../types/codex'
-
-const MAX_IMAGE_COUNT = 8
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024
-const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+import {
+  DEFAULT_COMPOSER_IMAGE_POLICY,
+  validateComposerImage,
+  type ComposerImage,
+} from '@codycodeagent/cody-web-core/composer'
 
 function getImageFiles(files: FileList | File[]): File[] {
-  return Array.from(files).filter((file) => SUPPORTED_IMAGE_TYPES.has(file.type))
+  return Array.from(files).filter((file) => DEFAULT_COMPOSER_IMAGE_POLICY.supportedMimeTypes.includes(file.type))
 }
 
 export function hasImageFile(items: DataTransferItemList | null | undefined): boolean {
@@ -16,7 +16,7 @@ export function hasImageFile(items: DataTransferItemList | null | undefined): bo
 }
 
 export function useComposerImages() {
-  const attachedImages = ref<UiComposerImage[]>([])
+  const attachedImages = ref<ComposerImage[]>([])
   const isUploadingImage = ref(false)
   const uploadError = ref('')
 
@@ -31,9 +31,9 @@ export function useComposerImages() {
 
   async function attachFiles(files: FileList | File[]): Promise<void> {
     const imageFiles = getImageFiles(files)
-    const remainingSlots = MAX_IMAGE_COUNT - attachedImages.value.length
+    const remainingSlots = DEFAULT_COMPOSER_IMAGE_POLICY.maxCount - attachedImages.value.length
     if (remainingSlots <= 0) {
-      uploadError.value = `You can attach up to ${String(MAX_IMAGE_COUNT)} images`
+      uploadError.value = `You can attach up to ${String(DEFAULT_COMPOSER_IMAGE_POLICY.maxCount)} images`
       return
     }
 
@@ -44,10 +44,13 @@ export function useComposerImages() {
     uploadError.value = ''
 
     try {
-      const uploadedImages: UiComposerImage[] = []
+      const uploadedImages: ComposerImage[] = []
       for (const file of candidates) {
-        if (file.size > MAX_IMAGE_BYTES) {
-          uploadError.value = `${file.name || 'Image'} is larger than 20 MB`
+        const validation = validateComposerImage(file)
+        if (!validation.accepted) {
+          uploadError.value = validation.reason === 'too_large'
+            ? `${file.name || 'Image'} is larger than 20 MB`
+            : `${file.name || 'Image'} is not a supported image type`
           continue
         }
         uploadedImages.push(await uploadComposerImage(file))

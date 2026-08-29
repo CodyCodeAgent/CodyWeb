@@ -1,4 +1,5 @@
-import type { UiComposerSubmitPayload } from '../types/codex'
+import type { ComposerSubmission } from '@codycodeagent/cody-web-core/composer'
+import type { UiComposerContextKind } from '../types/codex'
 
 export type LocalMessageOutboxStatus = 'queued' | 'sending' | 'failed'
 
@@ -6,9 +7,9 @@ export type LocalMessageOutboxItem = {
   id: string
   threadId: string
   text: string
-  images: UiComposerSubmitPayload['images']
-  skills: UiComposerSubmitPayload['skills']
-  contexts?: UiComposerSubmitPayload['contexts']
+  images: ComposerSubmission<UiComposerContextKind>['images']
+  skills: ComposerSubmission<UiComposerContextKind>['skills']
+  contexts?: ComposerSubmission<UiComposerContextKind>['contexts']
   status: LocalMessageOutboxStatus
   attempts: number
   createdAtIso: string
@@ -116,7 +117,7 @@ export async function deleteLocalMessageOutboxItem(itemId: string): Promise<void
 
 export function buildLocalMessageOutboxItem(input: {
   threadId: string
-  payload: UiComposerSubmitPayload
+  payload: ComposerSubmission<UiComposerContextKind>
 }): LocalMessageOutboxItem {
   const now = new Date().toISOString()
   const randomId = typeof crypto !== 'undefined' && 'randomUUID' in crypto

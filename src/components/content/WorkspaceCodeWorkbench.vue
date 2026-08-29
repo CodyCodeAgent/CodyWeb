@@ -189,7 +189,7 @@ import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, r
 import { useRoute, useRouter } from 'vue-router'
 import { fetchWorkspaceDiff, fetchWorkspaceFile, fetchWorkspaceFiles, searchWorkspace } from '../../api/codexWorkspaceResourcesClient'
 import { buildDiffReview, type UiDiffLineKind, type UiDiffReviewFile } from '../../composables/useDiffReview'
-import type { UiComposerContextAttachment, UiMessage, UiWorkspaceCodeTab, UiWorkspaceFileContent, UiWorkspaceFileEntry, UiWorkspaceLocation, UiWorkspaceSearchItem, UiWorkspaceSearchScope } from '../../types/codex'
+import type { UiMessage, UiWorkspaceCodeTab, UiWorkspaceFileContent, UiWorkspaceFileEntry, UiWorkspaceLocation, UiWorkspaceSearchItem, UiWorkspaceSearchScope, WorkspaceComposerContext } from '../../types/codex'
 import IconTablerChevronLeft from '../icons/IconTablerChevronLeft.vue'
 import IconTablerFolderOpen from '../icons/IconTablerFolderOpen.vue'
 import IconTablerLayoutSidebar from '../icons/IconTablerLayoutSidebar.vue'
@@ -202,7 +202,7 @@ import WorkspaceFileTreeBranch from './WorkspaceFileTreeBranch.vue'
 const WorkspaceMonacoEditor = defineAsyncComponent(() => import('./WorkspaceMonacoEditor.vue'))
 
 const props = defineProps<{ cwd: string; threadId: string; messages: UiMessage[] }>()
-const emit = defineEmits<{ askCode: [attachment: UiComposerContextAttachment] }>()
+const emit = defineEmits<{ askCode: [attachment: WorkspaceComposerContext] }>()
 const route = useRoute()
 const router = useRouter()
 

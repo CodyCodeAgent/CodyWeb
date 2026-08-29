@@ -1,4 +1,8 @@
 import { computed, ref } from 'vue'
+import {
+  findComposerTrigger,
+  type ComposerTrigger,
+} from '@codycodeagent/cody-web-core/composer'
 import { fetchTerminalSessions } from '../api/codexTerminalClient'
 import {
   fetchWorkspacePorts,
@@ -10,7 +14,6 @@ import {
 } from '../api/codexWorkspaceResourcesClient'
 import { getThreadGroups } from '../api/codexThreadClient'
 import type {
-  UiComposerContextAttachment,
   UiComposerContextKind,
   UiPortsSnapshot,
   UiProjectGroup,
@@ -20,13 +23,8 @@ import type {
   UiWorkspaceFileList,
   UiWorkspaceSnapshot,
   UiWorkspaceValidationRunHistory,
+  WorkspaceComposerContext,
 } from '../types/codex'
-
-type ContextTrigger = {
-  query: string
-  start: number
-  end: number
-}
 
 export type UiComposerContextOption = {
   kind: UiComposerContextKind
@@ -86,19 +84,6 @@ export const COMPOSER_CONTEXT_OPTIONS: UiComposerContextOption[] = [
   },
 ]
 
-export function findContextTrigger(text: string, cursor: number): ContextTrigger | null {
-  const beforeCursor = text.slice(0, cursor)
-  const match = beforeCursor.match(/(^|\s)@([^\s@]*)$/u)
-  if (!match || typeof match.index !== 'number') return null
-
-  const prefixLength = match[1].length
-  return {
-    query: match[2].toLowerCase(),
-    start: match.index + prefixLength,
-    end: cursor,
-  }
-}
-
 function truncateContext(value: string, limit = MAX_CONTEXT_CHARS): { content: string; truncated: boolean } {
   if (value.length <= limit) return { content: value, truncated: false }
   const omitted = value.length - limit
@@ -108,7 +93,7 @@ function truncateContext(value: string, limit = MAX_CONTEXT_CHARS): { content: s
   }
 }
 
-function contextSelectionKey(context: UiComposerContextAttachment): string {
+function contextSelectionKey(context: WorkspaceComposerContext): string {
   if (context.kind !== 'file') return context.kind
   const filePath = typeof context.metadata.path === 'string' ? context.metadata.path : context.label
   return `${context.kind}:${filePath}`
@@ -172,7 +157,7 @@ export function getContextOptionsForQuery(query: string): UiComposerContextOptio
 
 export function summarizeDiffContext(snapshot: UiToolingDiffSnapshot): {
   content: string
-  metadata: UiComposerContextAttachment['metadata']
+  metadata: WorkspaceComposerContext['metadata']
 } {
   const status = snapshot.status.trim() || '(clean)'
   const patch = snapshot.patch.trim() || '(no patch)'
@@ -203,7 +188,7 @@ export function summarizeDiffContext(snapshot: UiToolingDiffSnapshot): {
 
 export function summarizeFolderContext(listing: UiWorkspaceFileList): {
   content: string
-  metadata: UiComposerContextAttachment['metadata']
+  metadata: WorkspaceComposerContext['metadata']
 } {
   const entries = listing.entries.slice(0, MAX_FOLDER_ENTRIES)
   const lines = entries.map((entry) => {
@@ -237,7 +222,7 @@ export function summarizeFolderContext(listing: UiWorkspaceFileList): {
 
 export function summarizeFileContext(file: UiWorkspaceFileContent): {
   content: string
-  metadata: UiComposerContextAttachment['metadata']
+  metadata: WorkspaceComposerContext['metadata']
 } {
   const language = languageFromPath(file.path)
   const binaryMessage = file.isBinary ? '[Binary file omitted by workspace file reader.]' : file.content
@@ -268,7 +253,7 @@ export function summarizeFileContext(file: UiWorkspaceFileContent): {
 
 export function summarizeTerminalContext(snapshot: UiTerminalSessionList): {
   content: string
-  metadata: UiComposerContextAttachment['metadata']
+  metadata: WorkspaceComposerContext['metadata']
 } {
   const sessions = snapshot.sessions.slice(0, 5)
   const blocks = sessions.map((session) => {
@@ -309,7 +294,7 @@ export function summarizeTerminalContext(snapshot: UiTerminalSessionList): {
 
 export function summarizePreviewContext(snapshot: UiPortsSnapshot): {
   content: string
-  metadata: UiComposerContextAttachment['metadata']
+  metadata: WorkspaceComposerContext['metadata']
 } {
   const activePorts = snapshot.ports.map((port) =>
     [
@@ -357,7 +342,7 @@ export function summarizePreviewContext(snapshot: UiPortsSnapshot): {
 
 export function summarizeProblemsContext(history: UiWorkspaceValidationRunHistory): {
   content: string
-  metadata: UiComposerContextAttachment['metadata']
+  metadata: WorkspaceComposerContext['metadata']
 } {
   const problems = history.runs.flatMap((run) =>
     run.problems.map((problem) => ({
@@ -396,7 +381,7 @@ export function summarizeProblemsContext(history: UiWorkspaceValidationRunHistor
 
 export function summarizeTestResultsContext(history: UiWorkspaceValidationRunHistory): {
   content: string
-  metadata: UiComposerContextAttachment['metadata']
+  metadata: WorkspaceComposerContext['metadata']
 } {
   const runs = history.runs.slice(0, 8)
   const blocks = runs.map((run) => {
@@ -438,7 +423,7 @@ export function summarizeTestResultsContext(history: UiWorkspaceValidationRunHis
 
 export function summarizeRecentThreadsContext(groups: UiProjectGroup[], cwd: string): {
   content: string
-  metadata: UiComposerContextAttachment['metadata']
+  metadata: WorkspaceComposerContext['metadata']
 } {
   const targetCwd = cwd.trim()
   const threads = groups
@@ -475,7 +460,7 @@ export function summarizeRecentThreadsContext(groups: UiProjectGroup[], cwd: str
 
 export function summarizeWorkspaceRulesContext(snapshot: UiWorkspaceSnapshot): {
   content: string
-  metadata: UiComposerContextAttachment['metadata']
+  metadata: WorkspaceComposerContext['metadata']
 } {
   const config = snapshot.workspaceConfig
   const scripts = snapshot.scripts.map((script) => `${script.name}: ${script.command}`)
@@ -576,31 +561,10 @@ export function summarizeWorkspaceRulesContext(snapshot: UiWorkspaceSnapshot): {
   }
 }
 
-export function materializeComposerContextText(
-  text: string,
-  contexts: UiComposerContextAttachment[],
-): string {
-  const trimmedText = text.trim()
-  if (contexts.length === 0) return trimmedText
-
-  const blocks = contexts.map((context) =>
-    [
-      `### ${context.label}`,
-      context.description,
-      '',
-      context.content.trim(),
-    ]
-      .filter(Boolean)
-      .join('\n'),
-  )
-
-  return [trimmedText, '## Attached Workspace Context', ...blocks].filter(Boolean).join('\n\n')
-}
-
 async function buildContextAttachment(
   option: UiComposerContextOption,
   cwd: string,
-): Promise<UiComposerContextAttachment> {
+): Promise<WorkspaceComposerContext> {
   const createdAtIso = new Date().toISOString()
   if (option.kind === 'file') {
     const filePath = option.filePath?.trim()
@@ -723,10 +687,10 @@ async function buildContextAttachment(
 }
 
 export function useComposerContext() {
-  const selectedContexts = ref<UiComposerContextAttachment[]>([])
+  const selectedContexts = ref<WorkspaceComposerContext[]>([])
   const contextError = ref('')
   const isLoadingContext = ref(false)
-  const activeTrigger = ref<ContextTrigger | null>(null)
+  const activeTrigger = ref<ComposerTrigger | null>(null)
 
   const filteredContexts = computed(() => {
     const trigger = activeTrigger.value
@@ -739,7 +703,7 @@ export function useComposerContext() {
   const isContextMenuOpen = computed(() => activeTrigger.value !== null)
 
   function updateContextTrigger(text: string, cursor: number): void {
-    activeTrigger.value = findContextTrigger(text, cursor)
+    activeTrigger.value = findComposerTrigger(text, cursor, '@')
   }
 
   async function selectContext(
@@ -780,11 +744,11 @@ export function useComposerContext() {
     }
   }
 
-  function removeContext(context: UiComposerContextAttachment): void {
+  function removeContext(context: WorkspaceComposerContext): void {
     selectedContexts.value = selectedContexts.value.filter((selected) => selected.id !== context.id)
   }
 
-  function addContextAttachment(context: UiComposerContextAttachment): void {
+  function addContextAttachment(context: WorkspaceComposerContext): void {
     const targetKey = contextSelectionKey(context)
     selectedContexts.value = [
       ...selectedContexts.value.filter((selected) => contextSelectionKey(selected) !== targetKey),

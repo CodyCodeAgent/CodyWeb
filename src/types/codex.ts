@@ -1,11 +1,9 @@
 import type { ApprovalDecisionScope } from '@codycodeagent/cody-web-core/presentation'
+import type { ComposerContextAttachment, ComposerSkill } from '@codycodeagent/cody-web-core/composer'
 
 export type RpcEnvelope<T> = {
   result: T
 }
-
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
-export type UiCollaborationModeKind = 'default' | 'plan'
 
 export type RpcMethodCatalog = {
   data: string[]
@@ -91,7 +89,7 @@ export type UiMessage = {
   role: 'user' | 'assistant' | 'system'
   text: string
   images?: string[]
-  skills?: UiComposerSkill[]
+  skills?: ComposerSkill[]
   outbox?: {
     status: 'queued' | 'sending' | 'failed'
     lastError?: string
@@ -234,21 +232,6 @@ export type UiToolTimelineEntry = {
   outputLabel?: string
 }
 
-export type UiComposerImage = {
-  id: string
-  name: string
-  path: string
-  url: string
-  mimeType: string
-}
-
-export type UiComposerSkill = {
-  name: string
-  path: string
-  description: string
-  displayName: string
-}
-
 export type UiComposerContextKind =
   | 'diff'
   | 'folder'
@@ -260,34 +243,9 @@ export type UiComposerContextKind =
   | 'preview'
   | 'recent-thread'
 
-export type UiComposerContextAttachment = {
-  id: string
-  kind: UiComposerContextKind
-  label: string
-  description: string
-  content: string
-  createdAtIso: string
-  metadata: Record<string, string | number | boolean>
-}
-
-export type UiCollaborationModeOption = {
-  name: string
-  mode: UiCollaborationModeKind
-  label: string
-  model: string
-  reasoningEffort: ReasoningEffort | ''
-  developerInstructions: string | null
-}
+export type WorkspaceComposerContext = ComposerContextAttachment<UiComposerContextKind>
 
 export type UiComposerPermissionMode = 'current' | 'yolo'
-export type UiComposerSubmitMode = 'queue' | 'guide'
-
-export type UiComposerSubmitPayload = {
-  text: string
-  images: UiComposerImage[]
-  skills: UiComposerSkill[]
-  contexts?: UiComposerContextAttachment[]
-}
 
 export type UiComposerSubmitAck = {
   onAccepted: () => void

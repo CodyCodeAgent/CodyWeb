@@ -1,10 +1,11 @@
-import type { UiComposerSkill, UiMessage } from '../../types/codex'
+import type { ComposerSkill } from '@codycodeagent/cody-web-core/composer'
+import type { UiMessage } from '../../types/codex'
 import { asRecord, readString, toRawPayload } from '../protocolValueReaders'
 
 export type ParsedUserMessageContent = {
   text: string
   images: string[]
-  skills: UiComposerSkill[]
+  skills: ComposerSkill[]
   rawBlocks: UiMessage[]
 }
 
@@ -39,7 +40,7 @@ export function parseUserMessageContent(
 
   const textChunks: string[] = []
   const images: string[] = []
-  const skills: UiComposerSkill[] = []
+  const skills: ComposerSkill[] = []
   const rawBlocks: UiMessage[] = []
 
   for (const [index, value] of content.entries()) {

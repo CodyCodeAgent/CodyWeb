@@ -318,23 +318,27 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import {
-  materializeComposerContextText,
   useComposerContext,
   type UiComposerContextOption,
 } from '../../composables/useComposerContext'
+import {
+  composerHasContent,
+  materializeComposerContextText,
+  type ComposerCollaborationModeOption,
+  type ComposerSkill,
+  type ComposerSubmission,
+  type ComposerSubmitMode,
+  type KnownReasoningEffort,
+} from '@codycodeagent/cody-web-core/composer'
 import { hasImageFile, useComposerImages } from '../../composables/useComposerImages'
 import { useComposerSkills } from '../../composables/useComposerSkills'
 import { COMPOSER_PERMISSION_MODE_OPTIONS } from '../../composables/desktopTurnPermissions'
 import type {
-  ReasoningEffort,
-  UiCollaborationModeOption,
   UiComposerPermissionMode,
-  UiComposerContextAttachment,
-  UiComposerSkill,
   UiComposerSubmitAck,
-  UiComposerSubmitMode,
-  UiComposerSubmitPayload,
+  UiComposerContextKind,
   UiQueuedMessage,
+  WorkspaceComposerContext,
 } from '../../types/codex'
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
 import IconTablerPhoto from '../icons/IconTablerPhoto.vue'
@@ -348,29 +352,29 @@ const props = defineProps<{
   activeThreadId: string
   models: string[]
   selectedModel: string
-  selectedReasoningEffort: ReasoningEffort | ''
-  collaborationModes: UiCollaborationModeOption[]
+  selectedReasoningEffort: KnownReasoningEffort | ''
+  collaborationModes: ComposerCollaborationModeOption[]
   selectedCollaborationMode: string
   selectedPermissionMode: UiComposerPermissionMode
-  selectedSubmitMode: UiComposerSubmitMode
+  selectedSubmitMode: ComposerSubmitMode
   cwd: string
   isTurnInProgress?: boolean
   isInterruptingTurn?: boolean
   disabled?: boolean
   busyLabel?: string
   promptInsertion?: PromptInsertion | null
-  contextInsertion?: UiComposerContextAttachment | null
+  contextInsertion?: WorkspaceComposerContext | null
   queuedMessages?: UiQueuedMessage[]
 }>()
 
 const emit = defineEmits<{
-  submit: [payload: UiComposerSubmitPayload, ack: UiComposerSubmitAck]
+  submit: [payload: ComposerSubmission<UiComposerContextKind>, ack: UiComposerSubmitAck]
   interrupt: []
   'update:selected-model': [modelId: string]
-  'update:selected-reasoning-effort': [effort: ReasoningEffort | '']
+  'update:selected-reasoning-effort': [effort: KnownReasoningEffort | '']
   'update:selected-collaboration-mode': [name: string]
   'update:selected-permission-mode': [mode: UiComposerPermissionMode]
-  'update:selected-submit-mode': [mode: UiComposerSubmitMode]
+  'update:selected-submit-mode': [mode: ComposerSubmitMode]
   sendQueuedMessageNow: [payload: { threadId: string; messageId: string }]
   deleteQueuedMessage: [payload: { threadId: string; messageId: string }]
 }>()
@@ -415,7 +419,7 @@ const {
   closeContextMenu,
   resetContexts,
 } = useComposerContext()
-const reasoningOptions = computed<Array<{ value: ReasoningEffort; label: string }>>(() => [
+const reasoningOptions = computed<Array<{ value: KnownReasoningEffort; label: string }>>(() => [
   { value: 'none', label: t('composer.reasoning.none') },
   { value: 'minimal', label: t('composer.reasoning.minimal') },
   { value: 'low', label: t('composer.reasoning.low') },
@@ -430,12 +434,12 @@ const collaborationModeOptions = computed(() =>
   props.collaborationModes.map((mode) => ({ value: mode.name, label: mode.label })),
 )
 const permissionModeOptions = COMPOSER_PERMISSION_MODE_OPTIONS
-const submitModeOptions = computed<Array<{ value: UiComposerSubmitMode; label: string }>>(() => [
+const submitModeOptions = computed<Array<{ value: ComposerSubmitMode; label: string }>>(() => [
   { value: 'queue', label: t('composer.submitMode.queue') },
-  { value: 'guide', label: t('composer.submitMode.guide') },
+  { value: 'steer', label: t('composer.submitMode.guide') },
 ])
 const submitModeLabel = computed(() =>
-  props.selectedSubmitMode === 'guide' ? t('composer.submitMode.guide') : t('composer.submitMode.queue'),
+  props.selectedSubmitMode === 'steer' ? t('composer.submitMode.guide') : t('composer.submitMode.queue'),
 )
 const visibleQueuedMessages = computed(() => props.queuedMessages ?? [])
 const queuedActionLabel = computed(() => props.isTurnInProgress
@@ -445,18 +449,18 @@ const canSubmit = computed(() => {
   if (props.disabled) return false
   if (!props.activeThreadId) return false
   if (isUploadingImage.value) return false
-  return (
-    draft.value.trim().length > 0 ||
-    attachedImages.value.length > 0 ||
-    selectedSkills.value.length > 0 ||
-    selectedContexts.value.length > 0
-  )
+  return composerHasContent({
+    text: draft.value,
+    images: attachedImages.value,
+    skills: selectedSkills.value,
+    contexts: selectedContexts.value,
+  })
 })
 
 const placeholderText = computed(() =>
   props.activeThreadId
     ? props.isTurnInProgress
-      ? props.selectedSubmitMode === 'guide'
+      ? props.selectedSubmitMode === 'steer'
         ? t('composer.placeholder.guide')
         : t('composer.placeholder.queue')
       : t('composer.placeholder.message')
@@ -464,7 +468,7 @@ const placeholderText = computed(() =>
 )
 const submitButtonLabel = computed(() =>
   props.isTurnInProgress
-    ? props.selectedSubmitMode === 'guide'
+    ? props.selectedSubmitMode === 'steer'
       ? t('composer.submit.guidance')
       : t('composer.submit.queue')
     : t('composer.submit.message'),
@@ -502,7 +506,7 @@ function onSubmit(): void {
   const text = materializeComposerContextText(draft.value, selectedContexts.value)
   if (!canSubmit.value) return
   const submittedDraft = draft.value
-  const payload: UiComposerSubmitPayload = {
+  const payload: ComposerSubmission<UiComposerContextKind> = {
     text,
     images: attachedImages.value.map((image) => ({ ...image })),
     skills: selectedSkills.value.map((skill) => ({ ...skill })),
@@ -556,7 +560,7 @@ function onDraftKeydown(event: KeyboardEvent): void {
   onSubmit()
 }
 
-function onSelectSkill(skill: UiComposerSkill): void {
+function onSelectSkill(skill: ComposerSkill): void {
   const selected = selectSkill(skill, draft.value)
   draft.value = selected.text
   void nextTick(() => {
@@ -604,7 +608,7 @@ function onModelSelect(value: string): void {
 }
 
 function onReasoningEffortSelect(value: string): void {
-  emit('update:selected-reasoning-effort', value as ReasoningEffort)
+  emit('update:selected-reasoning-effort', value as KnownReasoningEffort)
 }
 
 function onCollaborationModeSelect(value: string): void {
@@ -616,7 +620,7 @@ function onPermissionModeSelect(value: string): void {
 }
 
 function onSubmitModeSelect(value: string): void {
-  emit('update:selected-submit-mode', value === 'guide' ? 'guide' : 'queue')
+  emit('update:selected-submit-mode', value === 'steer' ? 'steer' : 'queue')
 }
 
 function eventValue(event: Event): string {

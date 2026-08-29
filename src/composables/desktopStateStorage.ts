@@ -1,17 +1,21 @@
-import { isReasoningEffort } from './desktopTurnPreferences'
+import {
+  isKnownReasoningEffort,
+  type ComposerSubmitMode,
+  type KnownReasoningEffort,
+} from '@codycodeagent/cody-web-core/composer'
 import {
   DEFAULT_COMPOSER_PERMISSION_MODE,
   normalizeComposerPermissionMode,
 } from './desktopTurnPermissions'
 import { DESKTOP_STORAGE_KEYS } from './desktopSettingsKeys'
-import type { ReasoningEffort, ThreadScrollState, UiComposerPermissionMode, UiComposerSubmitMode } from '../types/codex'
+import type { ThreadScrollState, UiComposerPermissionMode } from '../types/codex'
 
 export type DesktopTurnPreferences = {
   modelId: string
-  reasoningEffort: ReasoningEffort | ''
+  reasoningEffort: KnownReasoningEffort | ''
   collaborationModeName: string
   permissionMode: UiComposerPermissionMode
-  submitMode: UiComposerSubmitMode
+  submitMode: ComposerSubmitMode
 }
 
 export const DEFAULT_DESKTOP_TURN_PREFERENCES: DesktopTurnPreferences = {
@@ -22,8 +26,8 @@ export const DEFAULT_DESKTOP_TURN_PREFERENCES: DesktopTurnPreferences = {
   submitMode: 'queue',
 }
 
-function normalizeComposerSubmitMode(value: unknown): UiComposerSubmitMode {
-  return value === 'guide' ? 'guide' : 'queue'
+function normalizeComposerSubmitMode(value: unknown): ComposerSubmitMode {
+  return value === 'steer' ? 'steer' : 'queue'
 }
 
 function getLocalStorage(): Storage | null {
@@ -72,7 +76,7 @@ export function normalizeDesktopTurnPreferences(value: unknown): DesktopTurnPref
   const row = value as Record<string, unknown>
   const modelId = typeof row.modelId === 'string' ? row.modelId.trim() : ''
   const rawReasoningEffort = typeof row.reasoningEffort === 'string' ? row.reasoningEffort.trim() : ''
-  const reasoningEffort = rawReasoningEffort && isReasoningEffort(rawReasoningEffort)
+  const reasoningEffort = rawReasoningEffort && isKnownReasoningEffort(rawReasoningEffort)
     ? rawReasoningEffort
     : DEFAULT_DESKTOP_TURN_PREFERENCES.reasoningEffort
   const collaborationModeName = typeof row.collaborationModeName === 'string' && row.collaborationModeName.trim()

@@ -10,19 +10,17 @@ import { normalizeCodexApiError } from './codexErrors'
 import { fetchCodexJson, queryPath, readRpcResult } from './codexHttpClient'
 import { rpcCall } from './codexRpcClient'
 import { normalizeThreadGroupsV2 } from './normalizers/v2'
-import type {
-  UiCollaborationModeOption,
-  UiComposerImage,
-  UiComposerSkill,
-  UiMessage,
-  UiProjectGroup,
-  UiThreadMessagePage,
-} from '../types/codex'
+import type { UiMessage, UiProjectGroup, UiThreadMessagePage } from '../types/codex'
 import type { TurnPermissionOverride } from '../composables/desktopTurnPermissions'
 import { buildTurnUserInput } from '@codycodeagent/cody-web-core/session'
+import type {
+  ComposerCollaborationModeOption,
+  ComposerImage,
+  ComposerSkill,
+} from '@codycodeagent/cody-web-core/composer'
 
 export type TurnCollaborationMode = {
-  mode: UiCollaborationModeOption['mode']
+  mode: ComposerCollaborationModeOption['mode']
   settings: {
     model: string
     reasoning_effort: ReasoningEffort | null
@@ -177,8 +175,8 @@ export async function startThread(cwd?: string, model?: string): Promise<string>
 export async function startThreadTurn(
   threadId: string,
   text: string,
-  images: UiComposerImage[],
-  skills: UiComposerSkill[],
+  images: ComposerImage[],
+  skills: ComposerSkill[],
   model?: string,
   effort?: ReasoningEffort,
   collaborationMode?: TurnCollaborationMode | null,
@@ -217,8 +215,8 @@ export async function startThreadTurn(
 
 export function buildTurnInput(
   text: string,
-  images: UiComposerImage[],
-  skills: UiComposerSkill[] = [],
+  images: ComposerImage[],
+  skills: ComposerSkill[] = [],
 ): Array<Record<string, unknown>> {
   return buildTurnUserInput({
     text,
@@ -231,8 +229,8 @@ export async function steerThreadTurn(
   threadId: string,
   expectedTurnId: string,
   text: string,
-  images: UiComposerImage[],
-  skills: UiComposerSkill[],
+  images: ComposerImage[],
+  skills: ComposerSkill[],
 ): Promise<void> {
   const normalizedThreadId = threadId.trim()
   const normalizedTurnId = expectedTurnId.trim()

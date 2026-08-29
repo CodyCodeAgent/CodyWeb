@@ -1,4 +1,4 @@
-import type { UiComposerSkill } from '../types/codex'
+import type { ComposerSkill } from '@codycodeagent/cody-web-core/composer'
 
 export type PromptTemplateScope = 'global' | 'workspace'
 export type ScenarioPackageAuthoringMode = 'human' | 'ai'
@@ -8,7 +8,7 @@ export type PromptTemplate = {
   title: string
   description: string
   content: string
-  primarySkill: UiComposerSkill | null
+  primarySkill: ComposerSkill | null
   authoringMode: ScenarioPackageAuthoringMode
   category: string
   scope: PromptTemplateScope
@@ -23,7 +23,7 @@ export type PromptTemplate = {
 export type PromptInsertion = {
   id: number
   text: string
-  skills: UiComposerSkill[]
+  skills: ComposerSkill[]
   mode: 'insert' | 'replace'
 }
 
@@ -123,7 +123,7 @@ export function visiblePromptTemplates(templates: PromptTemplate[], cwd: string,
     .sort((left, right) => Number(right.isFavorite) - Number(left.isFavorite) || Date.parse(right.lastUsedAtIso || '') - Date.parse(left.lastUsedAtIso || '') || left.title.localeCompare(right.title))
 }
 
-function normalizePrimarySkill(value: unknown): UiComposerSkill | null {
+function normalizePrimarySkill(value: unknown): ComposerSkill | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const row = value as Record<string, unknown>
   const name = string(row.name)

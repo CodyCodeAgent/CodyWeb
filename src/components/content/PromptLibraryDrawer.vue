@@ -122,7 +122,7 @@ import {
 import IconTablerFilePencil from '../icons/IconTablerFilePencil.vue'
 import IconTablerSearch from '../icons/IconTablerSearch.vue'
 import IconTablerX from '../icons/IconTablerX.vue'
-import type { UiComposerSkill } from '../../types/codex'
+import type { ComposerSkill } from '@codycodeagent/cody-web-core/composer'
 
 const props = defineProps<{ open: boolean; cwd: string }>()
 const emit = defineEmits<{ close: []; insert: [insertion: PromptInsertion] }>()
@@ -137,7 +137,7 @@ const isDrafting = ref(false)
 const isLoadingSkills = ref(false)
 const isEditing = ref(false)
 const editorError = ref('')
-const availableSkills = ref<UiComposerSkill[]>([])
+const availableSkills = ref<ComposerSkill[]>([])
 const draftReason = ref('')
 const editor = reactive({
   id: '', title: '', description: '', category: 'General', content: '', scope: 'global' as PromptTemplateScope,

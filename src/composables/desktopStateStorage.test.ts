@@ -107,13 +107,13 @@ describe('desktopStateStorage', () => {
       reasoningEffort: 'high',
       collaborationModeName: ' plan ',
       permissionMode: 'yolo',
-      submitMode: 'guide',
+      submitMode: 'steer',
     })).toEqual({
       modelId: 'gpt-5.5',
       reasoningEffort: 'high',
       collaborationModeName: 'plan',
       permissionMode: 'yolo',
-      submitMode: 'guide',
+      submitMode: 'steer',
     })
 
     expect(normalizeDesktopTurnPreferences({
@@ -135,14 +135,14 @@ describe('desktopStateStorage', () => {
       reasoningEffort: 'xhigh',
       collaborationModeName: 'plan',
       permissionMode: 'yolo',
-      submitMode: 'guide',
+      submitMode: 'steer',
     })
     expect(loadDesktopTurnPreferences()).toEqual({
       modelId: 'gpt-5.5',
       reasoningEffort: 'xhigh',
       collaborationModeName: 'plan',
       permissionMode: 'yolo',
-      submitMode: 'guide',
+      submitMode: 'steer',
     })
 
     storage.setItem(DESKTOP_STORAGE_KEYS.turnPreferences, '{bad json')
