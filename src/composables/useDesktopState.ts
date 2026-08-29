@@ -5,6 +5,7 @@ import {
   type ComposerCollaborationModeOption,
   type ComposerSubmission,
 } from '@codycodeagent/cody-web-core/composer'
+import type { ConversationScrollState } from '@codycodeagent/cody-web-core/conversation'
 import {
   compactThread,
   forkThread,
@@ -135,7 +136,6 @@ import {
   upsertThreadInGroups,
 } from './threadGroupState'
 import type {
-  ThreadScrollState,
   UiComposerContextKind,
   UiMessage,
   UiQueuedMessage,
@@ -460,7 +460,7 @@ export function useDesktopState() {
     return thread?.updatedAtIso ?? ''
   }
 
-  function setThreadScrollState(threadId: string, nextState: ThreadScrollState): void {
+  function setThreadScrollState(threadId: string, nextState: ConversationScrollState): void {
     if (!threadId) return
 
     const normalizedState = normalizeThreadScrollState(nextState)

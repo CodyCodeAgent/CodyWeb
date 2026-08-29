@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
-import type { ThreadScrollState, UiMessage, UiProjectGroup, UiThread } from '../types/codex'
+import type { ConversationScrollState } from '@codycodeagent/cody-web-core/conversation'
+import type { UiMessage, UiProjectGroup, UiThread } from '../types/codex'
 import {
   loadProjectDisplayNames,
   loadProjectOrder,
@@ -22,7 +23,7 @@ export function useDesktopThreadState() {
   const inProgressById = ref<Record<string, boolean>>({})
   const eventUnreadByThreadId = ref<Record<string, boolean>>({})
   const readStateByThreadId = ref<Record<string, string>>(loadReadStateMap())
-  const scrollStateByThreadId = ref<Record<string, ThreadScrollState>>(loadThreadScrollStateMap())
+  const scrollStateByThreadId = ref<Record<string, ConversationScrollState>>(loadThreadScrollStateMap())
   const projectOrder = ref<string[]>(loadProjectOrder())
   const projectDisplayNameById = ref<Record<string, string>>(loadProjectDisplayNames())
   const loadedVersionByThreadId = ref<Record<string, string>>({})
@@ -30,7 +31,7 @@ export function useDesktopThreadState() {
   const resumedThreadById = ref<Record<string, boolean>>({})
   const allThreads = computed(() => flattenThreads(projectGroups.value))
   const selectedThread = computed(() => allThreads.value.find((thread) => thread.id === selectedThreadId.value) ?? null)
-  const selectedThreadScrollState = computed<ThreadScrollState | null>(() => scrollStateByThreadId.value[selectedThreadId.value] ?? null)
+  const selectedThreadScrollState = computed<ConversationScrollState | null>(() => scrollStateByThreadId.value[selectedThreadId.value] ?? null)
 
   function setSelectedThreadId(threadId: string): void {
     if (selectedThreadId.value === threadId) return

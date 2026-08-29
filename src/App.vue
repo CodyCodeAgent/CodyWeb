@@ -406,8 +406,8 @@ import type {
   ComposerSubmitMode,
   KnownReasoningEffort,
 } from '@codycodeagent/cody-web-core/composer'
+import type { ConversationScrollState } from '@codycodeagent/cody-web-core/conversation'
 import type {
-  ThreadScrollState,
   UiComposerContextKind,
   UiComposerPermissionMode,
   UiComposerSubmitAck,
@@ -939,7 +939,7 @@ function onReorderProject(payload: { projectName: string; toIndex: number }): vo
   reorderProject(payload.projectName, payload.toIndex)
 }
 
-function onUpdateThreadScrollState(payload: { threadId: string; state: ThreadScrollState }): void {
+function onUpdateThreadScrollState(payload: { threadId: string; state: ConversationScrollState }): void {
   setThreadScrollState(payload.threadId, payload.state)
 }
 

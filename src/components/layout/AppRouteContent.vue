@@ -86,9 +86,10 @@ import type {
   ComposerSubmitMode,
   KnownReasoningEffort,
 } from '@codycodeagent/cody-web-core/composer'
+import type { ConversationScrollState } from '@codycodeagent/cody-web-core/conversation'
 import type { PromptInsertion } from '../../composables/promptLibraryRules'
 import { useLocale } from '../../composables/useLocale'
-import type { ThreadScrollState, UiComposerContextKind, UiComposerPermissionMode, UiComposerSubmitAck, UiLiveOverlay, UiMessage, UiQueuedMessage, UiServerRequest, UiServerRequestReply, UiThread, WorkspaceComposerContext } from '../../types/codex'
+import type { UiComposerContextKind, UiComposerPermissionMode, UiComposerSubmitAck, UiLiveOverlay, UiMessage, UiQueuedMessage, UiServerRequest, UiServerRequestReply, UiThread, WorkspaceComposerContext } from '../../types/codex'
 import ComposerDropdown from '../content/ComposerDropdown.vue'
 import ThreadComposer from '../content/ThreadComposer.vue'
 import ThreadConversation from '../content/ThreadConversation.vue'
@@ -109,7 +110,7 @@ defineProps<{
   homeComposerBusyLabel: string
   filteredMessages: UiMessage[]; isLoadingMessages: boolean; selectedThread: UiThread | null; selectedMessageLoadError: string
   isLoadingEarlierMessages: boolean; selectedThreadHasMoreMessagesBefore: boolean; selectedThreadEarlierMessageCount: number
-  selectedThreadScrollState: ThreadScrollState | null; liveOverlay: UiLiveOverlay | null; selectedThreadServerRequests: UiServerRequest[]
+  selectedThreadScrollState: ConversationScrollState | null; liveOverlay: UiLiveOverlay | null; selectedThreadServerRequests: UiServerRequest[]
   selectedQueuedMessages: UiQueuedMessage[]
   threadComposerBusyLabel: string; isSelectedThreadInProgress: boolean; isInterruptingTurn: boolean
   conversationShareSelecting: boolean
@@ -120,7 +121,7 @@ const emit = defineEmits<{
   submitMessage: [ComposerSubmission<UiComposerContextKind>, UiComposerSubmitAck]; selectModel: [string]; selectReasoningEffort: [KnownReasoningEffort | '']
   selectCollaborationMode: [string]; selectPermissionMode: [UiComposerPermissionMode]
   selectSubmitMode: [ComposerSubmitMode]
-  updateScrollState: [{ threadId: string; state: ThreadScrollState }]; retryLoad: []; interrupt: []
+  updateScrollState: [{ threadId: string; state: ConversationScrollState }]; retryLoad: []; interrupt: []
   loadEarlierMessages: [threadId: string]
   sendQueuedMessageNow: [payload: { threadId: string; messageId: string }]
   deleteQueuedMessage: [payload: { threadId: string; messageId: string }]

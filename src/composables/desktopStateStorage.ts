@@ -3,12 +3,13 @@ import {
   type ComposerSubmitMode,
   type KnownReasoningEffort,
 } from '@codycodeagent/cody-web-core/composer'
+import type { ConversationScrollState } from '@codycodeagent/cody-web-core/conversation'
 import {
   DEFAULT_COMPOSER_PERMISSION_MODE,
   normalizeComposerPermissionMode,
 } from './desktopTurnPermissions'
 import { DESKTOP_STORAGE_KEYS } from './desktopSettingsKeys'
-import type { ThreadScrollState, UiComposerPermissionMode } from '../types/codex'
+import type { UiComposerPermissionMode } from '../types/codex'
 
 export type DesktopTurnPreferences = {
   modelId: string
@@ -98,14 +99,14 @@ export function normalizeDefaultNewThreadCwd(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-export function normalizeThreadScrollState(value: unknown): ThreadScrollState | null {
+export function normalizeThreadScrollState(value: unknown): ConversationScrollState | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
 
   const rawState = value as Record<string, unknown>
   if (typeof rawState.scrollTop !== 'number' || !Number.isFinite(rawState.scrollTop)) return null
   if (typeof rawState.isAtBottom !== 'boolean') return null
 
-  const normalized: ThreadScrollState = {
+  const normalized: ConversationScrollState = {
     scrollTop: Math.max(0, rawState.scrollTop),
     isAtBottom: rawState.isAtBottom,
   }
@@ -160,11 +161,11 @@ export function saveDefaultNewThreadCwd(cwd: string): void {
   storage.setItem(DESKTOP_STORAGE_KEYS.defaultNewThreadCwd, normalizedCwd)
 }
 
-export function loadThreadScrollStateMap(): Record<string, ThreadScrollState> {
+export function loadThreadScrollStateMap(): Record<string, ConversationScrollState> {
   const parsed = readJsonStorage(DESKTOP_STORAGE_KEYS.scrollState)
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
 
-  const normalizedMap: Record<string, ThreadScrollState> = {}
+  const normalizedMap: Record<string, ConversationScrollState> = {}
   for (const [threadId, state] of Object.entries(parsed as Record<string, unknown>)) {
     if (!threadId) continue
     const normalizedState = normalizeThreadScrollState(state)
@@ -175,7 +176,7 @@ export function loadThreadScrollStateMap(): Record<string, ThreadScrollState> {
   return normalizedMap
 }
 
-export function saveThreadScrollStateMap(state: Record<string, ThreadScrollState>): void {
+export function saveThreadScrollStateMap(state: Record<string, ConversationScrollState>): void {
   writeJsonStorage(DESKTOP_STORAGE_KEYS.scrollState, state)
 }
 

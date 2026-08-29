@@ -485,16 +485,24 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import type { ThreadScrollState, UiLiveOverlay, UiMessage, UiServerRequest, UiServerRequestReply } from '../../types/codex'
+import {
+  buildConversationScrollMetrics,
+  buildConversationScrollState,
+  normalizedConversationBottomLockFrames,
+  preservedConversationScrollTop,
+  restoredConversationScrollTop,
+  shouldPreserveConversationViewport,
+  shouldRestoreConversationToBottom,
+  type ConversationScrollState,
+} from '@codycodeagent/cody-web-core/conversation'
+import type { UiLiveOverlay, UiMessage, UiServerRequest, UiServerRequestReply } from '../../types/codex'
 import {
   APPROVAL_SCOPE_OPTIONS,
   type ApprovalDecision,
   type ApprovalDecisionScope,
 } from '@codycodeagent/cody-web-core/presentation'
 import {
-  buildConversationScrollMetrics,
   buildConversationRequestCards,
-  buildConversationScrollState,
   buildCopyTextAt as buildThreadCopyTextAt,
   buildToolCallFailureReply,
   buildToolCallSuccessReply,
@@ -506,15 +514,10 @@ import {
   liveOverlayDetailsToggleLabel,
   messageCopyAriaLabel,
   messageCopyTitle,
-  normalizedConversationBottomLockFrames,
-  preservedConversationScrollTop,
   readToolQuestionAnswer,
   readToolQuestionOtherAnswer,
   readToolQuestions,
-  restoredConversationScrollTop,
   shouldShowBlockingConversationLoadError,
-  shouldPreserveConversationViewport,
-  shouldRestoreConversationToBottom,
   shouldShowBlockingConversationLoading,
   shouldShowInlineConversationLoadError,
   shouldShowConversationRefreshStatus,
@@ -564,7 +567,7 @@ const props = defineProps<{
   isLoading: boolean
   loadError: string
   activeThreadId: string
-  scrollState: ThreadScrollState | null
+  scrollState: ConversationScrollState | null
   isLoadingEarlierMessages?: boolean
   hasMoreMessagesBefore?: boolean
   earlierMessageCount?: number
@@ -573,7 +576,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  updateScrollState: [payload: { threadId: string; state: ThreadScrollState }]
+  updateScrollState: [payload: { threadId: string; state: ConversationScrollState }]
   respondServerRequest: [payload: UiServerRequestReply]
   retryLoad: []
   loadEarlierMessages: [threadId: string]

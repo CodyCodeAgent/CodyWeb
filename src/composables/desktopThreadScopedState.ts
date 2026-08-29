@@ -2,11 +2,12 @@ import type { TurnActivityState } from './realtimeNotificationReaders'
 import type { TurnErrorState, TurnSummaryState } from './desktopMessageState'
 import { pruneServerRequestsToThreads } from './desktopServerRequests'
 import { pruneThreadStateMap } from './threadGroupState'
-import type { ThreadScrollState, UiMessage, UiServerRequest } from '../types/codex'
+import type { ConversationScrollState } from '@codycodeagent/cody-web-core/conversation'
+import type { UiMessage, UiServerRequest } from '../types/codex'
 
 export type DesktopThreadScopedState = {
   readStateByThreadId: Record<string, string>
-  scrollStateByThreadId: Record<string, ThreadScrollState>
+  scrollStateByThreadId: Record<string, ConversationScrollState>
   loadedMessagesByThreadId: Record<string, boolean>
   loadedVersionByThreadId: Record<string, string>
   resumedThreadById: Record<string, boolean>

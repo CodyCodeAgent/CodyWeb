@@ -1,6 +1,11 @@
 import { asRecord } from '../api/protocolValueReaders'
+import {
+  MESSAGE_HISTORY_PAGE_SIZE,
+  normalizedVisibleMessageCount,
+  visibleMessageStartIndex,
+  type ConversationScrollState,
+} from '@codycodeagent/cody-web-core/conversation'
 import type {
-  ThreadScrollState,
   UiLiveOverlay,
   UiMessage,
   UiServerRequest,
@@ -32,37 +37,9 @@ export type ParsedToolQuestion = {
   options: string[]
 }
 
-export type ConversationScrollMetrics = {
-  maxScrollTop: number
-  scrollRatio: number
-  isAtBottom: boolean
-}
-
 export type ConversationRequestKind = UiServerRequestKind
 
 export type ConversationRequestCard = UiServerRequestCard
-
-export const DEFAULT_VISIBLE_MESSAGE_COUNT = 80
-export const MESSAGE_HISTORY_PAGE_SIZE = 80
-
-export function normalizedVisibleMessageCount(messageCount: number, requestedCount: number): number {
-  const normalizedMessageCount = Math.max(Math.trunc(messageCount), 0)
-  const normalizedRequestedCount = Math.max(Math.trunc(requestedCount), DEFAULT_VISIBLE_MESSAGE_COUNT)
-  return Math.min(normalizedRequestedCount, normalizedMessageCount)
-}
-
-export function visibleMessageStartIndex(messageCount: number, visibleCount: number): number {
-  return Math.max(Math.trunc(messageCount) - Math.max(Math.trunc(visibleCount), 0), 0)
-}
-
-export function hiddenMessageCount(messageCount: number, visibleCount: number): number {
-  return visibleMessageStartIndex(messageCount, visibleCount)
-}
-
-export function nextVisibleMessageCount(messageCount: number, visibleCount: number, pageSize = MESSAGE_HISTORY_PAGE_SIZE): number {
-  const nextCount = Math.max(Math.trunc(visibleCount), 0) + Math.max(Math.trunc(pageSize), 1)
-  return normalizedVisibleMessageCount(messageCount, nextCount)
-}
 
 export function visibleMessageWindowSummary(messageCount: number, visibleCount: number): string {
   const normalizedMessageCount = Math.max(Math.trunc(messageCount), 0)
@@ -240,7 +217,7 @@ export function shouldShowScrollToBottomButton(params: {
   messageCount: number
   pendingRequestCount: number
   hasLiveOverlay: boolean
-  scrollState: ThreadScrollState | null
+  scrollState: ConversationScrollState | null
 }): boolean {
   if (!params.activeThreadId || params.isLoading) return false
   if (params.messageCount === 0 && params.pendingRequestCount === 0 && !params.hasLiveOverlay) return false
@@ -261,72 +238,6 @@ export function conversationRequestActionKeyPrefix(kind: ConversationRequestKind
 
 export function buildConversationRequestCards(requests: UiServerRequest[]): ConversationRequestCard[] {
   return buildServerRequestCards(requests)
-}
-
-export function buildConversationScrollMetrics(params: {
-  scrollTop: number
-  scrollHeight: number
-  clientHeight: number
-  bottomThresholdPx: number
-}): ConversationScrollMetrics {
-  const maxScrollTop = Math.max(params.scrollHeight - params.clientHeight, 0)
-  const scrollRatio = maxScrollTop > 0
-    ? Math.min(Math.max(params.scrollTop / maxScrollTop, 0), 1)
-    : 1
-  const distanceFromBottom = params.scrollHeight - (params.scrollTop + params.clientHeight)
-  return {
-    maxScrollTop,
-    scrollRatio,
-    isAtBottom: distanceFromBottom <= params.bottomThresholdPx,
-  }
-}
-
-export function restoredConversationScrollTop(
-  savedState: ThreadScrollState,
-  maxScrollTop: number,
-): number {
-  const targetScrollTop =
-    typeof savedState.scrollRatio === 'number'
-      ? savedState.scrollRatio * maxScrollTop
-      : savedState.scrollTop
-  return Math.min(Math.max(targetScrollTop, 0), maxScrollTop)
-}
-
-export function preservedConversationScrollTop(
-  savedState: ThreadScrollState,
-  maxScrollTop: number,
-): number {
-  return Math.min(Math.max(savedState.scrollTop, 0), maxScrollTop)
-}
-
-export function buildConversationScrollState(params: {
-  scrollTop: number
-  scrollHeight: number
-  clientHeight: number
-  bottomThresholdPx: number
-}): ThreadScrollState {
-  const metrics = buildConversationScrollMetrics(params)
-  return {
-    scrollTop: params.scrollTop,
-    isAtBottom: metrics.isAtBottom,
-    scrollRatio: metrics.scrollRatio,
-  }
-}
-
-export function shouldRestoreConversationToBottom(scrollState: ThreadScrollState | null): boolean {
-  return !scrollState || scrollState.isAtBottom === true
-}
-
-export function shouldPreserveConversationViewport(scrollState: ThreadScrollState | null): scrollState is ThreadScrollState {
-  return scrollState?.isAtBottom === false
-}
-
-export function normalizedConversationBottomLockFrames(frames: number): number {
-  return Math.max(Math.trunc(frames), 1)
-}
-
-export function shouldLockConversationToBottom(scrollState: ThreadScrollState | null): boolean {
-  return shouldRestoreConversationToBottom(scrollState)
 }
 
 export function toolQuestionKey(requestId: number, questionId: string): string {
