@@ -6,7 +6,7 @@ export type ComposerPermissionModeOption = {
 }
 
 export type TurnPermissionOverride = {
-  approvalPolicy?: 'untrusted' | 'on-failure' | 'on-request' | 'never'
+  approvalPolicy?: 'untrusted' | 'on-request' | 'never'
   sandboxPolicy?: { type: 'dangerFullAccess' }
 }
 

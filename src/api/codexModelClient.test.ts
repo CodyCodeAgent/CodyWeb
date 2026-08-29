@@ -112,15 +112,16 @@ describe('codex model client', () => {
   it('loads model ids using id before model and keeps first occurrence', async () => {
     rpcMock.rpcCall.mockResolvedValue({
       data: [
-        { id: 'gpt-5', model: 'fallback' },
-        { id: '', model: 'gpt-4.1' },
-        { id: 'gpt-5', model: 'duplicate' },
-        { id: '', model: '' },
+        { id: 'gpt-5', model: 'fallback', displayName: 'GPT-5', description: '', hidden: false, isDefault: true, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [] },
+        { id: '', model: 'gpt-4.1', displayName: 'GPT-4.1', description: '', hidden: false, isDefault: false, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [] },
+        { id: 'gpt-5', model: 'duplicate', displayName: 'Duplicate', description: '', hidden: false, isDefault: false, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [] },
+        { id: '', model: '', displayName: '', description: '', hidden: true, isDefault: false, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [] },
       ],
+      nextCursor: null,
     })
 
     await expect(getAvailableModelIds()).resolves.toEqual(['gpt-5', 'gpt-4.1'])
-    expect(rpcMock.rpcCall).toHaveBeenCalledWith('model/list', {})
+    expect(rpcMock.rpcCall).toHaveBeenCalledWith('model/list', { limit: 100 })
   })
 
   it('loads current model config with normalized reasoning effort', async () => {

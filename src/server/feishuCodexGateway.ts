@@ -1,6 +1,6 @@
 import type { CatalogProject, CatalogSnapshot, CatalogThread } from './catalogStore.js'
 import { latestAssistantTextFromEvents, latestTerminalTurnEvent } from '@codycodeagent/cody-web-core/conversation'
-import { normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
+import { buildTurnUserInput, CodexSessionCatalog, CodexThreadCommands, normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
 
 type Rpc = (method: string, params: unknown) => Promise<unknown>
 type RespondToServerRequest = (payload: unknown) => Promise<void>
@@ -113,6 +113,8 @@ function mapThread(thread: CatalogThread): FeishuSessionOption {
 
 export class FeishuCodexGateway {
   private readonly freshThreadIds = new Set<string>()
+  private readonly commands: CodexThreadCommands
+  private readonly sessionCatalog: CodexSessionCatalog
 
   constructor(private readonly dependencies: {
     rpc: Rpc
@@ -120,7 +122,11 @@ export class FeishuCodexGateway {
     subscribe?: Subscribe
     readCatalog: () => Promise<CatalogSnapshot>
     refreshCatalog?: () => Promise<void>
-  }) {}
+  }) {
+    const caller = { call: <T>(method: string, params?: unknown): Promise<T> => dependencies.rpc(method, params ?? {}) as Promise<T> }
+    this.commands = new CodexThreadCommands(caller)
+    this.sessionCatalog = new CodexSessionCatalog(caller)
+  }
 
   /** Drafts a reusable scenario package from a short operator brief and the live workspace skill catalog. */
   async draftScenarioPackage(input: { cwd: string; brief: string; timeoutMs?: number }): Promise<ScenarioPackageDraft> {
@@ -130,23 +136,14 @@ export class FeishuCodexGateway {
     if (!cwd) throw new Error('A workspace is required to draft a scenario package')
     if (!brief) throw new Error('Describe the scenario package you want Codex to draft')
 
-    const skillPayload = asRecord(await this.dependencies.rpc('skills/list', { cwds: [cwd] }))
-    const data = Array.isArray(skillPayload?.data) ? skillPayload.data : []
-    const skills = data.flatMap((entry) => {
-      const rows = Array.isArray(asRecord(entry)?.skills) ? asRecord(entry)!.skills as unknown[] : []
-      return rows.flatMap((value) => {
-        const row = asRecord(value)
-        const name = readString(row?.name); const path = readString(row?.path)
-        if (!name || !path || row?.enabled === false) return []
-        const iface = asRecord(row?.interface)
-        return [{
-          name,
-          path,
-          displayName: readString(iface?.displayName) || name,
-          description: readString(iface?.shortDescription || row?.shortDescription || row?.description).slice(0, 500),
-        }]
-      })
-    })
+    const skills = (await this.sessionCatalog.listSkills([cwd]))
+      .filter((skill) => skill.enabled)
+      .map((skill) => ({
+        name: skill.name,
+        path: skill.path,
+        displayName: skill.displayName,
+        description: skill.description.slice(0, 500),
+      }))
     const uniqueSkills = Array.from(new Map(skills.map((skill) => [skill.path, skill])).values()).slice(0, 160)
     const timeoutMs = Math.max(5_000, Math.min(input.timeoutMs ?? 60_000, 90_000))
     let threadId = ''
@@ -183,7 +180,7 @@ export class FeishuCodexGateway {
     })
 
     try {
-      const started = asRecord(await this.dependencies.rpc('thread/start', {
+      threadId = await this.commands.startThread({
         cwd,
         ephemeral: true,
         approvalPolicy: 'never',
@@ -194,11 +191,8 @@ export class FeishuCodexGateway {
           '主要 Skill 是可选引导：只有目录中存在高度匹配的 Skill 时才选择，否则返回空字符串，让 Codex 自主发现能力。',
           '不要执行任务，不要修改文件，只生成场景包草稿，并严格遵守输出 Schema。',
         ].join('\n'),
-      }))
-      threadId = readString(asRecord(started?.thread)?.id)
-      if (!threadId) throw new Error('thread/start did not return a draft thread id')
-      await this.dependencies.rpc('turn/start', {
-        threadId,
+      })
+      await this.commands.startTurn(threadId, {
         input: [{ type: 'text', text: [
           `用户描述：${brief.slice(0, 12_000)}`,
           '',
@@ -208,7 +202,7 @@ export class FeishuCodexGateway {
             : '无',
         ].join('\n'), text_elements: [] }],
         approvalPolicy: 'never',
-        sandboxPolicy: { type: 'readOnly' },
+        sandboxPolicy: { type: 'readOnly', networkAccess: false },
         outputSchema: {
           type: 'object', additionalProperties: false,
           properties: {
@@ -277,7 +271,7 @@ export class FeishuCodexGateway {
     })
 
     try {
-      const started = asRecord(await this.dependencies.rpc('thread/start', {
+      threadId = await this.commands.startThread({
         cwd: input.cwd.trim(),
         ephemeral: true,
         approvalPolicy: 'never',
@@ -288,11 +282,8 @@ export class FeishuCodexGateway {
           '只能从 candidate_keywords 中选择，不得创建正则、脚本或新字段。',
           '严格按照输出 Schema 返回；不要添加解释文字。',
         ].join('\n'),
-      }))
-      threadId = readString(asRecord(started?.thread)?.id)
-      if (!threadId) throw new Error('thread/start did not return an analysis thread id')
-      await this.dependencies.rpc('turn/start', {
-        threadId,
+      })
+      await this.commands.startTurn(threadId, {
         input: [{ type: 'text', text: [
           `卡片标题：${input.cardTitle}`,
           `候选稳定字段：${input.candidateKeywords.join('、') || '无'}`,
@@ -302,7 +293,7 @@ export class FeishuCodexGateway {
           input.cardText.slice(0, 12_000),
         ].join('\n'), text_elements: [] }],
         approvalPolicy: 'never',
-        sandboxPolicy: { type: 'readOnly' },
+        sandboxPolicy: { type: 'readOnly', networkAccess: false },
         outputSchema: {
           type: 'object',
           additionalProperties: false,
@@ -352,16 +343,13 @@ export class FeishuCodexGateway {
   async startSession(cwd: string): Promise<FeishuStartedSession> {
     const normalizedCwd = cwd.trim()
     if (!normalizedCwd) throw new Error('A project cwd is required to create a session')
-    const payload = asRecord(await this.dependencies.rpc('thread/start', { cwd: normalizedCwd }))
-    const thread = asRecord(payload?.thread)
-    const id = readString(thread?.id)
-    if (!id) throw new Error('thread/start did not return a thread id')
+    const id = await this.commands.startThread({ cwd: normalizedCwd })
     // A thread/start result exists only in the app-server process until its
     // first user turn materializes the rollout. thread/read(includeTurns) and
     // thread/resume reject that valid intermediate state, so remember it and
     // send the first turn directly.
     this.freshThreadIds.add(id)
-    return { id, title: readString(thread?.name) || readString(thread?.title) || 'New session', cwd: normalizedCwd }
+    return { id, title: 'New session', cwd: normalizedCwd }
   }
 
   async startTurn(
@@ -378,89 +366,62 @@ export class FeishuCodexGateway {
     if (!normalizedText) throw new Error('A text message is required to start a turn')
 
     const isFreshThread = this.freshThreadIds.has(normalizedThreadId)
-    if (!isFreshThread) await this.dependencies.rpc('thread/resume', { threadId: normalizedThreadId })
-    const input: Array<Record<string, unknown>> = [
-      ...skills
-        .map((skill) => ({ name: skill.name.trim(), path: skill.path.trim() }))
-        .filter((skill) => skill.name && skill.path)
-        .map((skill) => ({ type: 'skill', name: skill.name, path: skill.path })),
-      { type: 'text', text: normalizedText, text_elements: [] },
-      ...localImagePaths
-        .map((path) => path.trim())
-        .filter(Boolean)
-        .map((path) => ({ type: 'localImage', path })),
-    ]
-    const turnStartParams: Record<string, unknown> = {
-      threadId: normalizedThreadId,
+    if (!isFreshThread) await this.commands.resumeThread(normalizedThreadId)
+    const input = buildTurnUserInput({ text: normalizedText, skills, localImages: localImagePaths.map(path => ({ path })) })
+    const turnStartParams = {
       input,
+      ...(permissionMode === 'yolo' ? { approvalPolicy: 'never' as const, sandboxPolicy: { type: 'dangerFullAccess' as const } } : {}),
+      ...(collaborationMode === 'plan' ? { collaborationMode: await this.planCollaborationMode() } : {}),
     }
-    if (permissionMode === 'yolo') {
-      turnStartParams.approvalPolicy = 'never'
-      turnStartParams.sandboxPolicy = { type: 'dangerFullAccess' }
-    }
-    if (collaborationMode === 'plan') {
-      const [modePayload, configPayload] = await Promise.all([
-        this.dependencies.rpc('collaborationMode/list', {}),
-        this.dependencies.rpc('config/read', {}),
-      ])
-      const modeData = asRecord(modePayload)?.data
-      const modes = Array.isArray(modeData) ? modeData : []
-      const plan = modes.map((row) => asRecord(row)).find((row) => readString(row?.mode) === 'plan')
-      const config = asRecord(asRecord(configPayload)?.config)
-      turnStartParams.collaborationMode = {
-        mode: 'plan',
-        settings: {
-          model: readString(plan?.model) || readString(config?.model),
-          reasoning_effort: readString(plan?.reasoning_effort) || readString(config?.model_reasoning_effort) || null,
-          developer_instructions: readString(plan?.developer_instructions) || null,
-        },
-      }
-    }
-    const payload = asRecord(await this.dependencies.rpc('turn/start', turnStartParams))
-    const turn = asRecord(payload?.turn)
-    const turnId = readString(turn?.id)
-    if (!turnId) throw new Error('turn/start did not return a turn id')
+    const turnId = await this.commands.startTurn(normalizedThreadId, turnStartParams)
     this.freshThreadIds.delete(normalizedThreadId)
     return { threadId: normalizedThreadId, turnId }
+  }
+
+  private async planCollaborationMode() {
+    const [modes, configPayload] = await Promise.all([
+      this.sessionCatalog.listCollaborationModes(),
+      this.dependencies.rpc('config/read', {}),
+    ])
+    const plan = modes.find(mode => mode.mode === 'plan')
+    const config = asRecord(asRecord(configPayload)?.config)
+    return {
+      mode: 'plan' as const,
+      settings: {
+        model: plan?.model || readString(config?.model),
+        reasoning_effort: plan?.reasoningEffort || readString(config?.model_reasoning_effort) || null,
+        developer_instructions: null,
+      },
+    }
   }
 
   async stopTurn(threadId: string, turnId: string): Promise<void> {
     const normalizedThreadId = threadId.trim()
     const normalizedTurnId = turnId.trim()
     if (!normalizedThreadId || !normalizedTurnId) throw new Error('threadId and turnId are required to stop a turn')
-    await this.dependencies.rpc('turn/interrupt', { threadId: normalizedThreadId, turnId: normalizedTurnId })
+    await this.commands.interruptTurn(normalizedThreadId, normalizedTurnId)
   }
 
   async isThreadBusy(threadId: string): Promise<boolean> {
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) return false
     if (this.freshThreadIds.has(normalizedThreadId)) return false
-    const payload = asRecord(await this.dependencies.rpc('thread/read', {
-      threadId: normalizedThreadId,
-      includeTurns: true,
-    }))
-    const turns = asRecord(payload?.thread)?.turns
-    return Array.isArray(turns) && turns.some((value) => readString(asRecord(value)?.status) === 'inProgress')
+    const snapshot = await this.sessionCatalog.readThreadSnapshot(normalizedThreadId)
+    return snapshot.turns.some((turn) => turn.status === 'inProgress')
   }
 
   async findActiveTurnId(threadId: string): Promise<string | null> {
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) return null
     if (this.freshThreadIds.has(normalizedThreadId)) return null
-    const payload = asRecord(await this.dependencies.rpc('thread/read', {
-      threadId: normalizedThreadId,
-      includeTurns: true,
-    }))
-    const turns = asRecord(payload?.thread)?.turns
-    if (!Array.isArray(turns)) return null
+    const turns = (await this.sessionCatalog.readThreadSnapshot(normalizedThreadId)).turns
     // thread/read keeps historical turns in chronological order. Interrupted
     // clients can leave an older turn marked inProgress, while app-server only
     // accepts interrupts for the newest active turn. Always prefer the last
     // active record instead of the first stale one.
-    const active = turns.map(asRecord)
-      .filter((value) => readString(value?.status) === 'inProgress')
+    const active = turns.filter((turn) => turn.status === 'inProgress')
       .at(-1)
-    return readString(active?.id) || null
+    return active?.turnId || null
   }
 
   async readTurnState(threadId: string, turnId: string): Promise<{
@@ -468,18 +429,12 @@ export class FeishuCodexGateway {
     responseText?: string
     error?: string
   }> {
-    const payload = asRecord(await this.dependencies.rpc('thread/read', { threadId: threadId.trim(), includeTurns: true }))
-    const turns = asRecord(payload?.thread)?.turns
-    const turn = Array.isArray(turns)
-      ? turns.map(asRecord).find((value) => readString(value?.id) === turnId.trim())
-      : null
+    const snapshot = await this.sessionCatalog.readThreadSnapshot(threadId.trim())
+    const turn = snapshot.turns.find((value) => value.turnId === turnId.trim())
     if (!turn) return { status: 'missing' }
-    const rawStatus = readString(turn.status)
-    const errorValue = asRecord(turn.error)
-    const error = readString(errorValue?.message || turn.error)
-    const items = Array.isArray(turn.items) ? turn.items.map(asRecord) : []
-    const responseText = items.filter((item) => readString(item?.type) === 'agentMessage')
-      .map((item) => readString(item?.text || item?.content)).filter(Boolean).at(-1)
+    const rawStatus = turn.status
+    const error = turn.error
+    const responseText = turn.assistantText || undefined
     if (rawStatus === 'inProgress') return { status: 'running', responseText }
     if (rawStatus === 'failed' || error) return { status: 'failed', responseText, error }
     if (rawStatus === 'interrupted' || rawStatus === 'cancelled') return { status: 'cancelled', responseText }
@@ -490,13 +445,13 @@ export class FeishuCodexGateway {
     const normalizedThreadId = threadId.trim()
     const normalizedTitle = title.trim()
     if (!normalizedThreadId || !normalizedTitle) throw new Error('threadId and title are required to rename a session')
-    await this.dependencies.rpc('thread/name/set', { threadId: normalizedThreadId, name: normalizedTitle })
+    await this.commands.renameThread(normalizedThreadId, normalizedTitle)
   }
 
   async archiveSession(threadId: string): Promise<void> {
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) throw new Error('A thread id is required to archive a session')
-    await this.dependencies.rpc('thread/archive', { threadId: normalizedThreadId })
+    await this.commands.archiveThread(normalizedThreadId)
   }
 
   async resolveApproval(requestId: number, decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel'): Promise<void> {

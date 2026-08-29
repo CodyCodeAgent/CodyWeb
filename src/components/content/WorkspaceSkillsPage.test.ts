@@ -27,18 +27,21 @@ describe('WorkspaceSkillsPage', () => {
         {
           name: 'design-system',
           description: 'Build the interface',
-          shortDescription: 'Design UI',
+          displayName: 'design-system',
           path: '/repo/.codex/skills/design/SKILL.md',
           scope: 'repo',
           enabled: true,
-          dependencies: { tools: [{ type: 'browser', value: 'Chrome' }] },
+          brandColor: '', iconSmall: '', iconLarge: '', defaultPrompt: '',
+          dependencies: [{ type: 'browser', value: 'Chrome', description: '', transport: '', command: '', url: '' }],
         },
         {
           name: 'docs',
           description: 'Write docs',
+          displayName: 'docs',
           path: '/home/skills/docs/SKILL.md',
           scope: 'user',
           enabled: false,
+          brandColor: '', iconSmall: '', iconLarge: '', defaultPrompt: '', dependencies: [],
         },
       ],
     }])

@@ -1,7 +1,7 @@
-import type { ThreadReadResponse } from '../api/appServerDtos.js'
 import { toLocalImagePreviewUrl } from '../api/normalizers/userMessageContent.js'
 import type { UiMessage, UiThreadMessagePage } from '../types/codex.js'
-import { normalizeThreadHistory } from '@codycodeagent/cody-web-core/session'
+import { CodexSessionCatalog } from '@codycodeagent/cody-web-core/session'
+import type { CodexEvent } from '@codycodeagent/cody-web-core/conversation'
 import {
   conversationTranscriptFromState,
   createConversationState,
@@ -18,7 +18,7 @@ export type ThreadMessageCacheEntry = {
   hydratedAtIso: string | null
   refreshedAtIso: string | null
   checkedAtIso: string | null
-  appThreadUpdatedAt: number | null
+  threadUpdatedAtIso: string | null
   lastError?: string
   dirty: boolean
   hydratePromise?: Promise<void>
@@ -35,15 +35,10 @@ const DEFAULT_LIMIT = 10
 const MAX_LIMIT = 100
 const DEFAULT_REFRESH_INTERVAL_MS = 10 * 60_000
 
-function asThreadReadResponse(value: unknown): ThreadReadResponse {
-  return value as ThreadReadResponse
-}
-
-function normalizeThreadMessages(payload: ThreadReadResponse): UiMessage[] {
-  const threadId = payload.thread.id
+function normalizeThreadMessages(threadId: string, events: CodexEvent[]): UiMessage[] {
   const state = reduceConversationEvents(
     createConversationState(threadId),
-    normalizeThreadHistory(payload, threadId),
+    events,
   )
   return conversationTranscriptFromState(state).map((message): UiMessage => ({
     ...message,
@@ -89,12 +84,14 @@ function pageMessagesBefore(
 export class ThreadMessageCache {
   private readonly entries = new Map<string, ThreadMessageCacheEntry>()
   private readonly rpc: ThreadMessageCacheOptions['rpc']
+  private readonly catalog: CodexSessionCatalog
   private readonly now: () => Date
   private readonly refreshIntervalMs: number
   private refreshTimer: NodeJS.Timeout | null = null
 
   constructor(options: ThreadMessageCacheOptions) {
     this.rpc = options.rpc
+    this.catalog = new CodexSessionCatalog({ call: <T>(method: string, params?: unknown) => this.rpc(method, params ?? {}) as Promise<T> })
     this.now = options.now ?? (() => new Date())
     this.refreshIntervalMs = options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS
   }
@@ -172,7 +169,7 @@ export class ThreadMessageCache {
       hydratedAtIso: null,
       refreshedAtIso: null,
       checkedAtIso: null,
-      appThreadUpdatedAt: null,
+      threadUpdatedAtIso: null,
       dirty: false,
     }
     this.entries.set(threadId, entry)
@@ -205,13 +202,10 @@ export class ThreadMessageCache {
     try {
       if (!options.forceFull) {
         try {
-          const metadata = asThreadReadResponse(await this.rpc('thread/read', {
-            threadId: entry.threadId,
-            includeTurns: false,
-          }))
-          const nextUpdatedAt = metadata.thread.updatedAt
+          const metadata = await this.catalog.readThreadSnapshot(entry.threadId, false)
+          const nextUpdatedAt = metadata.summary.updatedAtIso
           entry.checkedAtIso = this.now().toISOString()
-          if (entry.appThreadUpdatedAt === nextUpdatedAt) {
+          if (entry.threadUpdatedAtIso === nextUpdatedAt) {
             entry.status = 'ready'
             entry.dirty = false
             entry.lastError = undefined
@@ -232,19 +226,16 @@ export class ThreadMessageCache {
 
   private async fetchFull(entry: ThreadMessageCacheEntry): Promise<void> {
     try {
-      const payload = asThreadReadResponse(await this.rpc('thread/read', {
-        threadId: entry.threadId,
-        includeTurns: true,
-      }))
+      const snapshot = await this.catalog.readThreadSnapshot(entry.threadId)
       const nowIso = this.now().toISOString()
-      const messages = normalizeThreadMessages(payload)
+      const messages = normalizeThreadMessages(entry.threadId, snapshot.events)
       entry.messages = messages
       entry.total = messages.length
       entry.status = 'ready'
       entry.hydratedAtIso = entry.hydratedAtIso ?? nowIso
       entry.refreshedAtIso = nowIso
       entry.checkedAtIso = nowIso
-      entry.appThreadUpdatedAt = payload.thread.updatedAt
+      entry.threadUpdatedAtIso = snapshot.summary.updatedAtIso
       entry.lastError = undefined
       entry.dirty = false
     } catch (error) {

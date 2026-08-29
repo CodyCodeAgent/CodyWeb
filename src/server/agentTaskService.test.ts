@@ -159,7 +159,7 @@ describe('AgentTaskService', () => {
     await service.runNow(task.id)
     await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(2))
     expect(rpc).toHaveBeenLastCalledWith('turn/start', expect.objectContaining({
-      sandboxPolicy: { type: 'workspaceWrite', writableRoots: [tempDir], networkAccess: false },
+      sandboxPolicy: { type: 'workspaceWrite', writableRoots: [tempDir], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true },
     }))
 
     service.onNotification({ method: 'server/request', params: { threadId: 'thread-agent-2', turnId: 'turn-agent-2' } })

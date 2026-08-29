@@ -1,7 +1,5 @@
 import type {
-  CollaborationModeListResponse,
   ConfigReadResponse,
-  ModelListResponse,
 } from './appServerDtos'
 import {
   isKnownReasoningEffort,
@@ -10,6 +8,7 @@ import {
 } from '@codycodeagent/cody-web-core/composer'
 import { normalizeCodexApiError } from './codexErrors'
 import { rpcCall } from './codexRpcClient'
+import { CodexSessionCatalog } from '@codycodeagent/cody-web-core/session'
 
 export type CurrentModelConfig = {
   model: string
@@ -18,12 +17,11 @@ export type CurrentModelConfig = {
   autoCompactTokenLimit: number | null
 }
 
-type CollaborationModeRow = Omit<
-  CollaborationModeListResponse['data'][number],
-  'developer_instructions'
-> & {
-  // Codex 0.144 no longer returns this field from collaborationMode/list.
-  // Keep accepting it for compatibility with older app-server versions.
+type CollaborationModeRow = {
+  name: string
+  mode: string
+  model?: string | null
+  reasoning_effort?: unknown
   developer_instructions?: string | null
 }
 
@@ -34,6 +32,8 @@ async function callRpc<T>(method: string, params?: unknown): Promise<T> {
     throw normalizeCodexApiError(error, `RPC ${method} failed`, method)
   }
 }
+
+const sessionCatalog = new CodexSessionCatalog({ call: callRpc })
 
 export function normalizeReasoningEffort(value: unknown): KnownReasoningEffort | '' {
   return typeof value === 'string' && isKnownReasoningEffort(value) ? value : ''
@@ -80,12 +80,18 @@ export function normalizeCollaborationModeOption(
 }
 
 export async function getCollaborationModes(): Promise<ComposerCollaborationModeOption[]> {
-  const payload = await callRpc<CollaborationModeListResponse>('collaborationMode/list', {})
+  const rows = await sessionCatalog.listCollaborationModes()
   const options: ComposerCollaborationModeOption[] = []
   const seen = new Set<string>()
 
-  for (const row of payload.data) {
-    const option = normalizeCollaborationModeOption(row)
+  for (const row of rows) {
+    const option = normalizeCollaborationModeOption({
+      name: row.name,
+      mode: row.mode as CollaborationModeRow['mode'],
+      model: row.model || null,
+      reasoning_effort: row.reasoningEffort || null,
+      developer_instructions: null,
+    })
     if (!option) continue
     if (seen.has(option.name)) continue
     seen.add(option.name)
@@ -100,9 +106,8 @@ export async function setDefaultModel(model: string): Promise<void> {
 }
 
 export async function getAvailableModelIds(): Promise<string[]> {
-  const payload = await callRpc<ModelListResponse>('model/list', {})
   const ids: string[] = []
-  for (const row of payload.data) {
+  for (const row of await sessionCatalog.listModels()) {
     const candidate = row.id || row.model
     if (!candidate || ids.includes(candidate)) continue
     ids.push(candidate)

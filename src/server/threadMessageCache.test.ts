@@ -6,19 +6,38 @@ function threadReadResponse(threadId: string, messageCount: number, updatedAt = 
   return {
     thread: {
       id: threadId,
+      extra: null,
+      sessionId: 'session-1',
+      forkedFromId: null,
+      parentThreadId: null,
       preview: '',
+      ephemeral: false,
+      section: null,
+      sectionEnteredAt: null,
+      historyMode: 'paginated',
       modelProvider: 'openai',
       createdAt: 1,
       updatedAt,
+      recencyAt: updatedAt,
+      status: { type: 'idle' },
       path: null,
       cwd: '/repo',
       cliVersion: 'test',
       source: 'appServer',
+      canAcceptDirectInput: true,
+      threadSource: null,
+      agentNickname: null,
+      agentRole: null,
       gitInfo: null,
+      name: null,
       turns: Array.from({ length: messageCount }, (_, index) => ({
         id: `turn-${String(index + 1)}`,
         status: 'inProgress',
         error: null,
+        itemsView: 'full',
+        startedAt: null,
+        completedAt: null,
+        durationMs: null,
         items: [
           {
             type: 'agentMessage',
@@ -48,12 +67,16 @@ describe('ThreadMessageCache', () => {
       id: 'turn-1',
       status: 'completed',
       error: null,
+      itemsView: 'full',
+      startedAt: null,
+      completedAt: null,
+      durationMs: null,
       items: [{
         type: 'commandExecution', id: 'cmd-1', command: 'npm test', cwd: '/repo',
         processId: 'pty-1', status: 'completed', commandActions: [], aggregatedOutput: '2 passed',
         exitCode: 0, durationMs: 1_200,
       }, { type: 'agentMessage', id: 'answer-1', text: 'Done.' }],
-    }]
+    }] as unknown as ThreadReadResponse['thread']['turns']
     const cache = new ThreadMessageCache({ rpc: vi.fn(async () => payload) })
 
     const page = await cache.getMessagesPage({ threadId: 'thread-1', limit: 10 })

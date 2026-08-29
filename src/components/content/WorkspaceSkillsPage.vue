@@ -122,9 +122,9 @@
             <code class="skill-path">{{ selectedSkill.path }}</code>
           </section>
 
-          <section v-if="selectedSkill.interface?.defaultPrompt" class="skill-detail-section">
+          <section v-if="selectedSkill.defaultPrompt" class="skill-detail-section">
             <h3>{{ t('skills.detail.defaultPrompt') }}</h3>
-            <div class="skill-trigger-copy">{{ selectedSkill.interface.defaultPrompt }}</div>
+            <div class="skill-trigger-copy">{{ selectedSkill.defaultPrompt }}</div>
           </section>
 
           <p v-if="updateError" class="skill-update-error" role="alert">{{ updateError }}</p>
@@ -137,7 +137,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import type { SkillMetadata } from '../../api/appServerDtos'
+import type { CodexSkillOption } from '@codycodeagent/cody-web-core/session'
 import { getSkillCatalog, setSkillEnabled } from '../../api/codexComposerClient'
 import { useLocale } from '../../composables/useLocale'
 import IconTablerRefresh from '../icons/IconTablerRefresh.vue'
@@ -148,7 +148,7 @@ const { t } = useLocale()
 
 type ScopeFilter = 'all' | 'repo' | 'user' | 'system' | 'enabled' | 'disabled'
 
-const skills = ref<SkillMetadata[]>([])
+const skills = ref<CodexSkillOption[]>([])
 const errors = ref<Array<{ path: string; message: string }>>([])
 const isLoading = ref(false)
 const loadError = ref('')
@@ -161,7 +161,7 @@ const selectedPath = ref('')
 const enabledCount = computed(() => skills.value.filter((skill) => skill.enabled).length)
 const repoCount = computed(() => skills.value.filter((skill) => skill.scope === 'repo').length)
 const selectedSkill = computed(() => skills.value.find((skill) => skill.path === selectedPath.value) ?? skills.value[0] ?? null)
-const dependencies = computed(() => selectedSkill.value?.dependencies?.tools ?? [])
+const dependencies = computed(() => selectedSkill.value?.dependencies ?? [])
 const scopeOptions = computed(() => [
   { id: 'all' as const, label: t('skills.scope.all'), count: skills.value.length },
   { id: 'repo' as const, label: t('skills.scope.repo'), count: repoCount.value },
@@ -182,25 +182,25 @@ const filteredSkills = computed(() => {
   })
 })
 
-function displayName(skill: SkillMetadata): string {
-  return skill.interface?.displayName?.trim() || skill.name
+function displayName(skill: CodexSkillOption): string {
+  return skill.displayName || skill.name
 }
 
-function summary(skill: SkillMetadata): string {
-  return skill.interface?.shortDescription?.trim() || skill.shortDescription?.trim() || ''
+function summary(skill: CodexSkillOption): string {
+  return skill.description
 }
 
-function monogram(skill: SkillMetadata): string {
+function monogram(skill: CodexSkillOption): string {
   const words = displayName(skill).split(/[-_: ]+/u).filter(Boolean)
   return words.slice(0, 2).map((word) => word[0]?.toUpperCase()).join('') || 'S'
 }
 
-function monogramStyle(skill: SkillMetadata): Record<string, string> {
-  const color = skill.interface?.brandColor?.trim() || 'var(--color-accent)'
+function monogramStyle(skill: CodexSkillOption): Record<string, string> {
+  const color = skill.brandColor || 'var(--color-accent)'
   return { color, background: `color-mix(in srgb, ${color} 13%, var(--color-panel))` }
 }
 
-function scopeLabel(scope: SkillMetadata['scope']): string {
+function scopeLabel(scope: CodexSkillOption['scope']): string {
   return t(`skills.scope.${scope}` as Parameters<typeof t>[0])
 }
 

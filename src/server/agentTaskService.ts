@@ -44,7 +44,7 @@ import {
 import { parseAgentTaskInstruction, type AgentTaskDraft } from './agentTaskNaturalLanguage.js'
 import { listCatalog } from './catalogStore.js'
 import { latestAssistantTextFromEvents, latestTerminalTurnEvent, type CodexEvent } from '@codycodeagent/cody-web-core/conversation'
-import { normalizeCodexNotification, normalizeThreadHistory } from '@codycodeagent/cody-web-core/session'
+import { CodexSessionCatalog, CodexThreadCommands, normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
 
 type Rpc = (method: string, params: unknown) => Promise<unknown>
 type CodexNotification = { method: string; params: unknown }
@@ -84,13 +84,10 @@ function usageFromEvents(events: readonly CodexEvent[]): { inputTokens: number; 
   return { inputTokens, outputTokens, totalTokens: number(event.data.totalTokens ?? event.data.usedTokens) || inputTokens + outputTokens }
 }
 
-function parseRpcId(payload: unknown, name: 'thread' | 'turn'): string {
-  const row = record(payload)
-  return readString(record(row?.[name])?.id) || readString(row?.[`${name}Id`])
-}
-
 export class AgentTaskService {
   private readonly rpc: Rpc
+  private readonly commands: CodexThreadCommands
+  private readonly catalog: CodexSessionCatalog
   private readonly pollIntervalMs: number
   private readonly now: () => Date
   private readonly setTimer: typeof setTimeout
@@ -110,6 +107,9 @@ export class AgentTaskService {
 
   constructor(rpc: Rpc, options: AgentTaskServiceOptions = {}) {
     this.rpc = rpc
+    const caller = { call: <T>(method: string, params?: unknown): Promise<T> => rpc(method, params ?? {}) as Promise<T> }
+    this.commands = new CodexThreadCommands(caller)
+    this.catalog = new CodexSessionCatalog(caller)
     this.pollIntervalMs = Math.max(1_000, options.pollIntervalMs ?? 10_000)
     this.now = options.now ?? (() => new Date())
     this.setTimer = options.setTimer ?? setTimeout
@@ -266,7 +266,7 @@ export class AgentTaskService {
     const active = await getActiveAgentTaskRun(taskId)
     if (!active || (runId && active.id !== runId)) throw new Error('No active run found for this task')
     if (active.threadId && active.turnId) {
-      await this.rpc('turn/interrupt', { threadId: active.threadId, turnId: active.turnId }).catch(() => undefined)
+      await this.commands.interruptTurn(active.threadId, active.turnId).catch(() => undefined)
     }
     await this.finish(active, { status: 'cancelled', error: reason })
     return { ...active, status: 'cancelled', error: reason, completedAtIso: this.now().toISOString() }
@@ -398,18 +398,15 @@ export class AgentTaskService {
       const threadId = await this.prepareThread(task, run)
       run.threadId = threadId
       this.activeRunsByThread.set(threadId, run)
-      const turnPayload = await this.rpc('turn/start', {
-        threadId,
+      const turnId = await this.commands.startTurn(threadId, {
         input: [{ type: 'text', text: task.prompt, text_elements: [] }],
         approvalPolicy: 'on-request',
         sandboxPolicy: task.permission === 'workspace-write'
-          ? { type: 'workspaceWrite', writableRoots: [task.cwd], networkAccess: false }
+          ? { type: 'workspaceWrite', writableRoots: [task.cwd], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true }
           : { type: 'readOnly', networkAccess: false },
         ...(task.model ? { model: task.model } : {}),
         ...(task.effort ? { effort: task.effort } : {}),
       })
-      const turnId = parseRpcId(turnPayload, 'turn')
-      if (!turnId) throw new Error('turn/start did not return a turn id')
       if (task.conversationMode === 'reuse' && task.fixedThreadId !== threadId) {
         try {
           await setAgentTaskFixedThreadId(task.id, threadId)
@@ -420,7 +417,7 @@ export class AgentTaskService {
       if (this.finishedRunIds.has(run.id)) return
       if (!await markAgentTaskRunStarted(run.id, threadId, turnId, this.now())) {
         this.activeRunsByThread.delete(threadId)
-        await this.rpc('turn/interrupt', { threadId, turnId }).catch(() => undefined)
+        await this.commands.interruptTurn(threadId, turnId).catch(() => undefined)
         return
       }
       run.status = 'running'
@@ -439,26 +436,22 @@ export class AgentTaskService {
   private async prepareThread(task: AgentTask, run: AgentTaskRun): Promise<string> {
     if (task.conversationMode === 'reuse' && task.fixedThreadId) {
       try {
-        await this.rpc('thread/resume', { threadId: task.fixedThreadId })
+        await this.commands.resumeThread(task.fixedThreadId)
         return task.fixedThreadId
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         await appendAgentTaskRunEvent(run.id, 'progress', `Fixed conversation could not be resumed; creating a replacement. ${message}`)
       }
     }
-    const threadPayload = await this.rpc('thread/start', {
+    return this.commands.startThread({
       cwd: task.cwd,
       ...(task.model ? { model: task.model } : {}),
     })
-    const threadId = parseRpcId(threadPayload, 'thread')
-    if (!threadId) throw new Error('thread/start did not return a thread id')
-    return threadId
   }
 
   private async recoverRun(task: AgentTask, run: AgentTaskRun): Promise<void> {
     try {
-      const payload = record(await this.rpc('thread/read', { threadId: run.threadId, includeTurns: true }))
-      const events = normalizeThreadHistory(payload, run.threadId).filter((event) => event.turnId === run.turnId)
+      const events = (await this.catalog.readThread(run.threadId)).filter((event) => event.turnId === run.turnId)
       const terminal = latestTerminalTurnEvent(events)
       if (terminal) {
         const error = terminal.type === 'turn.failed' ? readString(terminal.data.error) || 'Codex turn failed' : ''
@@ -480,7 +473,7 @@ export class AgentTaskService {
     const remainingMs = Math.max(1_000, startedAtMs + task.timeoutMinutes * 60_000 - this.now().getTime())
     const timer = this.setTimer(() => {
       this.timeoutByRun.delete(run.id)
-      void this.rpc('turn/interrupt', { threadId: run.threadId, turnId: run.turnId }).catch(() => undefined)
+      void this.commands.interruptTurn(run.threadId, run.turnId).catch(() => undefined)
       void this.finish(run, { status: 'timed_out', error: `Agent task exceeded ${String(task.timeoutMinutes)} minutes.` })
     }, remainingMs)
     timer.unref?.()
@@ -526,7 +519,7 @@ export class AgentTaskService {
     if (this.finishedRunIds.has(run.id)) return
     const task = await getAgentTask(run.taskId)
     if (!task?.maxTokens || totalTokens < task.maxTokens) return
-    if (run.threadId && run.turnId) await this.rpc('turn/interrupt', { threadId: run.threadId, turnId: run.turnId }).catch(() => undefined)
+    if (run.threadId && run.turnId) await this.commands.interruptTurn(run.threadId, run.turnId).catch(() => undefined)
     await this.finish(run, { status: 'failed', error: `Token limit reached (${String(task.maxTokens)}).`, totalTokens })
   }
 

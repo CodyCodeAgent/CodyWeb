@@ -15,6 +15,16 @@ const catalog: CatalogSnapshot = {
   visibility: 'visible', generatedAtIso: '2026-07-18T00:00:00.000Z', projectCount: 1, threadCount: 1,
 }
 
+function threadRead(turns: unknown[]) {
+  return { thread: {
+    id: 'thread-1', extra: null, sessionId: 'session-1', forkedFromId: null, parentThreadId: null,
+    preview: '', ephemeral: false, section: null, sectionEnteredAt: null, historyMode: 'paginated',
+    modelProvider: 'openai', createdAt: 1, updatedAt: 2, recencyAt: 2, status: { type: 'idle' },
+    path: null, cwd: '/repo', cliVersion: 'test', source: 'appServer', canAcceptDirectInput: true,
+    threadSource: null, agentNickname: null, agentRole: null, gitInfo: null, name: null, turns,
+  } }
+}
+
 describe('FeishuCodexGateway', () => {
   it('maps the Cody catalog to project and session options', async () => {
     const refreshCatalog = vi.fn(async () => undefined)
@@ -171,8 +181,9 @@ describe('FeishuCodexGateway', () => {
     const rpc = vi.fn(async (method: string) => {
       if (method === 'skills/list') return { data: [{ cwd: '/repo', skills: [{
         name: 'alert-triage', path: '/repo/.codex/skills/alert-triage/SKILL.md', enabled: true,
+        description: 'Investigate structured alerts.', scope: 'repo',
         interface: { displayName: 'Alert triage', shortDescription: 'Investigate structured alerts.' },
-      }] }] }
+      }], errors: [] }] }
       if (method === 'thread/start') return { thread: { id: 'thread-scenario-draft' } }
       if (method === 'turn/start') {
         queueMicrotask(() => listener?.({
@@ -201,7 +212,7 @@ describe('FeishuCodexGateway', () => {
     }))
     expect(rpc).toHaveBeenCalledWith('turn/start', expect.objectContaining({
       outputSchema: expect.objectContaining({ type: 'object', additionalProperties: false }),
-      sandboxPolicy: { type: 'readOnly' },
+      sandboxPolicy: { type: 'readOnly', networkAccess: false },
     }))
   })
 
@@ -225,13 +236,12 @@ describe('FeishuCodexGateway', () => {
   })
 
   it('finds the active turn so another CodyWeb client can stop it', async () => {
-    const rpc = vi.fn(async () => ({
-      thread: { turns: [
-        { id: 'turn-done', status: 'completed' },
-        { id: 'turn-stale', status: 'inProgress' },
-        { id: 'turn-live', status: 'inProgress' },
-      ] },
-    }))
+    const turn = (id: string, status: string) => ({
+      id, status, error: null, itemsView: 'full', items: [], startedAt: null, completedAt: null, durationMs: null,
+    })
+    const rpc = vi.fn(async () => threadRead([
+      turn('turn-done', 'completed'), turn('turn-stale', 'inProgress'), turn('turn-live', 'inProgress'),
+    ]))
     const gateway = new FeishuCodexGateway({ rpc, respondToServerRequest: vi.fn(), readCatalog: vi.fn(async () => catalog) })
     await expect(gateway.findActiveTurnId(' thread-1 ')).resolves.toBe('turn-live')
     expect(rpc).toHaveBeenCalledWith('thread/read', { threadId: 'thread-1', includeTurns: true })

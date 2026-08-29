@@ -1,18 +1,11 @@
-import type {
-  ReasoningEffort,
-  ThreadCompactStartResponse,
-  ThreadForkResponse,
-  ThreadListResponse,
-  ThreadSetNameResponse,
-  TurnStartResponse,
-} from './appServerDtos'
+import type { ReasoningEffort } from '@codycodeagent/cody-web-core/protocol'
 import { normalizeCodexApiError } from './codexErrors'
 import { fetchCodexJson, queryPath, readRpcResult } from './codexHttpClient'
 import { rpcCall } from './codexRpcClient'
-import { normalizeThreadGroupsV2 } from './normalizers/v2'
+import { normalizeCatalogThreadGroups } from './normalizers/v2'
 import type { UiMessage, UiProjectGroup, UiThreadMessagePage } from '../types/codex'
 import type { TurnPermissionOverride } from '../composables/desktopTurnPermissions'
-import { buildTurnUserInput } from '@codycodeagent/cody-web-core/session'
+import { buildTurnUserInput, CodexSessionCatalog, CodexThreadCommands } from '@codycodeagent/cody-web-core/session'
 import type {
   ComposerCollaborationModeOption,
   ComposerImage,
@@ -36,26 +29,11 @@ async function callRpc<T>(method: string, params?: unknown): Promise<T> {
   }
 }
 
+const sessionCatalog = new CodexSessionCatalog({ call: callRpc })
+const threadCommands = new CodexThreadCommands({ call: callRpc })
+
 async function getThreadGroupsV2(archived = false): Promise<UiProjectGroup[]> {
-  const data: ThreadListResponse['data'] = []
-  let cursor: string | null | undefined = null
-
-  do {
-    const params: Record<string, unknown> = {
-      archived,
-      limit: 100,
-      sortKey: 'updated_at',
-    }
-    if (cursor) {
-      params.cursor = cursor
-    }
-
-    const payload = await callRpc<ThreadListResponse>('thread/list', params)
-    data.push(...payload.data)
-    cursor = payload.nextCursor
-  } while (cursor)
-
-  return normalizeThreadGroupsV2({ data, nextCursor: null })
+  return normalizeCatalogThreadGroups(await sessionCatalog.listThreads({ archived }))
 }
 
 async function getThreadMessagesV2(threadId: string): Promise<UiMessage[]> {
@@ -106,7 +84,7 @@ export async function getThreadMessagesPage(
 }
 
 export async function resumeThread(threadId: string): Promise<void> {
-  await callRpc('thread/resume', { threadId })
+  await threadCommands.resumeThread(threadId)
 }
 
 export async function renameThread(threadId: string, name: string): Promise<void> {
@@ -114,59 +92,32 @@ export async function renameThread(threadId: string, name: string): Promise<void
   const normalizedName = name.trim()
   if (!normalizedThreadId || !normalizedName) return
 
-  await callRpc<ThreadSetNameResponse>('thread/name/set', {
-    threadId: normalizedThreadId,
-    name: normalizedName,
-  })
+  await threadCommands.renameThread(normalizedThreadId, normalizedName)
 }
 
 export async function forkThread(threadId: string): Promise<string> {
   const normalizedThreadId = threadId.trim()
   if (!normalizedThreadId) return ''
 
-  const payload = await callRpc<ThreadForkResponse>('thread/fork', {
-    threadId: normalizedThreadId,
-  })
-  return payload.thread.id
+  return threadCommands.forkThread(normalizedThreadId)
 }
 
 export async function compactThread(threadId: string): Promise<void> {
   const normalizedThreadId = threadId.trim()
   if (!normalizedThreadId) return
-  await callRpc<ThreadCompactStartResponse>('thread/compact/start', {
-    threadId: normalizedThreadId,
-  })
-}
-
-function normalizeThreadIdFromPayload(payload: unknown): string {
-  if (!payload || typeof payload !== 'object') return ''
-  const record = payload as Record<string, unknown>
-
-  const thread = record.thread
-  if (thread && typeof thread === 'object') {
-    const threadId = (thread as Record<string, unknown>).id
-    if (typeof threadId === 'string' && threadId.length > 0) {
-      return threadId
-    }
-  }
-  return ''
+  await threadCommands.compactThread(normalizedThreadId)
 }
 
 export async function startThread(cwd?: string, model?: string): Promise<string> {
   try {
-    const params: Record<string, unknown> = {}
+    const params: { cwd?: string; model?: string } = {}
     if (typeof cwd === 'string' && cwd.trim().length > 0) {
       params.cwd = cwd.trim()
     }
     if (typeof model === 'string' && model.trim().length > 0) {
       params.model = model.trim()
     }
-    const payload = await callRpc<{ thread?: { id?: string } }>('thread/start', params)
-    const threadId = normalizeThreadIdFromPayload(payload)
-    if (!threadId) {
-      throw new Error('thread/start did not return a thread id')
-    }
-    return threadId
+    return await threadCommands.startThread(params)
   } catch (error) {
     throw normalizeCodexApiError(error, 'Failed to start a new thread', 'thread/start')
   }
@@ -183,31 +134,15 @@ export async function startThreadTurn(
   permissionOverride?: TurnPermissionOverride | null,
 ): Promise<string> {
   try {
-    const params: Record<string, unknown> = {
-      threadId,
+    const params = {
       input: buildTurnInput(text, images, skills),
+      ...(typeof model === 'string' && model.length > 0 ? { model } : {}),
+      ...(typeof effort === 'string' && effort.length > 0 ? { effort } : {}),
+      ...(collaborationMode ? { collaborationMode } : {}),
+      ...(permissionOverride?.approvalPolicy ? { approvalPolicy: permissionOverride.approvalPolicy } : {}),
+      ...(permissionOverride?.sandboxPolicy ? { sandboxPolicy: permissionOverride.sandboxPolicy } : {}),
     }
-    if (typeof model === 'string' && model.length > 0) {
-      params.model = model
-    }
-    if (typeof effort === 'string' && effort.length > 0) {
-      params.effort = effort
-    }
-    if (collaborationMode) {
-      params.collaborationMode = collaborationMode
-    }
-    if (permissionOverride?.approvalPolicy) {
-      params.approvalPolicy = permissionOverride.approvalPolicy
-    }
-    if (permissionOverride?.sandboxPolicy) {
-      params.sandboxPolicy = permissionOverride.sandboxPolicy
-    }
-    const payload = await callRpc<TurnStartResponse>('turn/start', params)
-    const turnId = payload.turn.id.trim()
-    if (!turnId) {
-      throw new Error('turn/start did not return a turn id')
-    }
-    return turnId
+    return await threadCommands.startTurn(threadId, params)
   } catch (error) {
     throw normalizeCodexApiError(error, `Failed to start turn for thread ${threadId}`, 'turn/start')
   }
@@ -217,7 +152,7 @@ export function buildTurnInput(
   text: string,
   images: ComposerImage[],
   skills: ComposerSkill[] = [],
-): Array<Record<string, unknown>> {
+) {
   return buildTurnUserInput({
     text,
     skills,
@@ -237,14 +172,7 @@ export async function steerThreadTurn(
   if (!normalizedThreadId) return
 
   try {
-    if (!normalizedTurnId) {
-      throw new Error('turn/steer requires an active turn id')
-    }
-    await callRpc('turn/steer', {
-      threadId: normalizedThreadId,
-      expectedTurnId: normalizedTurnId,
-      input: buildTurnInput(text, images, skills),
-    })
+    await threadCommands.steerTurn(normalizedThreadId, normalizedTurnId, buildTurnInput(text, images, skills))
   } catch (error) {
     throw normalizeCodexApiError(error, `Failed to steer turn for thread ${normalizedThreadId}`, 'turn/steer')
   }
@@ -256,10 +184,7 @@ export async function interruptThreadTurn(threadId: string, turnId?: string): Pr
   if (!normalizedThreadId) return
 
   try {
-    if (!normalizedTurnId) {
-      throw new Error('turn/interrupt requires turnId')
-    }
-    await callRpc('turn/interrupt', { threadId: normalizedThreadId, turnId: normalizedTurnId })
+    await threadCommands.interruptTurn(normalizedThreadId, normalizedTurnId)
   } catch (error) {
     throw normalizeCodexApiError(error, `Failed to interrupt turn for thread ${normalizedThreadId}`, 'turn/interrupt')
   }

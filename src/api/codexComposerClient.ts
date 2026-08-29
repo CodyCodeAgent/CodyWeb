@@ -1,13 +1,10 @@
-import type {
-  SkillMetadata,
-  SkillsListResponse,
-} from './appServerDtos'
 import { uploadLocalImage, type UploadedLocalImage } from './codexBridgeClient'
 import { normalizeCodexApiError } from './codexErrors'
 import { rpcCall } from './codexRpcClient'
 import type { ComposerSkill } from '@codycodeagent/cody-web-core/composer'
+import { CodexSessionCatalog, type CodexSkillCatalogGroup, type CodexSkillOption } from '@codycodeagent/cody-web-core/session'
 
-export type SkillCatalogEntry = SkillsListResponse['data'][number]
+export type SkillCatalogEntry = CodexSkillCatalogGroup
 
 async function callRpc<T>(method: string, params?: unknown): Promise<T> {
   try {
@@ -17,44 +14,26 @@ async function callRpc<T>(method: string, params?: unknown): Promise<T> {
   }
 }
 
-export function toComposerSkill(skill: SkillMetadata): ComposerSkill | null {
-  const name = skill.name.trim()
-  const path = skill.path.trim()
-  if (!name || !path || skill.enabled !== true) return null
+const sessionCatalog = new CodexSessionCatalog({ call: callRpc })
 
-  const displayName = skill.interface?.displayName?.trim() || name
-  const description =
-    skill.interface?.shortDescription?.trim() ||
-    skill.shortDescription?.trim() ||
-    skill.description.trim()
+export function toComposerSkill(skill: CodexSkillOption): ComposerSkill | null {
+  const name = skill.name
+  const path = skill.path
+  if (!name || !path || skill.enabled !== true) return null
 
   return {
     name,
     path,
-    displayName,
-    description,
+    displayName: skill.displayName,
+    description: skill.description,
   }
 }
 
 export async function getAvailableSkills(cwd?: string): Promise<ComposerSkill[]> {
   try {
-    const params: Record<string, unknown> = {}
     const normalizedCwd = cwd?.trim() ?? ''
-    if (normalizedCwd.length > 0) {
-      params.cwds = [normalizedCwd]
-    }
-
-    const payload = await callRpc<SkillsListResponse>('skills/list', params)
-    const byKey = new Map<string, ComposerSkill>()
-    for (const entry of payload.data) {
-      for (const skill of entry.skills) {
-        const normalized = toComposerSkill(skill)
-        if (!normalized) continue
-        byKey.set(`${normalized.name}\n${normalized.path}`, normalized)
-      }
-    }
-
-    return Array.from(byKey.values()).sort((a, b) => a.name.localeCompare(b.name))
+    return (await sessionCatalog.listSkills(normalizedCwd ? [normalizedCwd] : []))
+      .map(toComposerSkill).filter((skill): skill is ComposerSkill => skill !== null)
   } catch (error) {
     throw normalizeCodexApiError(error, 'Failed to load skills', 'skills/list')
   }
@@ -65,8 +44,7 @@ export async function getSkillCatalog(cwds: string[]): Promise<SkillCatalogEntry
   if (normalizedCwds.length === 0) return []
 
   try {
-    const payload = await callRpc<SkillsListResponse>('skills/list', { cwds: normalizedCwds })
-    return payload.data
+    return await sessionCatalog.listSkillCatalog(normalizedCwds)
   } catch (error) {
     throw normalizeCodexApiError(error, 'Failed to load skill catalog', 'skills/list')
   }
@@ -77,7 +55,7 @@ export async function setSkillEnabled(path: string, enabled: boolean): Promise<v
   if (!normalizedPath) throw new Error('Skill path is required')
 
   try {
-    await callRpc<unknown>('skills/config/write', { path: normalizedPath, enabled })
+    await sessionCatalog.setSkillEnabled(normalizedPath, enabled)
   } catch (error) {
     throw normalizeCodexApiError(error, 'Failed to update skill', 'skills/config/write')
   }

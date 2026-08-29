@@ -25,16 +25,13 @@ afterEach(() => {
 describe('codex composer client', () => {
   it('normalizes enabled skills for composer display', () => {
     expect(toComposerSkill({
-      name: ' docs ',
-      path: ' /skills/docs ',
+      name: 'docs',
+      path: '/skills/docs',
       enabled: true,
-      description: 'Long docs skill',
-      shortDescription: 'Short docs',
-      interface: {
-        displayName: 'Docs',
-        shortDescription: 'Use docs',
-      },
+      description: 'Use docs',
+      displayName: 'Docs',
       scope: 'repo',
+      brandColor: '', iconSmall: '', iconLarge: '', defaultPrompt: '', dependencies: [],
     })).toEqual({
       name: 'docs',
       path: '/skills/docs',
@@ -47,8 +44,9 @@ describe('codex composer client', () => {
       path: '/skills/disabled',
       enabled: false,
       description: '',
-      shortDescription: '',
+      displayName: 'disabled',
       scope: 'repo',
+      brandColor: '', iconSmall: '', iconLarge: '', defaultPrompt: '', dependencies: [],
     })).toBeNull()
   })
 
@@ -56,6 +54,7 @@ describe('codex composer client', () => {
     rpcMock.rpcCall.mockResolvedValue({
       data: [
         {
+          cwd: '/repo',
           skills: [
             {
               name: 'zeta',
@@ -63,7 +62,7 @@ describe('codex composer client', () => {
               enabled: true,
               description: '',
               shortDescription: '',
-              scope: 'repo',
+              scope: 'repo', interface: undefined,
             },
             {
               name: 'alpha',
@@ -71,11 +70,12 @@ describe('codex composer client', () => {
               enabled: true,
               description: 'Alpha long',
               shortDescription: '',
-              scope: 'repo',
+              scope: 'repo', interface: undefined,
             },
-          ],
+          ], errors: [],
         },
         {
+          cwd: '/repo',
           skills: [
             {
               name: 'alpha',
@@ -83,7 +83,7 @@ describe('codex composer client', () => {
               enabled: true,
               description: 'duplicate',
               shortDescription: '',
-              scope: 'repo',
+              scope: 'repo', interface: undefined,
             },
             {
               name: 'beta',
@@ -91,9 +91,9 @@ describe('codex composer client', () => {
               enabled: true,
               description: '',
               shortDescription: '',
-              scope: 'repo',
+              scope: 'repo', interface: undefined,
             },
-          ],
+          ], errors: [],
         },
       ],
     })

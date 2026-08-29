@@ -6,7 +6,7 @@ import {
   startThread,
   startThreadTurn,
 } from './codexThreadClient'
-import type { ThreadListResponse } from './appServerDtos'
+import type { Thread } from '@codycodeagent/cody-web-core/protocol'
 
 const rpcMock = vi.hoisted(() => ({
   rpcCall: vi.fn(),
@@ -29,21 +29,36 @@ afterEach(() => {
 })
 
 describe('codex thread client', () => {
-  function thread(overrides: Partial<ThreadListResponse['data'][number]> = {}): ThreadListResponse['data'][number] {
+  function thread(overrides: Partial<Thread> = {}): Thread {
     return {
       id: 'thread-1',
+      extra: null,
+      sessionId: 'session-1',
+      forkedFromId: null,
+      parentThreadId: null,
       preview: 'Preview',
+      name: 'Thread',
+      ephemeral: false,
+      section: null,
+      sectionEnteredAt: null,
+      historyMode: 'paginated',
       modelProvider: 'openai',
       createdAt: 1_700_000_000,
       updatedAt: 1_700_000_100,
+      recencyAt: 1_700_000_100,
+      status: { type: 'idle' },
       path: null,
       cwd: '/repo',
       cliVersion: 'test',
       source: 'appServer',
+      canAcceptDirectInput: true,
+      threadSource: null,
+      agentNickname: null,
+      agentRole: null,
       gitInfo: null,
       turns: [],
       ...overrides,
-    }
+    } as Thread
   }
 
   it('builds turn input from skills, text, and local images', () => {
@@ -95,11 +110,13 @@ describe('codex thread client', () => {
     expect(rpcMock.rpcCall).toHaveBeenNthCalledWith(1, 'thread/list', {
       archived: false,
       limit: 100,
+      sortDirection: 'desc',
       sortKey: 'updated_at',
     })
     expect(rpcMock.rpcCall).toHaveBeenNthCalledWith(2, 'thread/list', {
       archived: false,
       limit: 100,
+      sortDirection: 'desc',
       sortKey: 'updated_at',
       cursor: 'cursor-2',
     })
@@ -142,7 +159,7 @@ describe('codex thread client', () => {
   })
 
   it('starts threads with normalized optional params', async () => {
-    rpcMock.rpcCall.mockResolvedValue({ thread: { id: 'thread-1' } })
+    rpcMock.rpcCall.mockResolvedValue({ thread: thread() })
 
     await expect(startThread(' /repo ', ' gpt-5 ')).resolves.toBe('thread-1')
 

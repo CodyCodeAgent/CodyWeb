@@ -2,6 +2,7 @@ import { BackgroundTaskRunner, type BackgroundTaskStatus } from './backgroundTas
 import { readBackgroundTaskStatus, writeBackgroundTaskStatus } from './backgroundTaskStore.js'
 import { syncCatalogThreads, type CatalogSourceThread } from './catalogStore.js'
 import { dataAuthorityPolicy } from '../composables/dataAuthorityPolicy.js'
+import { CodexSessionCatalog } from '@codycodeagent/cody-web-core/session'
 
 const CATALOG_SYNC_INTERVAL_MS = 30_000
 const CATALOG_SYNC_EVENT_DELAY_MS = 750
@@ -15,63 +16,20 @@ const CATALOG_SYNC_NOTIFICATION_METHODS = new Set([
 
 type Rpc = (method: string, params: unknown) => Promise<unknown>
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null
-}
-
-function readString(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function readNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
-}
-
-function toIso(seconds: number | null): string {
-  return new Date(Math.max(0, seconds ?? 0) * 1000).toISOString()
-}
-
-function normalizeThread(value: unknown, sourceArchived: boolean): CatalogSourceThread | null {
-  const row = asRecord(value)
-  if (!row) return null
-  const id = readString(row.id)
-  const cwd = readString(row.cwd)
-  if (!id || !cwd) return null
-  const preview = readString(row.preview)
-  const title = readString(row.name) || readString(row.title) || preview || 'Untitled thread'
-  return {
-    id,
-    cwd,
-    title,
-    preview,
-    createdAtIso: toIso(readNumber(row.createdAt)),
-    updatedAtIso: toIso(readNumber(row.updatedAt)),
-    sourceArchived,
-  }
-}
-
 async function listAllThreads(rpc: Rpc, sourceArchived: boolean): Promise<CatalogSourceThread[]> {
-  const threads: CatalogSourceThread[] = []
-  let cursor: string | null = null
-
-  do {
-    const result = asRecord(await rpc('thread/list', {
-      archived: sourceArchived,
-      limit: 100,
-      sortKey: 'updated_at',
-      ...(cursor ? { cursor } : {}),
-    }))
-    const rows = Array.isArray(result?.data) ? result.data : []
-    for (const row of rows) {
-      const thread = normalizeThread(row, sourceArchived)
-      if (thread) threads.push(thread)
-    }
-    cursor = readString(result?.nextCursor) || null
-  } while (cursor)
-
-  return threads
+  const catalog = new CodexSessionCatalog({ call: <T>(method: string, params?: unknown): Promise<T> => rpc(method, params ?? {}) as Promise<T> })
+  return (await catalog.listThreads({ archived: sourceArchived })).flatMap((thread) => {
+    if (!thread.threadId || !thread.cwd) return []
+    return [{
+      id: thread.threadId,
+      cwd: thread.cwd,
+      title: thread.name || thread.preview || 'Untitled thread',
+      preview: thread.preview,
+      createdAtIso: thread.createdAtIso,
+      updatedAtIso: thread.updatedAtIso,
+      sourceArchived,
+    }]
+  })
 }
 
 export class CatalogSyncService {
