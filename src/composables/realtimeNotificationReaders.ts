@@ -113,17 +113,10 @@ export function readUserMessageCompleted(notification: RpcNotification): UiMessa
 }
 
 export function isAgentContentEvent(notification: RpcNotification): boolean {
-  if (notification.method === 'item/agentMessage/delta' || notification.method === 'item/plan/delta') {
-    return true
-  }
-
-  const params = asRecord(notification.params)
-  if (!params) return false
-
-  if (notification.method === 'item/completed') {
-    const item = asRecord(params.item)
-    return item?.type === 'agentMessage' || item?.type === 'plan'
-  }
-
-  return notification.method === 'turn/plan/updated'
+  return conversationEvents(notification).some((event) => (
+    event.type === 'assistant.delta' ||
+    event.type === 'assistant.completed' ||
+    event.type === 'plan.delta' ||
+    event.type === 'plan.replaced'
+  ))
 }

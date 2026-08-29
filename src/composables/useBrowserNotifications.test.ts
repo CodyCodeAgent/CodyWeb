@@ -56,6 +56,7 @@ describe('notificationFromRpcNotification', () => {
       turn: {
         id: 'turn-7',
         threadId: 'thread-7',
+        status: 'failed',
         error: {
           message: 'Typecheck failed',
         },
@@ -75,6 +76,7 @@ describe('notificationFromRpcNotification', () => {
       turn: {
         id: 'turn-9',
         threadId: 'thread-9',
+        status: 'completed',
       },
     }))
 
@@ -103,6 +105,14 @@ describe('notificationFromRpcNotification', () => {
       body: 'Codex usage is at 91%.',
       severity: 'warning',
     })
+  })
+
+  it('ignores reconnect diagnostics until the Turn emits a terminal event', () => {
+    expect(notificationFromRpcNotification(buildNotification('error', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      message: 'Reconnecting... 5/5',
+    }))).toBeNull()
   })
 })
 

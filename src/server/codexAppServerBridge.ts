@@ -17,7 +17,12 @@ import {
   isApprovalRequestMethod,
   isCommandApprovalRequestMethod,
   isFileChangeApprovalRequestMethod,
+  readItemId,
+  readThreadId,
+  readTurnId,
 } from '@codycodeagent/cody-web-core/protocol'
+import { latestTerminalTurnEvent } from '@codycodeagent/cody-web-core/conversation'
+import { normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
 import { NotificationDispatcher, type NotificationDispatchEvent } from './notificationDispatchService.js'
 import { buildSecurityAccessSnapshot } from './securityAccess.js'
 import { appendCodexSessionEvent } from './sessionEventStore.js'
@@ -185,15 +190,6 @@ function readNestedString(value: unknown, keys: string[]): string {
   return typeof cursor === 'string' ? cursor.trim() : ''
 }
 
-function readNotificationThreadId(params: unknown): string {
-  return (
-    readNestedString(params, ['threadId']) ||
-    readNestedString(params, ['thread', 'id']) ||
-    readNestedString(params, ['turn', 'threadId']) ||
-    readNestedString(params, ['request', 'threadId'])
-  )
-}
-
 function readNotificationCwd(params: unknown): string {
   return (
     readNestedString(params, ['cwd']) ||
@@ -206,7 +202,7 @@ function readNotificationCwd(params: unknown): string {
 export async function resolveNotificationWorkspaceCwd(params: unknown, fallbackCwd = getProcessCwd()): Promise<string> {
   const notificationCwd = readNotificationCwd(params)
   if (notificationCwd) return notificationCwd
-  const threadId = readNotificationThreadId(params)
+  const threadId = readThreadId(params)
   if (threadId) {
     try {
       const catalogCwd = await findCatalogThreadCwd(threadId)
@@ -216,14 +212,6 @@ export async function resolveNotificationWorkspaceCwd(params: unknown, fallbackC
     }
   }
   return fallbackCwd
-}
-
-function readNotificationTurnId(params: unknown): string {
-  return (
-    readNestedString(params, ['turnId']) ||
-    readNestedString(params, ['turn', 'id']) ||
-    readNestedString(params, ['request', 'turnId'])
-  )
 }
 
 function shortId(value: string): string {
@@ -295,11 +283,6 @@ function buildApprovalAuditInput(params: {
   mode: 'manual' | 'automatic'
   resolvedAtIso: string
 }): Parameters<typeof recordApprovalDecisionAuditEvent>[0] {
-  const requestParams = asRecord(params.pendingRequest.params)
-  const threadId =
-    typeof requestParams?.threadId === 'string' && requestParams.threadId.length > 0
-      ? requestParams.threadId
-      : ''
   return {
     cwd: readServerRequestCwd(params.pendingRequest.params),
     requestId: params.requestId,
@@ -307,9 +290,9 @@ function buildApprovalAuditInput(params: {
     subject: readServerRequestSubject(params.pendingRequest.method, params.pendingRequest.params),
     receivedAtIso: params.pendingRequest.receivedAtIso,
     resolvedAtIso: params.resolvedAtIso,
-    threadId,
-    turnId: readNestedString(params.pendingRequest.params, ['turnId']),
-    itemId: readNestedString(params.pendingRequest.params, ['itemId']),
+    threadId: readThreadId(params.pendingRequest.params),
+    turnId: readTurnId(params.pendingRequest.params),
+    itemId: readItemId(params.pendingRequest.params),
     decision: readApprovalDecisionFromReply(params.reply),
     scope: params.scope,
     mode: params.mode,
@@ -1142,18 +1125,9 @@ class AppServerProcess {
       id: request.id,
       method: request.method,
       receivedAtIso: request.receivedAtIso,
-      threadId:
-        readNestedString(request.params, ['threadId']) ||
-        readNestedString(request.params, ['thread', 'id']) ||
-        readNestedString(request.params, ['request', 'threadId']),
-      turnId:
-        readNestedString(request.params, ['turnId']) ||
-        readNestedString(request.params, ['turn', 'id']) ||
-        readNestedString(request.params, ['request', 'turnId']),
-      itemId:
-        readNestedString(request.params, ['itemId']) ||
-        readNestedString(request.params, ['item', 'id']) ||
-        readNestedString(request.params, ['request', 'itemId']),
+      threadId: readThreadId(request.params),
+      turnId: readTurnId(request.params),
+      itemId: readItemId(request.params),
     }))
   }
 
@@ -1373,9 +1347,10 @@ export async function createAutomaticTurnCheckpoint(
   cwd: string,
   notification: { method: string; params?: unknown },
 ): Promise<Record<string, unknown>> {
-  const phase = notification.method === 'turn/started'
+  const events = normalizeCodexNotification(notification)
+  const phase = events.some((event) => event.type === 'turn.started')
     ? 'before'
-    : notification.method === 'turn/completed'
+    : latestTerminalTurnEvent(events)
       ? 'after'
       : ''
   if (!phase) return {}
@@ -1393,8 +1368,8 @@ export async function createAutomaticTurnCheckpoint(
   }
 
   try {
-    const threadId = readNotificationThreadId(notification.params)
-    const turnId = readNotificationTurnId(notification.params)
+    const threadId = events[0]?.threadId || readThreadId(notification.params)
+    const turnId = events.find((event) => event.turnId)?.turnId || readTurnId(notification.params)
     const { repositoryKey, fingerprint, dirty } = await readToolingCheckpointFingerprint(cwd)
     const fingerprintKey = `${repositoryKey}:${threadId}:${turnId}`
     if (phase === 'after' && automaticCheckpointFingerprintByTurn.get(fingerprintKey) === fingerprint) {
@@ -1507,12 +1482,13 @@ function getSharedBridgeState(): SharedBridgeState {
   })
   const stopNotificationDispatch = appServer.onNotification((notification) => {
     catalogSync.onNotification(notification.method)
-    const cachedThreadId = readNotificationThreadId(notification.params)
+    const normalizedEvents = normalizeCodexNotification(notification)
+    const cachedThreadId = normalizedEvents[0]?.threadId || readThreadId(notification.params)
     if (
       cachedThreadId &&
       (
-        notification.method === 'turn/completed' ||
-        notification.method === 'thread/compacted' ||
+        latestTerminalTurnEvent(normalizedEvents) !== null ||
+        normalizedEvents.some((event) => event.type === 'thread.compacted') ||
         notification.method === 'thread/rollback'
       )
     ) {
@@ -1526,7 +1502,7 @@ function getSharedBridgeState(): SharedBridgeState {
       metadata: {} as Record<string, unknown>,
     }
     if (!isAgentTaskNotification) void notificationDispatcher.handleCodexNotification(payload)
-    const queueKey = readNotificationThreadId(notification.params) || 'global'
+    const queueKey = cachedThreadId || 'global'
     enqueueNotificationPersistence(queueKey, async () => {
       const workspaceCwd = await resolveNotificationWorkspaceCwd(notification.params)
       try {

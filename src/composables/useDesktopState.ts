@@ -776,7 +776,9 @@ export function useDesktopState() {
       }
     }
 
-    if (notification.method === 'turn/completed') {
+    if (normalizeRealtimeNotification(notification).some((event) => (
+      event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.interrupted'
+    ))) {
       if (isSelectedNotificationThread) {
         shouldAutoScrollOnNextAgentEvent = false
       }

@@ -1,4 +1,7 @@
 import { computed, ref } from 'vue'
+import { latestTerminalTurnEvent } from '@codycodeagent/cody-web-core/conversation'
+import { readThreadId as readCoreThreadId, readTurnId as readCoreTurnId } from '@codycodeagent/cody-web-core/protocol'
+import { normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
 import {
   subscribeProductNotifications,
   subscribeRpcNotifications,
@@ -48,23 +51,12 @@ function readNestedString(value: unknown, keys: string[]): string {
   return readString(cursor)
 }
 
-function readThreadId(params: unknown): string {
-  return (
-    readNestedString(params, ['threadId']) ||
-    readNestedString(params, ['params', 'threadId']) ||
-    readNestedString(params, ['thread', 'id']) ||
-    readNestedString(params, ['turn', 'threadId']) ||
-    readNestedString(params, ['request', 'threadId'])
-  )
+function notificationThreadId(params: unknown): string {
+  return readCoreThreadId(params) || readNestedString(params, ['params', 'threadId'])
 }
 
-function readTurnId(params: unknown): string {
-  return (
-    readNestedString(params, ['turnId']) ||
-    readNestedString(params, ['params', 'turnId']) ||
-    readNestedString(params, ['turn', 'id']) ||
-    readNestedString(params, ['request', 'turnId'])
-  )
+function notificationTurnId(params: unknown): string {
+  return readCoreTurnId(params) || readNestedString(params, ['params', 'turnId'])
 }
 
 function readServerRequestMethod(params: unknown): string {
@@ -72,15 +64,6 @@ function readServerRequestMethod(params: unknown): string {
     readNestedString(params, ['method']) ||
     readNestedString(params, ['request', 'method']) ||
     readNestedString(params, ['params', 'method'])
-  )
-}
-
-function readTurnError(params: unknown): string {
-  return (
-    readNestedString(params, ['error', 'message']) ||
-    readNestedString(params, ['turn', 'error', 'message']) ||
-    readNestedString(params, ['response', 'error', 'message']) ||
-    readString(asRecord(params)?.error)
   )
 }
 
@@ -108,8 +91,8 @@ function readMaxRateLimitPercent(params: unknown): number | null {
 
 function buildSourceId(notification: RpcNotification): string {
   const params = notification.params
-  const threadId = readThreadId(params)
-  const turnId = readTurnId(params)
+  const threadId = notificationThreadId(params)
+  const turnId = notificationTurnId(params)
   return [notification.method, threadId, turnId, notification.atIso]
     .filter(Boolean)
     .join(':')
@@ -118,8 +101,10 @@ function buildSourceId(notification: RpcNotification): string {
 export function notificationFromRpcNotification(notification: RpcNotification): BrowserNotificationEvent | null {
   const params = notification.params
   const sourceId = buildSourceId(notification)
-  const threadId = readThreadId(params)
-  const turnId = readTurnId(params)
+  const events = normalizeCodexNotification(notification)
+  const threadId = events[0]?.threadId || notificationThreadId(params)
+  const turnId = events.find((event) => event.turnId)?.turnId || notificationTurnId(params)
+  const terminal = latestTerminalTurnEvent(events)
   const scope = threadId ? `Thread ${threadId}` : 'Codex'
 
   if (notification.method === 'server/request') {
@@ -135,15 +120,26 @@ export function notificationFromRpcNotification(notification: RpcNotification): 
     }
   }
 
-  if (notification.method === 'turn/completed') {
-    const errorMessage = readTurnError(params)
-    if (errorMessage) {
+  if (terminal) {
+    if (terminal.type === 'turn.failed') {
       return {
         id: `notify:${sourceId}`,
         kind: 'turn-failed',
         title: 'Task failed',
-        body: errorMessage,
+        body: readString(terminal.data.error) || 'Codex failed to complete the task.',
         severity: 'danger',
+        createdAtIso: notification.atIso,
+        sourceId,
+      }
+    }
+
+    if (terminal.type === 'turn.interrupted') {
+      return {
+        id: `notify:${sourceId}`,
+        kind: 'turn-failed',
+        title: 'Task interrupted',
+        body: turnId ? `${scope} stopped turn ${turnId}.` : `${scope} stopped a turn.`,
+        severity: 'warning',
         createdAtIso: notification.atIso,
         sourceId,
       }
@@ -175,7 +171,7 @@ export function notificationFromRpcNotification(notification: RpcNotification): 
     }
   }
 
-  if (notification.method === 'thread/compacted') {
+  if (events.some((event) => event.type === 'thread.compacted')) {
     return {
       id: `notify:${sourceId}`,
       kind: 'thread-compacted',
