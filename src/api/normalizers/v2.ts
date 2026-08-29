@@ -5,7 +5,11 @@ import type {
   ThreadListResponse,
   Turn,
 } from '../appServerDtos'
-import type { UiMessage, UiProjectGroup, UiThread, UiToolTimelineEntry } from '../../types/codex'
+import type { UiMessage, UiProjectGroup, UiThread } from '../../types/codex'
+import {
+  conversationToolFromItem as buildToolTimelineEntry,
+  readCodexStatus as readStatus,
+} from '@codycodeagent/cody-web-core/session'
 import {
   buildUserMessageContentMessages,
   toRawPayload,
@@ -18,43 +22,6 @@ function toIso(seconds: number): string {
 function toProjectName(cwd: string): string {
   const parts = cwd.split('/').filter(Boolean)
   return parts.at(-1) || cwd || 'unknown-project'
-}
-
-function formatDuration(durationMs: number | null | undefined): string {
-  if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs < 0) {
-    return ''
-  }
-
-  if (durationMs < 1000) {
-    return `${Math.round(durationMs)}ms`
-  }
-
-  const seconds = durationMs / 1000
-  if (seconds < 60) {
-    return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`
-  }
-
-  const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = Math.round(seconds % 60)
-  return `${minutes}m ${remainingSeconds}s`
-}
-
-function readStatus(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (value && typeof value === 'object' && 'type' in value) {
-    const type = (value as { type?: unknown }).type
-    return typeof type === 'string' ? type : ''
-  }
-  return ''
-}
-
-function toCompactJson(value: unknown): string {
-  if (value === null || value === undefined) return ''
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
 }
 
 function buildToolMessage(item: ThreadItem, turnId: string): UiMessage | null {
@@ -70,136 +37,6 @@ function buildToolMessage(item: ThreadItem, turnId: string): UiMessage | null {
     rawPayload: toRawPayload(item),
     tool,
   }
-}
-
-function buildToolTimelineEntry(item: ThreadItem): UiToolTimelineEntry | null {
-  if (item.type === 'commandExecution') {
-    const details = [`cwd: ${item.cwd}`, `status: ${readStatus(item.status) || 'unknown'}`]
-    if (item.exitCode !== null) details.push(`exit: ${String(item.exitCode)}`)
-    const duration = formatDuration(item.durationMs)
-    if (duration) details.push(`duration: ${duration}`)
-
-    return {
-      kind: 'command',
-      title: 'Command execution',
-      status: readStatus(item.status) || 'unknown',
-      summary: item.command,
-      details,
-      output: item.aggregatedOutput?.trim() || undefined,
-      outputLabel: 'Output',
-    }
-  }
-
-  if (item.type === 'fileChange') {
-    const changedFiles = item.changes.map((change) => {
-      const kind = readStatus(change.kind) || 'update'
-      const movePath =
-        change.kind.type === 'update' && change.kind.move_path
-          ? ` -> ${change.kind.move_path}`
-          : ''
-      return `${kind}: ${change.path}${movePath}`
-    })
-    const diff = item.changes
-      .map((change) => change.diff.trim())
-      .filter((value) => value.length > 0)
-      .join('\n\n')
-
-    return {
-      kind: 'fileChange',
-      title: 'File changes',
-      status: readStatus(item.status) || 'unknown',
-      summary: `${String(item.changes.length)} file${item.changes.length === 1 ? '' : 's'} changed`,
-      details: [`status: ${readStatus(item.status) || 'unknown'}`, ...changedFiles],
-      output: diff || undefined,
-      outputLabel: 'Diff',
-    }
-  }
-
-  if (item.type === 'mcpToolCall') {
-    const duration = formatDuration(item.durationMs)
-    const details = [
-      `server: ${item.server}`,
-      `tool: ${item.tool}`,
-      `status: ${readStatus(item.status) || 'unknown'}`,
-    ]
-    if (duration) details.push(`duration: ${duration}`)
-    const errorMessage = item.error?.message?.trim() ?? ''
-    if (errorMessage) details.push(`error: ${errorMessage}`)
-
-    return {
-      kind: 'mcp',
-      title: 'MCP tool call',
-      status: errorMessage ? 'failed' : readStatus(item.status) || 'unknown',
-      summary: `${item.server}.${item.tool}`,
-      details,
-      output: errorMessage || toCompactJson(item.result || item.arguments) || undefined,
-      outputLabel: errorMessage ? 'Error' : 'Result',
-    }
-  }
-
-  if (item.type === 'collabAgentToolCall') {
-    const receivers = item.receiverThreadIds.length > 0 ? item.receiverThreadIds.join(', ') : 'none'
-    const details = [
-      `tool: ${readStatus(item.tool) || toCompactJson(item.tool) || 'unknown'}`,
-      `status: ${readStatus(item.status) || 'unknown'}`,
-      `sender: ${item.senderThreadId}`,
-      `receivers: ${receivers}`,
-    ]
-
-    return {
-      kind: 'collabAgent',
-      title: 'Agent orchestration',
-      status: readStatus(item.status) || 'unknown',
-      summary: item.prompt?.trim() || readStatus(item.tool) || 'Collaboration tool call',
-      details,
-      output: toCompactJson(item.agentsStates) || undefined,
-      outputLabel: 'Agent states',
-    }
-  }
-
-  if (item.type === 'webSearch') {
-    return {
-      kind: 'webSearch',
-      title: 'Web search',
-      status: item.action ? readStatus(item.action) || 'recorded' : 'recorded',
-      summary: item.query,
-      details: item.action ? [`action: ${readStatus(item.action) || toCompactJson(item.action)}`] : [],
-      output: item.action ? toCompactJson(item.action) : undefined,
-      outputLabel: 'Search metadata',
-    }
-  }
-
-  if (item.type === 'imageView') {
-    return {
-      kind: 'imageView',
-      title: 'Image viewed',
-      status: 'recorded',
-      summary: item.path,
-      details: [`path: ${item.path}`],
-    }
-  }
-
-  if (item.type === 'enteredReviewMode' || item.type === 'exitedReviewMode') {
-    return {
-      kind: 'review',
-      title: item.type === 'enteredReviewMode' ? 'Entered review mode' : 'Exited review mode',
-      status: 'recorded',
-      summary: item.review,
-      details: [`review: ${item.review}`],
-    }
-  }
-
-  if (item.type === 'contextCompaction') {
-    return {
-      kind: 'context',
-      title: 'Context compaction',
-      status: 'recorded',
-      summary: 'Context was compacted',
-      details: [],
-    }
-  }
-
-  return null
 }
 
 function toUiMessages(item: ThreadItem, turnId: string): UiMessage[] {

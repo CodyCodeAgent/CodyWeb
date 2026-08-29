@@ -1,5 +1,6 @@
 import type { ApprovalDecisionScope } from '@codycodeagent/cody-web-core/presentation'
 import type { ComposerContextAttachment, ComposerSkill } from '@codycodeagent/cody-web-core/composer'
+import type { ConversationTool } from '@codycodeagent/cody-web-core/conversation'
 
 export type RpcEnvelope<T> = {
   result: T
@@ -212,25 +213,7 @@ export type UiConversationShareSummary = {
   turnCount: number
 }
 
-export type UiToolTimelineEntry = {
-  kind:
-    | 'command'
-    | 'fileChange'
-    | 'mcp'
-    | 'collabAgent'
-    | 'webSearch'
-    | 'imageView'
-    | 'review'
-    | 'context'
-    | 'rollback'
-    | 'unknown'
-  title: string
-  status: string
-  summary: string
-  details: string[]
-  output?: string
-  outputLabel?: string
-}
+export type UiToolTimelineEntry = ConversationTool
 
 export type UiComposerContextKind =
   | 'diff'

@@ -43,11 +43,6 @@ export type ConversationShareLookup =
   | { status: 'active'; share: ConversationShareRecord }
   | { status: 'expired' | 'revoked' | 'missing'; share: null }
 
-const TOOL_KINDS = new Set<UiToolTimelineEntry['kind']>([
-  'command', 'fileChange', 'mcp', 'collabAgent', 'webSearch', 'imageView',
-  'review', 'context', 'rollback', 'unknown',
-])
-
 function ensureConversationShareTable(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversation_shares (
@@ -115,8 +110,8 @@ function sanitizeText(value: unknown, shouldRedactPaths: boolean, maxLength = MA
 function normalizeTool(value: unknown, shouldRedactPaths: boolean): UiToolTimelineEntry | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const row = value as Record<string, unknown>
-  const kind = typeof row.kind === 'string' && TOOL_KINDS.has(row.kind as UiToolTimelineEntry['kind'])
-    ? row.kind as UiToolTimelineEntry['kind']
+  const kind = typeof row.kind === 'string' && row.kind.trim()
+    ? row.kind.slice(0, 120)
     : 'unknown'
   const details = Array.isArray(row.details)
     ? row.details.slice(0, 120).map((detail) => sanitizeText(detail, shouldRedactPaths, 20_000)).filter(Boolean)
