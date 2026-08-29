@@ -1,5 +1,10 @@
 import type { RpcNotification } from '../api/codexRealtimeClient'
 import type { UiMessage, UiThread, UiThreadContextUsage } from '../types/codex'
+import { normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
+import {
+  readThreadId as readCoreThreadId,
+  readTurnId as readCoreTurnId,
+} from '@codycodeagent/cody-web-core/protocol'
 import { buildUserMessageContentMessages } from '../api/normalizers/userMessageContent'
 import {
   asRecord,
@@ -37,10 +42,10 @@ export type StructuredPlanUpdate = {
   updatedAtIso: string
 }
 
-function formatPlanStepStatus(value: string): string {
-  if (value === 'completed') return '[done]'
-  if (value === 'inProgress') return '[doing]'
-  return '[todo]'
+function conversationEvents(notification: RpcNotification) {
+  // Reader helpers may be exercised before routing has attached a thread id.
+  // The placeholder is never exposed; live state still routes by the raw/native id.
+  return normalizeCodexNotification(notification, { fallbackThreadId: '__unrouted__' })
 }
 
 function readProtocolId(record: Record<string, unknown> | null | undefined, camelKey: string, snakeKey: string): string {
@@ -84,58 +89,18 @@ export function readThreadContextUsageUpdate(notification: RpcNotification): UiT
 }
 
 export function extractTurnIdFromNotification(notification: RpcNotification): string {
-  const params = asRecord(notification.params)
-  if (!params) return ''
-  const turn = asRecord(params.turn)
-  return readString(turn?.id) || readProtocolId(params, 'turnId', 'turn_id')
-}
-
-function readNotificationItemId(params: Record<string, unknown>): string {
-  const directId = readProtocolId(params, 'itemId', 'item_id')
-  if (directId) return directId
-
-  const item = asRecord(params.item)
-  return readString(item?.id)
-}
-
-function readNotificationTextDelta(params: Record<string, unknown>): string {
-  return (
-    readString(params.delta) ||
-    readString(params.textDelta) ||
-    readString(params.text_delta) ||
-    readString(params.content) ||
-    readString(params.text)
-  )
+  return readCoreTurnId(notification.params)
 }
 
 export function extractThreadIdFromNotification(notification: RpcNotification): string {
   const params = asRecord(notification.params)
-  if (!params) return ''
-
-  const directThreadId = readProtocolId(params, 'threadId', 'thread_id')
-  if (directThreadId) return directThreadId
-
-  const conversationId = readProtocolId(params, 'conversationId', 'conversation_id')
-  if (conversationId) return conversationId
-
-  const thread = asRecord(params.thread)
-  const nestedThreadId = readString(thread?.id)
-  if (nestedThreadId) return nestedThreadId
-
-  const turn = asRecord(params.turn)
-  const turnThreadId = readProtocolId(turn, 'threadId', 'thread_id')
-  if (turnThreadId) return turnThreadId
-
-  return ''
+  return readCoreThreadId(notification.params)
+    || readProtocolId(params, 'conversationId', 'conversation_id')
 }
 
 export function readTurnErrorMessage(notification: RpcNotification): string {
-  if (notification.method !== 'turn/completed') return ''
-  const params = asRecord(notification.params)
-  const turn = asRecord(params?.turn)
-  if (!turn || turn.status !== 'failed') return ''
-  const errorPayload = asRecord(turn.error)
-  return readString(errorPayload?.message)
+  const failed = conversationEvents(notification).find((event) => event.type === 'turn.failed')
+  return typeof failed?.data.error === 'string' ? failed.data.error : ''
 }
 
 export function readTurnActivity(notification: RpcNotification): { threadId: string; activity: TurnActivityState } | null {
@@ -181,38 +146,28 @@ export function readTurnActivity(notification: RpcNotification): { threadId: str
 }
 
 export function readTurnStartedInfo(notification: RpcNotification): TurnStartedInfo | null {
-  if (notification.method !== 'turn/started') return null
-
+  const event = conversationEvents(notification).find((candidate) => candidate.type === 'turn.started')
+  if (!event?.turnId) return null
   const params = asRecord(notification.params)
   if (!params) return null
-  const threadId = extractThreadIdFromNotification(notification)
-  if (!threadId) return null
-
   const turnPayload = asRecord(params.turn)
-  const turnId = readString(turnPayload?.id) || readProtocolId(params, 'turnId', 'turn_id') || `${threadId}:unknown`
-  if (!turnId) return null
-
   const startedAtMs =
     readIsoTimestampMs(turnPayload?.startedAt) ??
     readIsoTimestampMs(params.startedAt) ??
     readIsoTimestampMs(notification.atIso) ??
     Date.now()
 
-  return { threadId, turnId, startedAtMs }
+  return { threadId: event.threadId, turnId: event.turnId, startedAtMs }
 }
 
 export function readTurnCompletedInfo(notification: RpcNotification): TurnCompletedInfo | null {
-  if (notification.method !== 'turn/completed') return null
-
+  const event = conversationEvents(notification).find((candidate) => (
+    candidate.type === 'turn.completed' || candidate.type === 'turn.failed' || candidate.type === 'turn.interrupted'
+  ))
+  if (!event?.turnId) return null
   const params = asRecord(notification.params)
   if (!params) return null
-  const threadId = extractThreadIdFromNotification(notification)
-  if (!threadId) return null
-
   const turnPayload = asRecord(params.turn)
-  const turnId = readString(turnPayload?.id) || readString(params.turnId) || `${threadId}:unknown`
-  if (!turnId) return null
-
   const completedAtMs =
     readIsoTimestampMs(turnPayload?.completedAt) ??
     readIsoTimestampMs(params.completedAt) ??
@@ -224,7 +179,7 @@ export function readTurnCompletedInfo(notification: RpcNotification): TurnComple
     readIsoTimestampMs(params.startedAt) ??
     undefined
 
-  return { threadId, turnId, completedAtMs, startedAtMs }
+  return { threadId: event.threadId, turnId: event.turnId, completedAtMs, startedAtMs }
 }
 
 export function readTurnDurationHints(notification: RpcNotification): {
@@ -308,27 +263,14 @@ export function readReasoningStartedItemId(notification: RpcNotification): strin
 }
 
 export function readReasoningDelta(notification: RpcNotification): { messageId: string; delta: string } | null {
-  const params = asRecord(notification.params)
-  if (
-    !params ||
-    (
-      notification.method !== 'item/reasoning/summaryTextDelta' &&
-      notification.method !== 'item/reasoning/textDelta'
-    )
-  ) {
-    return null
-  }
-  const itemId = readNotificationItemId(params)
-  const delta = readNotificationTextDelta(params)
-  if (!itemId || !delta) return null
-  return { messageId: liveReasoningMessageId(itemId), delta }
+  const event = conversationEvents(notification).find((candidate) => candidate.type === 'reasoning.delta')
+  const delta = typeof event?.data.text === 'string' ? event.data.text : ''
+  return event?.itemId && delta ? { messageId: liveReasoningMessageId(event.itemId), delta } : null
 }
 
 export function readReasoningSectionBreakMessageId(notification: RpcNotification): string {
-  const params = asRecord(notification.params)
-  if (!params || notification.method !== 'item/reasoning/summaryPartAdded') return ''
-  const itemId = readNotificationItemId(params)
-  return itemId ? liveReasoningMessageId(itemId) : ''
+  const event = conversationEvents(notification).find((candidate) => candidate.type === 'reasoning.break')
+  return event?.itemId ? liveReasoningMessageId(event.itemId) : ''
 }
 
 export function readReasoningCompletedId(notification: RpcNotification): string {
@@ -348,25 +290,17 @@ export function readAgentMessageStartedId(notification: RpcNotification): string
 }
 
 export function readAgentMessageDelta(notification: RpcNotification): { messageId: string; turnId?: string; delta: string } | null {
-  const params = asRecord(notification.params)
-  if (!params || notification.method !== 'item/agentMessage/delta') return null
-  const messageId = readNotificationItemId(params)
-  const turnId = readProtocolId(params, 'turnId', 'turn_id')
-  const delta = readNotificationTextDelta(params)
-  if (!messageId || !delta) return null
-  return { messageId, ...(turnId ? { turnId } : {}), delta }
+  const event = conversationEvents(notification).find((candidate) => candidate.type === 'assistant.delta')
+  const delta = typeof event?.data.text === 'string' ? event.data.text : ''
+  if (!event?.itemId || !delta) return null
+  return { messageId: event.itemId, ...(event.turnId ? { turnId: event.turnId } : {}), delta }
 }
 
 export function readAgentMessageCompleted(notification: RpcNotification): UiMessage | null {
-  const params = asRecord(notification.params)
-  if (!params || notification.method !== 'item/completed') return null
-  const item = asRecord(params.item)
-  if (!item || item.type !== 'agentMessage') return null
-  const id = readString(item.id)
-  const turnId = readProtocolId(params, 'turnId', 'turn_id')
-  const text = readString(item.text)
-  if (!id || !text) return null
-  return { id, turnId, role: 'assistant', text, messageType: 'agentMessage.live' }
+  const event = conversationEvents(notification).find((candidate) => candidate.type === 'assistant.completed')
+  const text = typeof event?.data.text === 'string' ? event.data.text : ''
+  if (!event?.itemId || !text) return null
+  return { id: event.itemId, turnId: event.turnId, role: 'assistant', text, messageType: 'agentMessage.live' }
 }
 
 export function readUserMessageCompleted(notification: RpcNotification): UiMessage[] {
@@ -382,62 +316,33 @@ export function readUserMessageCompleted(notification: RpcNotification): UiMessa
 }
 
 export function readPlanMessageDelta(notification: RpcNotification): { messageId: string; turnId: string; delta: string } | null {
-  const params = asRecord(notification.params)
-  if (!params || notification.method !== 'item/plan/delta') return null
-  const itemId = readNotificationItemId(params)
-  const turnId = readProtocolId(params, 'turnId', 'turn_id')
-  const delta = readNotificationTextDelta(params)
-  if (!itemId || !delta) return null
-  return { messageId: itemId, turnId, delta }
+  const event = conversationEvents(notification).find((candidate) => candidate.type === 'plan.delta')
+  const delta = typeof event?.data.text === 'string' ? event.data.text : ''
+  return event?.itemId && event.turnId && delta
+    ? { messageId: event.itemId, turnId: event.turnId, delta }
+    : null
 }
 
 export function readPlanMessageCompleted(notification: RpcNotification): UiMessage | null {
-  const params = asRecord(notification.params)
-  if (!params || notification.method !== 'item/completed') return null
-  const item = asRecord(params.item)
-  if (!item || item.type !== 'plan') return null
-  const id = readString(item.id)
-  const turnId = readProtocolId(params, 'turnId', 'turn_id')
-  const text = readString(item.text)
-  if (!id || !text) return null
-  return { id, turnId, role: 'assistant', text, messageType: 'plan.live' }
+  const event = conversationEvents(notification).find((candidate) => candidate.type === 'plan.replaced')
+  if (notification.method !== 'item/completed') return null
+  const text = typeof event?.data.text === 'string' ? event.data.text : ''
+  if (!event?.itemId || !text) return null
+  return { id: event.itemId, turnId: event.turnId, role: 'assistant', text, messageType: 'plan.live' }
 }
 
 export function readPlanUpdatedMessage(
   notification: RpcNotification,
   planMessageIdForTurn: (turnId: string) => string | undefined,
 ): UiMessage | null {
-  const params = asRecord(notification.params)
-  if (!params || notification.method !== 'turn/plan/updated') return null
-
-  const turnId = readProtocolId(params, 'turnId', 'turn_id')
-  if (!turnId) return null
-
-  const parts: string[] = []
-  const explanation = readString(params.explanation).trim()
-  if (explanation) {
-    parts.push(explanation)
-  }
-
-  const plan = Array.isArray(params.plan) ? params.plan : []
-  const steps: string[] = []
-  for (const [index, row] of plan.entries()) {
-    const step = asRecord(row)
-    if (!step) continue
-    const text = readString(step.step).trim()
-    if (!text) continue
-    steps.push(`${String(index + 1)}. ${formatPlanStepStatus(readString(step.status))} ${text}`)
-  }
-  if (steps.length > 0) {
-    parts.push(steps.join('\n'))
-  }
-
-  const text = parts.join('\n\n').trim()
+  const event = conversationEvents(notification).find((candidate) => candidate.type === 'plan.replaced')
+  if (!event?.turnId || notification.method !== 'turn/plan/updated') return null
+  const text = typeof event.data.text === 'string' ? event.data.text.trim() : ''
   if (!text) return null
 
   return {
-    id: planMessageIdForTurn(turnId) ?? `plan:${turnId}:live`,
-    turnId,
+    id: planMessageIdForTurn(event.turnId) ?? `plan:${event.turnId}:live`,
+    turnId: event.turnId,
     role: 'assistant',
     text,
     messageType: 'plan.live',
