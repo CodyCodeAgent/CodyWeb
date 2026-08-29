@@ -20,7 +20,6 @@ import {
   normalizeApprovalDecisionScope,
   normalizeMcpServerInventory,
   readApprovalDecisionFromReply,
-  shouldRecoverAppServerAfterRpcTimeout,
 } from './codexAppServerBridge'
 import { listToolingCheckpoints } from './toolingService'
 
@@ -38,34 +37,6 @@ describe('app-server launch contract', () => {
     expect(APP_SERVER_RESTART_COOLDOWN_MS).toBeLessThan(APP_SERVER_DIAGNOSTICS_RPC_TIMEOUT_MS)
     expect(appServerRpcTimeoutMessage('thread/list', 1234))
       .toBe('codex app-server RPC thread/list timed out after 1234ms')
-  })
-
-  it('recovers the app-server only after isolated read-only thread RPC timeouts', () => {
-    expect(shouldRecoverAppServerAfterRpcTimeout({
-      method: 'thread/read',
-      pendingClientRequestCount: 0,
-      pendingServerRequestCount: 0,
-    })).toBe(true)
-    expect(shouldRecoverAppServerAfterRpcTimeout({
-      method: 'thread/loaded/list',
-      pendingClientRequestCount: 0,
-      pendingServerRequestCount: 0,
-    })).toBe(true)
-    expect(shouldRecoverAppServerAfterRpcTimeout({
-      method: 'turn/start',
-      pendingClientRequestCount: 0,
-      pendingServerRequestCount: 0,
-    })).toBe(false)
-    expect(shouldRecoverAppServerAfterRpcTimeout({
-      method: 'thread/read',
-      pendingClientRequestCount: 1,
-      pendingServerRequestCount: 0,
-    })).toBe(false)
-    expect(shouldRecoverAppServerAfterRpcTimeout({
-      method: 'thread/read',
-      pendingClientRequestCount: 0,
-      pendingServerRequestCount: 1,
-    })).toBe(false)
   })
 
   it('treats duplicate app-server initialization as reusable state', () => {

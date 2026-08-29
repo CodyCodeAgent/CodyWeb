@@ -92,7 +92,6 @@ import {
 } from './desktopMessageState'
 import {
   markThreadMessagesLoaded,
-  markThreadResumed,
   pruneDesktopThreadScopedState,
   setThreadLoadedVersion,
   shouldShowMessagesLoading,
@@ -1100,11 +1099,6 @@ export function useDesktopState() {
     setMessageLoadErrorForThread(threadId, '')
 
     try {
-      if (resumedThreadById.value[threadId] !== true) {
-        await resumeThread(threadId)
-        resumedThreadById.value = markThreadResumed(resumedThreadById.value, threadId)
-      }
-
       const page = await getThreadMessagesPage(threadId, { limit: 10, offset: 0 })
       if (latestMessageLoadRequestIdByThreadId.get(threadId) !== requestId) {
         return

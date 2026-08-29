@@ -638,25 +638,8 @@ export const CODEX_APP_SERVER_ARGS = ['app-server', '--listen', 'stdio://'] as c
 export const APP_SERVER_RPC_TIMEOUT_MS = 20_000
 export const APP_SERVER_DIAGNOSTICS_RPC_TIMEOUT_MS = 5_000
 export const APP_SERVER_RESTART_COOLDOWN_MS = 1_750
-export const APP_SERVER_TIMEOUT_RECOVERY_METHODS = new Set([
-  'thread/read',
-  'thread/loaded/list',
-])
-
 export function appServerRpcTimeoutMessage(method: string, timeoutMs: number): string {
   return `codex app-server RPC ${method} timed out after ${String(timeoutMs)}ms`
-}
-
-export function shouldRecoverAppServerAfterRpcTimeout(input: {
-  method: string
-  pendingClientRequestCount: number
-  pendingServerRequestCount: number
-}): boolean {
-  return (
-    APP_SERVER_TIMEOUT_RECOVERY_METHODS.has(input.method) &&
-    input.pendingClientRequestCount === 0 &&
-    input.pendingServerRequestCount === 0
-  )
 }
 
 export function isAppServerAlreadyInitializedError(payload: unknown): boolean {

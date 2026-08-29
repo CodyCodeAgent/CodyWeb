@@ -1051,6 +1051,7 @@ describe('useDesktopState realtime messages', () => {
 
     await expect(state.selectThread('thread-a')).resolves.toBeUndefined()
 
+    expect(codexApiMock.resumeThread).not.toHaveBeenCalled()
     expect(state.selectedThreadId.value).toBe('thread-a')
     expect(state.isLoadingMessages.value).toBe(false)
     expect(state.selectedMessageLoadError.value).toBe('codex app-server RPC thread/read timed out after 20000ms')
