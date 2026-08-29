@@ -42,6 +42,7 @@ import {
   readReasoningSectionBreakMessageId,
   readReasoningStartedItemId,
   readStartedThread,
+  readThreadCompaction,
   readThreadContextUsageUpdate,
   readTurnActivity,
   readTurnCompletedInfo,
@@ -841,14 +842,13 @@ export function useDesktopState() {
       setTurnErrorForThread(completedTurn.threadId, null)
     }
 
-    if (notification.method === 'thread/compacted') {
-      const compactedThreadId = extractThreadIdFromNotification(notification)
-      if (compactedThreadId) {
-        const previousUsage = contextUsageByThreadId.value[compactedThreadId]
+    const compaction = readThreadCompaction(notification)
+    if (compaction) {
+      const previousUsage = contextUsageByThreadId.value[compaction.threadId]
         contextUsageByThreadId.value = {
           ...contextUsageByThreadId.value,
-          [compactedThreadId]: {
-            threadId: compactedThreadId,
+          [compaction.threadId]: {
+            threadId: compaction.threadId,
             turnId: previousUsage?.turnId ?? '',
             usedTokens: previousUsage?.usedTokens ?? 0,
             inputTokens: previousUsage?.inputTokens ?? 0,
@@ -856,14 +856,13 @@ export function useDesktopState() {
             autoCompactTokenLimit:
               previousUsage?.autoCompactTokenLimit ??
               autoCompactTokenLimit.value,
-            updatedAtIso: notification.atIso || new Date().toISOString(),
+            updatedAtIso: compaction.updatedAtIso,
             compactionState: 'compacted',
           },
         }
-        setThreadInProgress(compactedThreadId, false)
-        setTurnActivityForThread(compactedThreadId, null)
-        setTurnErrorForThread(compactedThreadId, null)
-      }
+        setThreadInProgress(compaction.threadId, false)
+        setTurnActivityForThread(compaction.threadId, null)
+        setTurnErrorForThread(compaction.threadId, null)
     }
 
     const notificationThreadId = extractThreadIdFromNotification(notification)

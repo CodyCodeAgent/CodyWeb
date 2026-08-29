@@ -52,40 +52,25 @@ function readProtocolId(record: Record<string, unknown> | null | undefined, came
   return readString(record?.[camelKey]) || readString(record?.[snakeKey])
 }
 
-function readTokenCount(value: unknown): number | null {
-  if (typeof value === 'bigint') {
-    const numeric = Number(value)
-    return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : null
-  }
-  if (typeof value === 'string' && /^\d+$/u.test(value.trim())) {
-    const numeric = Number(value)
-    return Number.isSafeInteger(numeric) ? numeric : null
-  }
-  const numeric = readNumber(value)
-  return numeric !== null && numeric >= 0 ? numeric : null
-}
-
 export function readThreadContextUsageUpdate(notification: RpcNotification): UiThreadContextUsage | null {
-  if (notification.method !== 'thread/tokenUsage/updated') return null
-  const params = asRecord(notification.params)
-  const tokenUsage = asRecord(params?.tokenUsage) ?? asRecord(params?.token_usage)
-  const last = asRecord(tokenUsage?.last)
-  const threadId = extractThreadIdFromNotification(notification)
-  const usedTokens = readTokenCount(last?.totalTokens) ?? readTokenCount(last?.total_tokens)
-  if (!threadId || usedTokens === null) return null
+  const event = conversationEvents(notification).find((candidate) => candidate.type === 'thread.context.updated')
+  if (!event || typeof event.data.usedTokens !== 'number') return null
 
   return {
-    threadId,
-    turnId: readProtocolId(params, 'turnId', 'turn_id'),
-    usedTokens,
-    inputTokens: readTokenCount(last?.inputTokens) ?? readTokenCount(last?.input_tokens) ?? 0,
-    contextWindow:
-      readTokenCount(tokenUsage?.modelContextWindow) ??
-      readTokenCount(tokenUsage?.model_context_window),
-    autoCompactTokenLimit: null,
-    updatedAtIso: readIsoTimestampString(notification.atIso) || new Date().toISOString(),
+    threadId: event.threadId,
+    turnId: typeof event.data.turnId === 'string' ? event.data.turnId : event.turnId ?? '',
+    usedTokens: event.data.usedTokens,
+    inputTokens: typeof event.data.inputTokens === 'number' ? event.data.inputTokens : 0,
+    contextWindow: typeof event.data.contextWindow === 'number' ? event.data.contextWindow : null,
+    autoCompactTokenLimit: typeof event.data.autoCompactTokenLimit === 'number' ? event.data.autoCompactTokenLimit : null,
+    updatedAtIso: event.atIso,
     compactionState: 'idle',
   }
+}
+
+export function readThreadCompaction(notification: RpcNotification): { threadId: string; updatedAtIso: string } | null {
+  const event = conversationEvents(notification).find((candidate) => candidate.type === 'thread.compacted')
+  return event ? { threadId: event.threadId, updatedAtIso: event.atIso } : null
 }
 
 export function extractTurnIdFromNotification(notification: RpcNotification): string {
@@ -104,45 +89,18 @@ export function readTurnErrorMessage(notification: RpcNotification): string {
 }
 
 export function readTurnActivity(notification: RpcNotification): { threadId: string; activity: TurnActivityState } | null {
-  const threadId = extractThreadIdFromNotification(notification)
-  if (!threadId) return null
-
-  if (notification.method === 'turn/started') {
-    return { threadId, activity: { label: 'Thinking', details: [] } }
+  const event = conversationEvents(notification).find((candidate) => candidate.type === 'turn.activity')
+  const label = typeof event?.data.label === 'string' ? event.data.label : ''
+  if (!event || !label) return null
+  return {
+    threadId: event.threadId,
+    activity: {
+      label,
+      details: Array.isArray(event.data.details)
+        ? event.data.details.filter((value): value is string => typeof value === 'string')
+        : [],
+    },
   }
-
-  if (notification.method === 'item/started') {
-    const params = asRecord(notification.params)
-    const item = asRecord(params?.item)
-    const itemType = readString(item?.type).toLowerCase()
-    if (itemType === 'reasoning') {
-      return { threadId, activity: { label: 'Thinking', details: [] } }
-    }
-    if (itemType === 'agentmessage') {
-      return { threadId, activity: { label: 'Writing response', details: [] } }
-    }
-    if (itemType === 'plan') {
-      return { threadId, activity: { label: 'Writing plan', details: [] } }
-    }
-  }
-
-  if (
-    notification.method === 'item/reasoning/summaryTextDelta' ||
-    notification.method === 'item/reasoning/textDelta' ||
-    notification.method === 'item/reasoning/summaryPartAdded'
-  ) {
-    return { threadId, activity: { label: 'Thinking', details: [] } }
-  }
-
-  if (notification.method === 'item/agentMessage/delta') {
-    return { threadId, activity: { label: 'Writing response', details: [] } }
-  }
-
-  if (notification.method === 'item/plan/delta' || notification.method === 'turn/plan/updated') {
-    return { threadId, activity: { label: 'Writing plan', details: [] } }
-  }
-
-  return null
 }
 
 export function readTurnStartedInfo(notification: RpcNotification): TurnStartedInfo | null {
@@ -350,24 +308,17 @@ export function readPlanUpdatedMessage(
 }
 
 export function readStructuredPlanUpdate(notification: RpcNotification): StructuredPlanUpdate | null {
-  const params = asRecord(notification.params)
-  if (!params || notification.method !== 'turn/plan/updated') return null
-  const threadId = extractThreadIdFromNotification(notification)
-  const turnId = readProtocolId(params, 'turnId', 'turn_id')
-  if (!threadId || !turnId || !Array.isArray(params.plan)) return null
-  const steps: StructuredPlanStep[] = []
-  for (const value of params.plan) {
+  const event = conversationEvents(notification).find((candidate) => candidate.type === 'plan.replaced')
+  if (!event?.turnId || !Array.isArray(event.data.steps)) return null
+  const steps = event.data.steps.filter((value): value is StructuredPlanStep => {
     const row = asRecord(value)
-    const step = readString(row?.step).trim()
-    const status = readString(row?.status)
-    if (!step || (status !== 'pending' && status !== 'inProgress' && status !== 'completed')) continue
-    steps.push({ step, status })
-  }
+    return typeof row?.step === 'string' && (row.status === 'pending' || row.status === 'inProgress' || row.status === 'completed')
+  })
   if (steps.length === 0) return null
   return {
-    threadId, turnId, steps,
-    explanation: readString(params.explanation).trim(),
-    updatedAtIso: readIsoTimestampString(notification.atIso) ?? new Date().toISOString(),
+    threadId: event.threadId, turnId: event.turnId, steps,
+    explanation: typeof event.data.explanation === 'string' ? event.data.explanation : '',
+    updatedAtIso: event.atIso,
   }
 }
 
