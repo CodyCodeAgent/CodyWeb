@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const HOST = '127.0.0.1'
 const STARTUP_TIMEOUT_MS = 15_000
@@ -312,7 +315,9 @@ if (!allowTurnApproval) {
   process.exit(0)
 }
 
-const cwd = readArgValue('--cwd') || process.cwd()
+const requestedCwd = readArgValue('--cwd')
+const temporaryWorkspace = requestedCwd ? '' : await mkdtemp(join(tmpdir(), 'cody-web-ui-turn-approval-'))
+const cwd = requestedCwd || temporaryWorkspace
 const message = readArgValue('--message') || DEFAULT_MESSAGE
 const model = readArgValue('--model')
 const effort = readArgValue('--effort')
@@ -383,4 +388,7 @@ try {
     }
   }
   await stopChild(child)
+  if (temporaryWorkspace) {
+    await rm(temporaryWorkspace, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+  }
 }
