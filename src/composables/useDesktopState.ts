@@ -5,7 +5,14 @@ import {
   type ComposerCollaborationModeOption,
   type ComposerSubmission,
 } from '@codycodeagent/cody-web-core/composer'
-import type { ConversationScrollState } from '@codycodeagent/cody-web-core/conversation'
+import {
+  conversationLiveOverlayFromState,
+  conversationStateFromRegistry,
+  pruneConversationStateRegistry,
+  reduceConversationRegistryEvents,
+  type ConversationScrollState,
+  type ConversationStateRegistry,
+} from '@codycodeagent/cody-web-core/conversation'
 import {
   compactThread,
   forkThread,
@@ -29,35 +36,26 @@ import {
   extractThreadIdFromNotification,
   extractTurnIdFromNotification,
   isAgentContentEvent,
-  liveReasoningMessageId,
+  normalizeRealtimeNotification,
   readAgentMessageCompleted,
   readAgentMessageDelta,
-  readAgentMessageStartedId,
   readPlanMessageCompleted,
   readPlanMessageDelta,
   readPlanUpdatedMessage,
-  readStructuredPlanUpdate,
-  readReasoningCompletedId,
-  readReasoningDelta,
-  readReasoningSectionBreakMessageId,
-  readReasoningStartedItemId,
   readStartedThread,
   readThreadCompaction,
   readThreadContextUsageUpdate,
-  readTurnActivity,
   readTurnCompletedInfo,
   readTurnDurationHints,
-  readTurnErrorMessage,
   readTurnStartedInfo,
   readUserMessageCompleted,
-  type TurnActivityState,
   type TurnStartedInfo,
 } from './realtimeNotificationReaders'
-import { useStructuredPlanState } from './useStructuredPlanState'
 import { useServerRequestState } from './useServerRequestState'
 import { useDesktopComposerState } from './useDesktopComposerState'
 import { useDesktopRealtimeState } from './useDesktopRealtimeState'
 import { useDesktopThreadState } from './useDesktopThreadState'
+import type { DesktopPlanState } from './desktopPlanState'
 import { shouldQueueEventDrivenSyncForMethod } from './realtimeSyncPolicy'
 import { useRateLimitState } from './useRateLimitState'
 import { dataAuthorityPolicy } from './dataAuthorityPolicy'
@@ -69,25 +67,22 @@ import {
   queueDesktopRealtimeSync,
 } from './desktopRealtimeSyncQueue'
 import {
-  appendLiveReasoningDeltaForThread,
-  appendLiveReasoningSectionBreakForThread,
   buildDisplayedMessages,
   buildLiveOverlay,
   buildRollbackAuditMessage,
-  clearLiveReasoningTextForThread,
   finalizeLiveMessagesForTurn,
   mergeMessages,
   removeMessageById,
   replaceMessageById,
   removeLivePlanMessagesForTurn,
   removeRedundantLiveAgentMessages,
-  updateLiveReasoningTextForThread,
   updateMessagesForThread,
   upsertLiveAssistantDeltaForThread,
   upsertMessage,
   updateTurnActivityState,
   updateTurnErrorState,
   updateTurnSummaryState,
+  type TurnActivityState,
   type TurnErrorState,
   type TurnSummaryState,
 } from './desktopMessageState'
@@ -169,9 +164,9 @@ export function useDesktopState() {
   const turnActivityByThreadId = ref<Record<string, TurnActivityState>>({})
   const contextUsageByThreadId = ref<Record<string, UiThreadContextUsage>>({})
   const outboxItemsByThreadId = ref<Record<string, LocalMessageOutboxItem[]>>({})
-  const structuredPlanState = useStructuredPlanState(selectedThreadId)
   const turnErrorByThreadId = ref<Record<string, TurnErrorState>>({})
   const activeTurnIdByThreadId = ref<Record<string, string>>({})
+  const conversationStateByThreadId = ref<ConversationStateRegistry>({})
   const serverRequestState = useServerRequestState(selectedThreadId, (message) => { error.value = message })
   const pendingServerRequestsByThreadId = serverRequestState.byThreadId
   const {
@@ -199,7 +194,6 @@ export function useDesktopState() {
   const hasLoadedThreads = ref(false)
   let eventSyncTimer: number | null = null
   const realtimeSyncQueue = createDesktopRealtimeSyncQueue()
-  const activeReasoningItemIdByThreadId = new Map<string, string>()
   let shouldAutoScrollOnNextAgentEvent = false
   const pendingTurnStartsById = new Map<string, TurnStartedInfo>()
   const livePlanMessageIdByTurnId = new Map<string, string>()
@@ -214,6 +208,9 @@ export function useDesktopState() {
   const outboxRetryTimersByThreadId = new Map<string, number>()
 
   const selectedThreadServerRequests = serverRequestState.selected
+  const selectedCoreConversation = computed(() => (
+    conversationStateFromRegistry(conversationStateByThreadId.value, selectedThreadId.value)
+  ))
   const isLoadingMessages = computed(() => loadingMessagesByThreadId.value[selectedThreadId.value] === true)
   const isLoadingEarlierMessages = computed(() => loadingEarlierMessagesByThreadId.value[selectedThreadId.value] === true)
   const selectedThreadHasMoreMessagesBefore = computed(() => messagePageByThreadId.value[selectedThreadId.value]?.hasMoreBefore === true)
@@ -226,15 +223,37 @@ export function useDesktopState() {
     () => loadedMessagesByThreadId.value[selectedThreadId.value] === true,
   )
   const allPendingServerRequests = serverRequestState.all
-  const selectedLiveOverlay = computed(() =>
-    buildLiveOverlay(
+  const selectedLiveOverlay = computed(() => {
+    const coreOverlay = conversationLiveOverlayFromState(selectedCoreConversation.value)
+    const localOverlay = buildLiveOverlay(
       selectedThreadId.value,
       turnActivityByThreadId.value,
       liveReasoningTextByThreadId.value,
       turnErrorByThreadId.value,
-    ),
-  )
-  const selectedStructuredPlan = structuredPlanState.selected
+    )
+    if (!coreOverlay) return localOverlay
+    if (!localOverlay) return coreOverlay
+    return {
+      activityLabel: coreOverlay.activityLabel || localOverlay.activityLabel,
+      activityDetails: coreOverlay.activityDetails.length ? coreOverlay.activityDetails : localOverlay.activityDetails,
+      reasoningText: coreOverlay.reasoningText || localOverlay.reasoningText,
+      errorText: coreOverlay.errorText || localOverlay.errorText,
+    }
+  })
+  const selectedStructuredPlan = computed<DesktopPlanState | null>(() => {
+    const plan = selectedCoreConversation.value.plan
+    if (!plan?.turnId || !plan.steps?.length) return null
+    return {
+      threadId: plan.threadId,
+      turnId: plan.turnId,
+      explanation: plan.explanation ?? '',
+      steps: plan.steps,
+      updatedAtIso: plan.updatedAtIso,
+      revision: plan.revision,
+      lifecycle: plan.lifecycle,
+      possiblyStale: plan.possiblyStale,
+    }
+  })
   const selectedMessageLoadError = computed(() => messageLoadErrorByThreadId.value[selectedThreadId.value] ?? '')
   const selectedThreadContextUsage = computed<UiThreadContextUsage | null>(() => {
     const usage = contextUsageByThreadId.value[selectedThreadId.value]
@@ -385,6 +404,10 @@ export function useDesktopState() {
     eventUnreadByThreadId.value = pruned.eventUnreadByThreadId
     inProgressById.value = pruned.inProgressById
     pendingServerRequestsByThreadId.value = pruned.pendingServerRequestsByThreadId
+    conversationStateByThreadId.value = pruneConversationStateRegistry(
+      conversationStateByThreadId.value,
+      activeThreadIds,
+    )
     contextUsageByThreadId.value = pruneThreadStateMap(contextUsageByThreadId.value, activeThreadIds)
     loadingMessagesByThreadId.value = Object.fromEntries(
       Object.entries(loadingMessagesByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
@@ -715,30 +738,15 @@ export function useDesktopState() {
     setLiveAgentMessagesForThread(threadId, next)
   }
 
-  function setLiveReasoningText(threadId: string, text: string): void {
-    liveReasoningTextByThreadId.value = updateLiveReasoningTextForThread(
-      liveReasoningTextByThreadId.value,
-      threadId,
-      text,
-    )
-  }
-
-  function appendLiveReasoningText(threadId: string, delta: string): void {
-    liveReasoningTextByThreadId.value = appendLiveReasoningDeltaForThread(
-      liveReasoningTextByThreadId.value,
-      threadId,
-      delta,
-    )
-  }
-
-  function clearLiveReasoningForThread(threadId: string): void {
-    liveReasoningTextByThreadId.value = clearLiveReasoningTextForThread(
-      liveReasoningTextByThreadId.value,
-      threadId,
-    )
-  }
-
   function applyRealtimeUpdates(notification: RpcNotification): void {
+    // Establish one Core event snapshot at the transport boundary. Every
+    // reader below consumes this exact snapshot instead of reparsing payloads.
+    const conversationEvents = normalizeRealtimeNotification(notification)
+    conversationStateByThreadId.value = reduceConversationRegistryEvents(
+      conversationStateByThreadId.value,
+      conversationEvents,
+    )
+
     if (handleRateLimitNotification(notification)) {
       return
     }
@@ -770,11 +778,6 @@ export function useDesktopState() {
       }
     }
 
-    const turnActivity = readTurnActivity(notification)
-    if (turnActivity) {
-      setTurnActivityForThread(turnActivity.threadId, turnActivity.activity)
-    }
-
     const startedTurn = readTurnStartedInfo(notification)
     if (startedTurn) {
       const pendingOptimisticId = (pendingOptimisticUserMessageIdsByThreadId.get(startedTurn.threadId) ?? [])[0]
@@ -788,7 +791,6 @@ export function useDesktopState() {
       setTurnSummaryForThread(startedTurn.threadId, null)
       setTurnErrorForThread(startedTurn.threadId, null)
       setThreadInProgress(startedTurn.threadId, true)
-      structuredPlanState.clear(startedTurn.threadId)
       if (shouldClearUnreadForStartedTurn(eventUnreadByThreadId.value, startedTurn)) {
         eventUnreadByThreadId.value = omitKey(eventUnreadByThreadId.value, startedTurn.threadId)
       }
@@ -827,17 +829,14 @@ export function useDesktopState() {
       setThreadInProgress(completedTurn.threadId, false)
       setTurnActivityForThread(completedTurn.threadId, null)
       markThreadUnreadByEvent(completedTurn.threadId)
-      structuredPlanState.end(completedTurn.threadId, completedTurn.turnId)
       void drainOutboxForThread(completedTurn.threadId)
     }
 
-    const turnErrorMessage = readTurnErrorMessage(notification)
-    if (turnErrorMessage) {
-      const failedThreadId = completedTurn?.threadId || extractThreadIdFromNotification(notification)
-      if (failedThreadId) {
-        setTurnErrorForThread(failedThreadId, turnErrorMessage)
-      }
-      error.value = turnErrorMessage
+    const coreTurnError = completedTurn
+      ? conversationStateFromRegistry(conversationStateByThreadId.value, completedTurn.threadId).turns[completedTurn.turnId]?.error ?? ''
+      : ''
+    if (coreTurnError) {
+      error.value = coreTurnError
     } else if (completedTurn) {
       setTurnErrorForThread(completedTurn.threadId, null)
     }
@@ -884,11 +883,6 @@ export function useDesktopState() {
         mergeMessages(messagesWithFormalUser, completedUserMessages, { preserveMissing: true }),
       )
       void reconcileOutboxForThread(notificationThreadId)
-    }
-
-    const startedAgentMessageId = readAgentMessageStartedId(notification)
-    if (startedAgentMessageId) {
-      activeReasoningItemIdByThreadId.delete(notificationThreadId)
     }
 
     const liveAgentMessageDelta = readAgentMessageDelta(notification)
@@ -950,40 +944,9 @@ export function useDesktopState() {
     if (updatedPlanMessage) {
       upsertLiveAgentMessage(notificationThreadId, updatedPlanMessage)
     }
-    const structuredPlanUpdate = readStructuredPlanUpdate(notification)
-    if (structuredPlanUpdate && dataAuthorityPolicy(notification.method)?.realtimeMode === 'replace-snapshot') {
-      structuredPlanState.apply(structuredPlanUpdate)
-    }
-
     const completedPlanMessage = readPlanMessageCompleted(notification)
     if (completedPlanMessage) {
       upsertLiveAgentMessage(notificationThreadId, completedPlanMessage)
-    }
-
-    const startedReasoningItemId = readReasoningStartedItemId(notification)
-    if (startedReasoningItemId) {
-      activeReasoningItemIdByThreadId.set(notificationThreadId, startedReasoningItemId)
-    }
-
-    const liveReasoningDelta = readReasoningDelta(notification)
-    if (liveReasoningDelta) {
-      appendLiveReasoningText(notificationThreadId, liveReasoningDelta.delta)
-    }
-
-    const sectionBreakMessageId = readReasoningSectionBreakMessageId(notification)
-    if (sectionBreakMessageId) {
-      liveReasoningTextByThreadId.value = appendLiveReasoningSectionBreakForThread(
-        liveReasoningTextByThreadId.value,
-        notificationThreadId,
-      )
-    }
-
-    const completedReasoningMessageId = readReasoningCompletedId(notification)
-    if (completedReasoningMessageId) {
-      const activeReasoningItemId = activeReasoningItemIdByThreadId.get(notificationThreadId) ?? ''
-      if (completedReasoningMessageId === liveReasoningMessageId(activeReasoningItemId)) {
-        activeReasoningItemIdByThreadId.delete(notificationThreadId)
-      }
     }
 
     if (isAgentContentEvent(notification)) {
@@ -994,16 +957,12 @@ export function useDesktopState() {
           scrollRatio: 1,
         })
       }
-      activeReasoningItemIdByThreadId.delete(notificationThreadId)
-      clearLiveReasoningForThread(notificationThreadId)
     }
 
     if (notification.method === 'turn/completed') {
-      activeReasoningItemIdByThreadId.delete(notificationThreadId)
       if (isSelectedNotificationThread) {
         shouldAutoScrollOnNextAgentEvent = false
       }
-      clearLiveReasoningForThread(notificationThreadId)
     }
 
   }
@@ -1320,7 +1279,6 @@ export function useDesktopState() {
     persistedMessagesByThreadId.value = {}
     liveAgentMessagesByThreadId.value = {}
     liveReasoningTextByThreadId.value = {}
-    activeReasoningItemIdByThreadId.clear()
     shouldAutoScrollOnNextAgentEvent = false
 
     try {
@@ -1845,7 +1803,6 @@ export function useDesktopState() {
       window.clearTimeout(eventSyncTimer)
       eventSyncTimer = null
     }
-    activeReasoningItemIdByThreadId.clear()
     shouldAutoScrollOnNextAgentEvent = false
     loadingMessagesByThreadId.value = {}
     loadingEarlierMessagesByThreadId.value = {}
@@ -1854,12 +1811,12 @@ export function useDesktopState() {
     liveReasoningTextByThreadId.value = {}
     turnActivityByThreadId.value = {}
     contextUsageByThreadId.value = {}
-    structuredPlanState.reset()
     turnSummaryByThreadId.value = {}
     turnErrorByThreadId.value = {}
     messageLoadErrorByThreadId.value = {}
     messagePageByThreadId.value = {}
     activeTurnIdByThreadId.value = {}
+    conversationStateByThreadId.value = {}
     for (const timerId of outboxRetryTimersByThreadId.values()) {
       if (typeof window !== 'undefined') window.clearTimeout(timerId)
     }
@@ -1888,6 +1845,7 @@ export function useDesktopState() {
     allPendingServerRequests,
     selectedLiveOverlay,
     selectedStructuredPlan,
+    selectedCoreConversation,
     selectedMessageLoadError,
     selectedQueuedMessages,
     selectedThreadId,

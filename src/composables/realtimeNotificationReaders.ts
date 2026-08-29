@@ -14,11 +14,6 @@ import {
   readString,
 } from '../api/protocolValueReaders'
 
-export type TurnActivityState = {
-  label: string
-  details: string[]
-}
-
 export type TurnStartedInfo = {
   threadId: string
   turnId: string
@@ -32,21 +27,23 @@ export type TurnCompletedInfo = {
   startedAtMs?: number
 }
 
-export type StructuredPlanStepStatus = 'pending' | 'inProgress' | 'completed'
-export type StructuredPlanStep = { step: string; status: StructuredPlanStepStatus }
-export type StructuredPlanUpdate = {
-  threadId: string
-  turnId: string
-  explanation: string
-  steps: StructuredPlanStep[]
-  updatedAtIso: string
-}
+const normalizedEventsByNotification = new WeakMap<RpcNotification, ReturnType<typeof normalizeCodexNotification>>()
 
-function conversationEvents(notification: RpcNotification) {
+/**
+ * Normalizes one transport notification exactly once. All product readers for
+ * that notification consume the same immutable event snapshot.
+ */
+export function normalizeRealtimeNotification(notification: RpcNotification) {
+  const cached = normalizedEventsByNotification.get(notification)
+  if (cached) return cached
   // Reader helpers may be exercised before routing has attached a thread id.
   // The placeholder is never exposed; live state still routes by the raw/native id.
-  return normalizeCodexNotification(notification, { fallbackThreadId: '__unrouted__' })
+  const events = normalizeCodexNotification(notification, { fallbackThreadId: '__unrouted__' })
+  normalizedEventsByNotification.set(notification, events)
+  return events
 }
+
+const conversationEvents = normalizeRealtimeNotification
 
 function readProtocolId(record: Record<string, unknown> | null | undefined, camelKey: string, snakeKey: string): string {
   return readString(record?.[camelKey]) || readString(record?.[snakeKey])
@@ -81,26 +78,6 @@ export function extractThreadIdFromNotification(notification: RpcNotification): 
   const params = asRecord(notification.params)
   return readCoreThreadId(notification.params)
     || readProtocolId(params, 'conversationId', 'conversation_id')
-}
-
-export function readTurnErrorMessage(notification: RpcNotification): string {
-  const failed = conversationEvents(notification).find((event) => event.type === 'turn.failed')
-  return typeof failed?.data.error === 'string' ? failed.data.error : ''
-}
-
-export function readTurnActivity(notification: RpcNotification): { threadId: string; activity: TurnActivityState } | null {
-  const event = conversationEvents(notification).find((candidate) => candidate.type === 'turn.activity')
-  const label = typeof event?.data.label === 'string' ? event.data.label : ''
-  if (!event || !label) return null
-  return {
-    threadId: event.threadId,
-    activity: {
-      label,
-      details: Array.isArray(event.data.details)
-        ? event.data.details.filter((value): value is string => typeof value === 'string')
-        : [],
-    },
-  }
 }
 
 export function readTurnStartedInfo(notification: RpcNotification): TurnStartedInfo | null {
@@ -208,45 +185,6 @@ export function readStartedThread(notification: RpcNotification): UiThread | nul
   }
 }
 
-export function liveReasoningMessageId(reasoningItemId: string): string {
-  return `${reasoningItemId}:live-reasoning`
-}
-
-export function readReasoningStartedItemId(notification: RpcNotification): string {
-  const params = asRecord(notification.params)
-  if (!params || notification.method !== 'item/started') return ''
-  const item = asRecord(params.item)
-  if (!item || item.type !== 'reasoning') return ''
-  return readString(item.id)
-}
-
-export function readReasoningDelta(notification: RpcNotification): { messageId: string; delta: string } | null {
-  const event = conversationEvents(notification).find((candidate) => candidate.type === 'reasoning.delta')
-  const delta = typeof event?.data.text === 'string' ? event.data.text : ''
-  return event?.itemId && delta ? { messageId: liveReasoningMessageId(event.itemId), delta } : null
-}
-
-export function readReasoningSectionBreakMessageId(notification: RpcNotification): string {
-  const event = conversationEvents(notification).find((candidate) => candidate.type === 'reasoning.break')
-  return event?.itemId ? liveReasoningMessageId(event.itemId) : ''
-}
-
-export function readReasoningCompletedId(notification: RpcNotification): string {
-  const params = asRecord(notification.params)
-  if (!params || notification.method !== 'item/completed') return ''
-  const item = asRecord(params.item)
-  if (!item || item.type !== 'reasoning') return ''
-  return liveReasoningMessageId(readString(item.id))
-}
-
-export function readAgentMessageStartedId(notification: RpcNotification): string {
-  const params = asRecord(notification.params)
-  if (!params || notification.method !== 'item/started') return ''
-  const item = asRecord(params.item)
-  if (!item || item.type !== 'agentMessage') return ''
-  return readString(item.id)
-}
-
 export function readAgentMessageDelta(notification: RpcNotification): { messageId: string; turnId?: string; delta: string } | null {
   const event = conversationEvents(notification).find((candidate) => candidate.type === 'assistant.delta')
   const delta = typeof event?.data.text === 'string' ? event.data.text : ''
@@ -304,21 +242,6 @@ export function readPlanUpdatedMessage(
     role: 'assistant',
     text,
     messageType: 'plan.live',
-  }
-}
-
-export function readStructuredPlanUpdate(notification: RpcNotification): StructuredPlanUpdate | null {
-  const event = conversationEvents(notification).find((candidate) => candidate.type === 'plan.replaced')
-  if (!event?.turnId || !Array.isArray(event.data.steps)) return null
-  const steps = event.data.steps.filter((value): value is StructuredPlanStep => {
-    const row = asRecord(value)
-    return typeof row?.step === 'string' && (row.status === 'pending' || row.status === 'inProgress' || row.status === 'completed')
-  })
-  if (steps.length === 0) return null
-  return {
-    threadId: event.threadId, turnId: event.turnId, steps,
-    explanation: typeof event.data.explanation === 'string' ? event.data.explanation : '',
-    updatedAtIso: event.atIso,
   }
 }
 

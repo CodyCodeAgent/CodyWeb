@@ -1,4 +1,3 @@
-import type { TurnActivityState } from './realtimeNotificationReaders'
 import type { UiLiveOverlay, UiMessage, UiToolingRollbackFileResult } from '../types/codex'
 import {
   areConversationMessageArraysStable,
@@ -21,6 +20,11 @@ export type TurnSummaryState = {
 
 export type TurnErrorState = {
   message: string
+}
+
+export type TurnActivityState = {
+  label: string
+  details: string[]
 }
 
 export type LiveAssistantMessageType = 'agentMessage.live' | 'plan.live'

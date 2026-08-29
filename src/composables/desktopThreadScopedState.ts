@@ -1,5 +1,4 @@
-import type { TurnActivityState } from './realtimeNotificationReaders'
-import type { TurnErrorState, TurnSummaryState } from './desktopMessageState'
+import type { TurnActivityState, TurnErrorState, TurnSummaryState } from './desktopMessageState'
 import { pruneServerRequestsToThreads } from './desktopServerRequests'
 import { pruneThreadStateMap } from './threadGroupState'
 import type { ConversationScrollState } from '@codycodeagent/cody-web-core/conversation'

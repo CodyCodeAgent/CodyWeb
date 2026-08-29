@@ -63,7 +63,7 @@
     "prepublishOnly": "npm run verify"
   },
   "dependencies": {
-    "@codycodeagent/cody-web-core": "github:CodyCodeAgent/CodyWebCore#v0.18.0",
+    "@codycodeagent/cody-web-core": "github:CodyCodeAgent/CodyWebCore#v0.20.1",
     "@larksuiteoapi/node-sdk": "^1.71.1",
     "better-sqlite3": "^11.9.1",
     "commander": "^13.1.0",

@@ -3,18 +3,15 @@ import type { RpcNotification } from '../api/codexRealtimeClient'
 import {
   extractThreadIdFromNotification,
   isAgentContentEvent,
+  normalizeRealtimeNotification,
   readAgentMessageCompleted,
   readAgentMessageDelta,
   readPlanUpdatedMessage,
-  readStructuredPlanUpdate,
   readRateLimitSnapshotPayload,
-  readReasoningDelta,
   readStartedThread,
   readThreadContextUsageUpdate,
-  readTurnActivity,
   readTurnCompletedInfo,
   readTurnDurationHints,
-  readTurnErrorMessage,
   readTurnStartedInfo,
   readUserMessageCompleted,
 } from './realtimeNotificationReaders'
@@ -24,6 +21,17 @@ function notification(method: string, params: unknown, atIso = '2026-07-07T00:00
 }
 
 describe('realtime notification readers', () => {
+  it('normalizes each transport notification once', () => {
+    const source = notification('item/agentMessage/delta', {
+      threadId: 'thread-a',
+      turnId: 'turn-a',
+      itemId: 'item-a',
+      delta: 'hello',
+    })
+
+    expect(normalizeRealtimeNotification(source)).toBe(normalizeRealtimeNotification(source))
+  })
+
   it('extracts thread ids from common notification shapes', () => {
     expect(extractThreadIdFromNotification(notification('item/agentMessage/delta', { threadId: 'thread-a' }))).toBe('thread-a')
     expect(extractThreadIdFromNotification(notification('turn/started', { thread_id: 'thread-b' }))).toBe('thread-b')
@@ -69,13 +77,6 @@ describe('realtime notification readers', () => {
       completedAtMs: new Date('2026-07-07T01:00:05.000Z').getTime(),
       startedAtMs: new Date('2026-07-07T01:00:00.000Z').getTime(),
     })
-
-    expect(readTurnErrorMessage(notification('turn/completed', {
-      turn: {
-        status: 'failed',
-        error: { message: 'model stopped' },
-      },
-    }))).toBe('model stopped')
 
     expect(readTurnDurationHints(notification('turn/completed', {
       durationMs: 1200,
@@ -163,25 +164,7 @@ describe('realtime notification readers', () => {
     })
   })
 
-  it('reads live activity and assistant message deltas', () => {
-    expect(readTurnActivity(notification('item/agentMessage/delta', {
-      threadId: 'thread-1',
-      itemId: 'item-1',
-      delta: 'hello',
-    }))).toMatchObject({
-      threadId: 'thread-1',
-      activity: { label: 'Writing response' },
-    })
-
-    expect(readTurnActivity(notification('item/reasoning/textDelta', {
-      threadId: 'thread-1',
-      itemId: 'reason-1',
-      delta: 'thinking',
-    }))).toMatchObject({
-      threadId: 'thread-1',
-      activity: { label: 'Thinking' },
-    })
-
+  it('reads live assistant message deltas', () => {
     expect(readAgentMessageDelta(notification('item/agentMessage/delta', {
       threadId: 'thread-1',
       itemId: 'item-1',
@@ -270,30 +253,7 @@ describe('realtime notification readers', () => {
     })
   })
 
-  it('reads reasoning deltas and plan updates', () => {
-    expect(readReasoningDelta(notification('item/reasoning/summaryTextDelta', {
-      itemId: 'reason-1',
-      delta: 'thinking',
-    }))).toEqual({
-      messageId: 'reason-1:live-reasoning',
-      delta: 'thinking',
-    })
-
-    expect(readReasoningDelta(notification('item/reasoning/textDelta', {
-      itemId: 'reason-1',
-      delta: ' deeper',
-    }))).toEqual({
-      messageId: 'reason-1:live-reasoning',
-      delta: ' deeper',
-    })
-    expect(readReasoningDelta(notification('item/reasoning/textDelta', {
-      item: { id: 'reason-2' },
-      content: ' nested reasoning',
-    }))).toEqual({
-      messageId: 'reason-2:live-reasoning',
-      delta: ' nested reasoning',
-    })
-
+  it('reads plan updates', () => {
     expect(readPlanUpdatedMessage(notification('turn/plan/updated', {
       turnId: 'turn-1',
       explanation: 'Plan changed',
@@ -308,14 +268,6 @@ describe('realtime notification readers', () => {
       messageType: 'plan.live',
       text: 'Plan changed\n\n1. [done] Read code\n2. [doing] Patch code\n3. [todo] Run tests',
     })
-    expect(readStructuredPlanUpdate(notification('turn/plan/updated', {
-      threadId: 'thread-1', turnId: 'turn-1', explanation: 'Plan changed',
-      plan: [{ status: 'completed', step: 'Read code' }, { status: 'inProgress', step: 'Patch code' }],
-    }))).toMatchObject({
-      threadId: 'thread-1', turnId: 'turn-1', explanation: 'Plan changed',
-      steps: [{ status: 'completed', step: 'Read code' }, { status: 'inProgress', step: 'Patch code' }],
-    })
-
     expect(isAgentContentEvent(notification('turn/plan/updated', { turnId: 'turn-1' }))).toBe(true)
     expect(isAgentContentEvent(notification('account/rateLimits/updated', {}))).toBe(false)
   })

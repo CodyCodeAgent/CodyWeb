@@ -7,12 +7,8 @@ import {
   type KnownReasoningEffort,
 } from '@codycodeagent/cody-web-core/composer'
 import type { UiComposerContextKind } from '../types/codex'
-import type {
-  TurnActivityState,
-  TurnCompletedInfo,
-  TurnStartedInfo,
-} from './realtimeNotificationReaders'
-import type { TurnSummaryState } from './desktopMessageState'
+import type { TurnCompletedInfo, TurnStartedInfo } from './realtimeNotificationReaders'
+import type { TurnActivityState, TurnSummaryState } from './desktopMessageState'
 import { resolveTurnDurationMs } from './desktopMessageState'
 import { omitKey } from './threadGroupState'
 
