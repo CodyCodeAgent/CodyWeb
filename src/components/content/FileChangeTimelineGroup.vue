@@ -74,7 +74,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import type { UiMessage } from '../../types/codex'
-import type { FileChangeMessageGroup } from '../../composables/threadToolTimelineRules'
+import type { FileChangeMessageGroup } from '@codycodeagent/cody-web-core/presentation'
 import {
   buildToolOutputPreview,
   fileChangeCountLabel,
@@ -85,11 +85,11 @@ import {
   isToolOutputTruncated,
   toolOutputToggleLabel,
   toolStatusTone,
-} from '../../composables/threadToolTimelineRules'
+} from '@codycodeagent/cody-web-core/presentation'
 import IconTablerChevronRight from '../icons/IconTablerChevronRight.vue'
 
 defineProps<{
-  group: FileChangeMessageGroup
+  group: FileChangeMessageGroup<UiMessage>
 }>()
 const emit = defineEmits<{ openChanges: [] }>()
 

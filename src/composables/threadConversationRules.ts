@@ -7,7 +7,7 @@ import type {
   UiServerRequestReply,
   UiToolTimelineEntry,
 } from '../types/codex'
-import { formatToolStatus } from './threadToolTimelineRules'
+import { formatToolStatus } from '@codycodeagent/cody-web-core/presentation'
 import {
   buildServerRequestCards,
   isServerApprovalRequestKind,

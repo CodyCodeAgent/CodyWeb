@@ -400,7 +400,7 @@ import {
 import {
   formatToolStatus,
   toolStatusTone,
-} from '../../composables/threadToolTimelineRules'
+} from '@codycodeagent/cody-web-core/presentation'
 import {
   APPROVAL_SCOPE_OPTIONS,
   type UiApprovalDecision,

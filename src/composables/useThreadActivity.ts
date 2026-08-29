@@ -1,13 +1,13 @@
 import type { UiMessage, UiServerRequest, UiToolTimelineEntry } from '../types/codex'
 import type { UiDiffLineKind, UiDiffReview, UiDiffReviewFile } from './useDiffReview'
 import type { ApprovalRiskTranslator } from './useApprovalRisk'
-import { isToolFailureStatus } from './threadToolTimelineRules'
+import { isToolFailureStatus } from '@codycodeagent/cody-web-core/presentation'
 import {
   buildServerRequestCards,
   isServerApprovalRequest,
   type UiServerRequestCard,
 } from './serverRequestRules'
-export { isToolFailureStatus } from './threadToolTimelineRules'
+export { isToolFailureStatus } from '@codycodeagent/cody-web-core/presentation'
 
 export type UiThreadActivityEntry = UiToolTimelineEntry & {
   messageId: string

@@ -534,7 +534,7 @@ import {
   isToolTimelineExpandedByDefault,
   toolOutputToggleLabel,
   toolStatusTone,
-} from '../../composables/threadToolTimelineRules'
+} from '@codycodeagent/cody-web-core/presentation'
 import {
   buildApprovalDecisionReply,
   buildApprovalScopeReply,
@@ -634,7 +634,7 @@ const hiddenMessagesCount = computed(() => props.hasMoreMessagesBefore === true
   : 0)
 const visibleMessages = computed(() => props.messages)
 const visibleFileChangeGroups = computed(() => buildFileChangeMessageGroups(visibleMessages.value))
-const fileChangeGroupsByHeadId = computed<Record<string, FileChangeMessageGroup>>(() => Object.fromEntries(
+const fileChangeGroupsByHeadId = computed<Record<string, FileChangeMessageGroup<UiMessage>>>(() => Object.fromEntries(
   visibleFileChangeGroups.value.map((group) => [group.headId, group]),
 ))
 const groupedFileChangeContinuationIds = computed(() => new Set(
@@ -689,7 +689,7 @@ function isFileChangeGroupHead(message: UiMessage): boolean {
   return fileChangeGroupsByHeadId.value[message.id] !== undefined
 }
 
-function fileChangeGroupFor(message: UiMessage): FileChangeMessageGroup {
+function fileChangeGroupFor(message: UiMessage): FileChangeMessageGroup<UiMessage> {
   return fileChangeGroupsByHeadId.value[message.id] ?? {
     headId: message.id,
     messages: [message],
