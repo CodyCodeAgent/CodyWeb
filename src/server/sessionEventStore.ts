@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto'
 import { appendFile, mkdir, readFile, realpath, stat } from 'node:fs/promises'
 import type { ServerResponse } from 'node:http'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { latestTerminalTurnEvent } from '@codycodeagent/cody-web-core/conversation'
+import { readThreadId, readTurnId } from '@codycodeagent/cody-web-core/protocol'
+import { normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
 import { runControlledProcess } from './controlledProcess.js'
-import { dataAuthorityPolicy } from '../composables/dataAuthorityPolicy.js'
 import { localDatabasePath } from './localDatabase.js'
 
 const MAX_SESSION_EVENT_METADATA_CHARS = 800
@@ -142,42 +144,12 @@ function readNestedString(value: unknown, keys: string[]): string {
   return readString(cursor)
 }
 
-function readThreadId(params: unknown): string {
-  return (
-    readNestedString(params, ['threadId']) ||
-    readNestedString(params, ['thread', 'id']) ||
-    readNestedString(params, ['turn', 'threadId']) ||
-    readNestedString(params, ['request', 'threadId'])
-  )
-}
-
-function readTurnId(params: unknown): string {
-  return (
-    readNestedString(params, ['turnId']) ||
-    readNestedString(params, ['turn', 'id']) ||
-    readNestedString(params, ['request', 'turnId'])
-  )
-}
-
-function readTurnError(params: unknown): string {
-  return (
-    readNestedString(params, ['error', 'message']) ||
-    readNestedString(params, ['turn', 'error', 'message']) ||
-    readNestedString(params, ['response', 'error', 'message']) ||
-    readString(asRecord(params)?.error)
-  )
-}
-
 function readServerRequestMethod(params: unknown): string {
   return (
     readNestedString(params, ['method']) ||
     readNestedString(params, ['request', 'method']) ||
     readNestedString(params, ['params', 'method'])
   )
-}
-
-function readItemType(params: unknown): string {
-  return readNestedString(params, ['item', 'type']) || readNestedString(params, ['itemType'])
 }
 
 function readRateLimitUsedPercent(params: unknown): number | null {
@@ -202,51 +174,6 @@ function readNestedNumber(value: unknown, paths: string[][]): number | null {
     if (numberValue !== null) return numberValue
   }
   return null
-}
-
-function readTokenUsage(params: unknown): {
-  inputTokens: number
-  outputTokens: number
-  totalTokens: number
-  hasUsage: boolean
-} {
-  const inputTokens = readNestedNumber(params, [
-    ['usage', 'inputTokens'],
-    ['usage', 'input_tokens'],
-    ['tokenUsage', 'inputTokens'],
-    ['tokenUsage', 'input_tokens'],
-    ['turn', 'usage', 'inputTokens'],
-    ['turn', 'usage', 'input_tokens'],
-    ['response', 'usage', 'inputTokens'],
-    ['response', 'usage', 'input_tokens'],
-  ]) ?? 0
-  const outputTokens = readNestedNumber(params, [
-    ['usage', 'outputTokens'],
-    ['usage', 'output_tokens'],
-    ['tokenUsage', 'outputTokens'],
-    ['tokenUsage', 'output_tokens'],
-    ['turn', 'usage', 'outputTokens'],
-    ['turn', 'usage', 'output_tokens'],
-    ['response', 'usage', 'outputTokens'],
-    ['response', 'usage', 'output_tokens'],
-  ]) ?? 0
-  const explicitTotal = readNestedNumber(params, [
-    ['usage', 'totalTokens'],
-    ['usage', 'total_tokens'],
-    ['tokenUsage', 'totalTokens'],
-    ['tokenUsage', 'total_tokens'],
-    ['turn', 'usage', 'totalTokens'],
-    ['turn', 'usage', 'total_tokens'],
-    ['response', 'usage', 'totalTokens'],
-    ['response', 'usage', 'total_tokens'],
-  ])
-  const totalTokens = explicitTotal ?? inputTokens + outputTokens
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens,
-    hasUsage: inputTokens > 0 || outputTokens > 0 || totalTokens > 0,
-  }
 }
 
 function readCostUsd(params: unknown): number | null {
@@ -420,15 +347,18 @@ export function codexSessionEventFromNotification(
   const createdAtIso = notification.atIso || new Date().toISOString()
   const params = notification.params
   const notificationMetadata = notification.metadata ?? {}
-  const threadId = readThreadId(params)
-  const turnId = readTurnId(params)
+  const events = normalizeCodexNotification({ ...notification, atIso: createdAtIso })
+  const threadId = events[0]?.threadId || readThreadId(params)
+  const turnId = events.find((event) => event.turnId)?.turnId || readTurnId(params)
   const id = sessionEventId(notification.method, threadId, turnId, createdAtIso)
+  const usageEvent = events.find((event) => event.type === 'thread.context.updated')
+  const started = events.find((event) => event.type === 'turn.started')
+  const terminal = latestTerminalTurnEvent(events)
 
-  if (notification.method === 'thread/tokenUsage/updated') {
-    if (dataAuthorityPolicy(notification.method)?.realtimeMode !== 'apply-delta-then-reconcile') return null
-    const tokenUsage = asRecord(asRecord(params)?.tokenUsage)
-    const usage = readTokenUsage({ tokenUsage: tokenUsage?.last })
-    if (!usage.hasUsage) return null
+  if (notification.method === 'thread/tokenUsage/updated' && usageEvent) {
+    const inputTokens = readNumber(usageEvent.data.inputTokens) ?? 0
+    const outputTokens = readNumber(usageEvent.data.outputTokens) ?? 0
+    const totalTokens = readNumber(usageEvent.data.totalTokens) ?? inputTokens + outputTokens
     return {
       id,
       cwd: workspace.cwd,
@@ -440,12 +370,12 @@ export function codexSessionEventFromNotification(
       kind: 'token_usage',
       severity: 'info',
       title: 'Token usage updated',
-      summary: `${usage.totalTokens.toLocaleString()} tokens used.`,
-      metadata: compactMetadata({ threadId, turnId, ...usage, usageSource: 'realtime' }),
+      summary: `${totalTokens.toLocaleString()} tokens used.`,
+      metadata: compactMetadata({ threadId, turnId, inputTokens, outputTokens, totalTokens, usageSource: 'realtime' }),
     }
   }
 
-  if (notification.method === 'turn/started') {
+  if (started) {
     return {
       id,
       cwd: workspace.cwd,
@@ -504,9 +434,13 @@ export function codexSessionEventFromNotification(
     }
   }
 
-  if (notification.method === 'turn/completed') {
-    const errorMessage = readTurnError(params)
-    const tokenUsage = readTokenUsage(params)
+  if (terminal) {
+    const errorMessage = terminal.type === 'turn.failed' ? readString(terminal.data.error) : ''
+    const interrupted = terminal.type === 'turn.interrupted'
+    const inputTokens = readNumber(usageEvent?.data.inputTokens) ?? 0
+    const outputTokens = readNumber(usageEvent?.data.outputTokens) ?? 0
+    const totalTokens = readNumber(usageEvent?.data.totalTokens) ?? inputTokens + outputTokens
+    const hasUsage = inputTokens > 0 || outputTokens > 0 || totalTokens > 0
     const costUsd = readCostUsd(params)
     return {
       id,
@@ -516,17 +450,21 @@ export function codexSessionEventFromNotification(
       threadId,
       turnId,
       method: notification.method,
-      kind: errorMessage ? 'task_failed' : 'task_completed',
-      severity: errorMessage ? 'danger' : 'success',
-      title: errorMessage ? 'Task failed' : 'Task completed',
-      summary: errorMessage || (threadId ? `Completed thread ${threadId}.` : 'Completed a task.'),
+      kind: terminal.type === 'turn.completed' ? 'task_completed' : 'task_failed',
+      severity: terminal.type === 'turn.completed' ? 'success' : interrupted ? 'warning' : 'danger',
+      title: terminal.type === 'turn.completed' ? 'Task completed' : interrupted ? 'Task interrupted' : 'Task failed',
+      summary: errorMessage || (interrupted
+        ? (threadId ? `Stopped work on thread ${threadId}.` : 'Stopped a task.')
+        : terminal.type === 'turn.failed'
+          ? 'Codex failed to complete the task.'
+          : (threadId ? `Completed thread ${threadId}.` : 'Completed a task.')),
       metadata: compactMetadata({
         threadId,
         turnId,
         errorMessage,
-        inputTokens: tokenUsage.hasUsage ? tokenUsage.inputTokens : '',
-        outputTokens: tokenUsage.hasUsage ? tokenUsage.outputTokens : '',
-        totalTokens: tokenUsage.hasUsage ? tokenUsage.totalTokens : '',
+        inputTokens: hasUsage ? inputTokens : '',
+        outputTokens: hasUsage ? outputTokens : '',
+        totalTokens: hasUsage ? totalTokens : '',
         costUsd: costUsd ?? '',
         afterCheckpointId: notificationMetadata.afterCheckpointId,
         afterCheckpointHasPatch: notificationMetadata.afterCheckpointHasPatch,
@@ -535,9 +473,10 @@ export function codexSessionEventFromNotification(
     }
   }
 
-  if (notification.method === 'item/completed') {
-    const itemType = readItemType(params)
-    if (itemType !== 'agentMessage' && itemType !== 'plan') return null
+  const completedAssistant = events.find((event) => event.type === 'assistant.completed')
+  const replacedPlan = events.find((event) => event.type === 'plan.replaced')
+  if (completedAssistant || replacedPlan) {
+    const itemType = replacedPlan ? 'plan' : 'agentMessage'
     return {
       id,
       cwd: workspace.cwd,
@@ -554,25 +493,7 @@ export function codexSessionEventFromNotification(
     }
   }
 
-  if (notification.method === 'turn/plan/updated') {
-    if (dataAuthorityPolicy(notification.method)?.realtimeMode !== 'replace-snapshot') return null
-    return {
-      id,
-      cwd: workspace.cwd,
-      repoRoot: workspace.repoRoot,
-      createdAtIso,
-      threadId,
-      turnId,
-      method: notification.method,
-      kind: 'plan_updated',
-      severity: 'info',
-      title: 'Plan updated',
-      summary: 'Codex updated the current plan.',
-      metadata: compactMetadata({ threadId, turnId }),
-    }
-  }
-
-  if (notification.method === 'thread/compacted') {
+  if (events.some((event) => event.type === 'thread.compacted')) {
     return {
       id,
       cwd: workspace.cwd,

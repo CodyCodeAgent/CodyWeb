@@ -157,6 +157,30 @@ describe('codexSessionEventFromNotification', () => {
       },
     })
   })
+
+  it('does not persist reconnect diagnostics as terminal task failures', () => {
+    expect(codexSessionEventFromNotification(
+      { cwd: '/repo', repoRoot: '/repo' },
+      {
+        method: 'error',
+        atIso: '2026-07-05T10:00:00.000Z',
+        params: { threadId: 'thread-1', turnId: 'turn-1', message: 'Reconnecting... 5/5' },
+      },
+    )).toBeNull()
+
+    expect(codexSessionEventFromNotification(
+      { cwd: '/repo', repoRoot: '/repo' },
+      {
+        method: 'turn/failed',
+        atIso: '2026-07-05T10:01:00.000Z',
+        params: { threadId: 'thread-1', turnId: 'turn-1', error: { message: 'request timed out' } },
+      },
+    )).toMatchObject({
+      kind: 'task_failed',
+      severity: 'danger',
+      summary: 'request timed out',
+    })
+  })
 })
 
 describe('session event store', () => {

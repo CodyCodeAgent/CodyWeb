@@ -1,3 +1,6 @@
+import { latestTerminalTurnEvent } from '@codycodeagent/cody-web-core/conversation'
+import { readThreadId, readTurnId } from '@codycodeagent/cody-web-core/protocol'
+import { normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
 import {
   getWorkspaceNotificationDispatchConfig,
   type ToolingWorkspaceNotificationChannelType,
@@ -97,37 +100,11 @@ function readNestedString(value: unknown, keys: string[]): string {
   return readString(cursor)
 }
 
-function readThreadId(params: unknown): string {
-  return (
-    readNestedString(params, ['threadId']) ||
-    readNestedString(params, ['thread', 'id']) ||
-    readNestedString(params, ['turn', 'threadId']) ||
-    readNestedString(params, ['request', 'threadId'])
-  )
-}
-
-function readTurnId(params: unknown): string {
-  return (
-    readNestedString(params, ['turnId']) ||
-    readNestedString(params, ['turn', 'id']) ||
-    readNestedString(params, ['request', 'turnId'])
-  )
-}
-
 function readServerRequestMethod(params: unknown): string {
   return (
     readNestedString(params, ['method']) ||
     readNestedString(params, ['request', 'method']) ||
     readNestedString(params, ['params', 'method'])
-  )
-}
-
-function readTurnError(params: unknown): string {
-  return (
-    readNestedString(params, ['error', 'message']) ||
-    readNestedString(params, ['turn', 'error', 'message']) ||
-    readNestedString(params, ['response', 'error', 'message']) ||
-    readString(asRecord(params)?.error)
   )
 }
 
@@ -170,8 +147,11 @@ export function notificationDispatchEventFromCodex(
   const threadId = readThreadId(notification.params)
   const turnId = readTurnId(notification.params)
   const id = eventIdFor(notification, createdAtIso)
+  const events = normalizeCodexNotification({ ...notification, atIso: createdAtIso })
+  const started = events.find((event) => event.type === 'turn.started')
+  const terminal = latestTerminalTurnEvent(events)
 
-  if (notification.method === 'turn/started') {
+  if (started) {
     return {
       id,
       kind: 'task_started',
@@ -200,9 +180,11 @@ export function notificationDispatchEventFromCodex(
     }
   }
 
-  if (notification.method === 'turn/completed') {
-    const errorMessage = readTurnError(notification.params)
-    if (errorMessage) {
+  if (terminal) {
+    const eventThreadId = terminal.threadId || threadId
+    const eventTurnId = terminal.turnId || turnId
+    if (terminal.type === 'turn.failed') {
+      const errorMessage = readString(terminal.data.error) || 'Codex failed to complete the task.'
       return {
         id,
         kind: 'task_failed',
@@ -210,8 +192,22 @@ export function notificationDispatchEventFromCodex(
         summary: errorMessage,
         severity: 'danger',
         createdAtIso,
-        threadId,
-        turnId,
+        threadId: eventThreadId,
+        turnId: eventTurnId,
+        method: notification.method,
+      }
+    }
+
+    if (terminal.type === 'turn.interrupted') {
+      return {
+        id,
+        kind: 'task_failed',
+        title: 'Task interrupted',
+        summary: eventThreadId ? `Codex stopped working on thread ${eventThreadId}.` : 'Codex stopped the task.',
+        severity: 'warning',
+        createdAtIso,
+        threadId: eventThreadId,
+        turnId: eventTurnId,
         method: notification.method,
       }
     }
@@ -220,11 +216,11 @@ export function notificationDispatchEventFromCodex(
       id,
       kind: 'task_completed',
       title: 'Task completed',
-      summary: threadId ? `Codex completed thread ${threadId}.` : 'Codex completed a task.',
+      summary: eventThreadId ? `Codex completed thread ${eventThreadId}.` : 'Codex completed a task.',
       severity: 'success',
       createdAtIso,
-      threadId,
-      turnId,
+      threadId: eventThreadId,
+      turnId: eventTurnId,
       method: notification.method,
     }
   }

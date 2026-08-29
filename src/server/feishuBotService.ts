@@ -1,6 +1,9 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import type { Readable } from 'node:stream'
+import { latestAssistantTextFromEvents, latestTerminalTurnEvent } from '@codycodeagent/cody-web-core/conversation'
+import { readThreadId, readTurnId } from '@codycodeagent/cody-web-core/protocol'
+import { normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
 import {
   FEISHU_CARD_ACTIONS,
   buildAccessRequestCard,
@@ -554,34 +557,6 @@ function verifyAccessRequestToken(bot: FeishuBotDefinition, token: string, nowMs
   }
 }
 
-function notificationIds(notification: FeishuAppServerNotification): { threadId: string; turnId: string } {
-  const params = asRecord(notification.params)
-  const turn = asRecord(params?.turn)
-  return {
-    threadId: readString(params?.threadId || params?.thread_id || turn?.threadId || turn?.thread_id),
-    turnId: readString(params?.turnId || params?.turn_id || turn?.id),
-  }
-}
-
-function notificationDelta(notification: FeishuAppServerNotification): { delta: string; completedText: string } {
-  const params = asRecord(notification.params)
-  const item = asRecord(params?.item)
-  if (notification.method === 'item/agentMessage/delta') {
-    return { delta: readString(params?.delta || item?.delta || params?.text), completedText: '' }
-  }
-  if (notification.method === 'item/completed' && readString(item?.type) === 'agentMessage') {
-    return { delta: '', completedText: readString(item?.text || item?.content) }
-  }
-  return { delta: '', completedText: '' }
-}
-
-function turnError(notification: FeishuAppServerNotification): string {
-  const params = asRecord(notification.params)
-  const turn = asRecord(params?.turn)
-  const error = asRecord(turn?.error || params?.error)
-  return readString(error?.message || turn?.error || params?.error || params?.message)
-}
-
 function requestKey(botId: string, requestId: string): string {
   return `${botId}:${requestId}`
 }
@@ -1034,16 +1009,20 @@ export class FeishuBotService {
       }
       return
     }
-    const { threadId, turnId } = notificationIds(notification)
+    const events = normalizeCodexNotification(notification)
+    const threadId = events[0]?.threadId || readThreadId(notification.params)
+    const turnId = events.find((event) => event.turnId)?.turnId || readTurnId(notification.params)
     if (!threadId) return
     const active = this.activeTurnsByThread.get(threadId)
     const belongsToActive = Boolean(active && (!turnId || !active.turnId || turnId === active.turnId))
-    if (notification.method === 'turn/started' && !belongsToActive) {
+    const started = events.find((event) => event.type === 'turn.started')
+    const terminal = latestTerminalTurnEvent(events)
+    if (started && !belongsToActive) {
       this.externalBusyThreads.add(threadId)
       return
     }
     if (!belongsToActive) {
-      if (['turn/completed', 'turn/failed', 'turn/interrupted'].includes(notification.method)) {
+      if (terminal) {
         this.externalBusyThreads.delete(threadId)
         void this.startNextQueuedTurn(threadId)
       }
@@ -1051,40 +1030,39 @@ export class FeishuBotService {
     }
     if (!active) return
     this.captureToolReplyImages(active, notification)
-    if (notification.method === 'turn/started') {
+    if (started) {
       if (turnId && !active.turnId) active.turnId = turnId
       if (!active.stopRequested) active.state = 'running'
       return
     }
-    const { delta, completedText } = notificationDelta(notification)
+    const delta = events
+      .filter((event) => event.type === 'assistant.delta')
+      .map((event) => readString(event.data.text))
+      .join('')
+    const completedText = latestAssistantTextFromEvents(events)
     if (completedText) { active.content = completedText; active.preparedContent = '' }
     else if (delta) { active.content += delta; active.preparedContent = '' }
-    if (notification.method === 'turn/completed') {
-      const error = turnError(notification)
-      active.error = error
-      active.state = active.stopRequested ? 'stopped' : error ? 'failed' : 'completed'
+    if (terminal?.type === 'turn.completed') {
+      active.error = ''
+      active.state = active.stopRequested ? 'stopped' : 'completed'
       void this.patchActiveTurn(active, true)
       return
     }
-    if (notification.method === 'turn/interrupted') {
+    if (terminal?.type === 'turn.interrupted') {
       active.state = 'stopped'
       active.stopRequested = true
       void this.patchActiveTurn(active, true)
       return
     }
-    if (notification.method === 'turn/failed') {
-      active.error = turnError(notification) || 'Codex 执行失败'
+    if (terminal?.type === 'turn.failed') {
+      active.error = readString(terminal.data.error) || 'Codex 执行失败'
       active.state = active.stopRequested ? 'stopped' : 'failed'
       void this.patchActiveTurn(active, true)
       return
     }
-    if (notification.method === 'error') {
-      // Codex emits transient, turn-scoped `error` notifications while its
-      // upstream connection is retrying (for example "Reconnecting... 2/5").
-      // The authoritative turn remains inProgress in that case. Treating this
-      // notification as terminal makes the Feishu card fail early while the
-      // still-running Codex turn keeps the shared Session busy forever.
-      void this.reconcileActiveTurnError(active, turnError(notification) || 'Codex 连接暂时异常')
+    const retrying = events.find((event) => event.type === 'turn.retrying')
+    if (retrying) {
+      void this.reconcileActiveTurnError(active, readString(retrying.data.error) || 'Codex 连接暂时异常')
       return
     }
     if (delta || completedText) {
@@ -1299,7 +1277,8 @@ export class FeishuBotService {
   }
 
   private async findFeishuRequestOrigin(request: FeishuAppServerRequest): Promise<FeishuSessionBinding | null> {
-    const { threadId, turnId } = notificationIds({ method: request.method, params: request.params })
+    const threadId = readThreadId(request.params)
+    const turnId = readTurnId(request.params)
     if (!threadId) return null
     const active = this.activeTurnsByThread.get(threadId)
     if (active && (!turnId || !active.turnId || active.turnId === turnId)) {

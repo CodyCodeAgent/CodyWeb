@@ -56,7 +56,7 @@ describe('notificationDispatchEventFromCodex', () => {
 
     expect(notificationDispatchEventFromCodex({
       method: 'turn/completed',
-      params: { turn: { error: { message: 'Tests failed' } } },
+      params: { threadId: 'thread-3', turn: { id: 'turn-3', status: 'failed', error: { message: 'Tests failed' } } },
       atIso: '2026-07-05T10:02:00.000Z',
     })).toMatchObject({
       kind: 'task_failed',
@@ -143,12 +143,12 @@ notifications:
     })
     await dispatcher.handleCodexNotification({
       method: 'turn/completed',
-      params: { turn: { id: 'turn-1' } },
+      params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
       atIso: '2026-07-05T10:00:00.000Z',
     })
     await dispatcher.handleCodexNotification({
       method: 'turn/completed',
-      params: { turn: { id: 'turn-2', error: { message: 'Build failed' } } },
+      params: { threadId: 'thread-2', turn: { id: 'turn-2', status: 'failed', error: { message: 'Build failed' } } },
       atIso: '2026-07-05T10:01:00.000Z',
     })
 
