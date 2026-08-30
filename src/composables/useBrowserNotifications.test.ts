@@ -107,12 +107,22 @@ describe('notificationFromRpcNotification', () => {
     })
   })
 
-  it('ignores reconnect diagnostics until the Turn emits a terminal event', () => {
+  it('keeps retryable reconnect diagnostics quiet but surfaces an exhausted reconnect', () => {
+    expect(notificationFromRpcNotification(buildNotification('error', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      message: 'Reconnecting... 2/5',
+    }))).toBeNull()
+
     expect(notificationFromRpcNotification(buildNotification('error', {
       threadId: 'thread-1',
       turnId: 'turn-1',
       message: 'Reconnecting... 5/5',
-    }))).toBeNull()
+    }))).toMatchObject({
+      kind: 'turn-failed',
+      severity: 'danger',
+      body: 'Codex 上游响应流恢复失败，未自动重发。Reconnecting... 5/5',
+    })
   })
 })
 

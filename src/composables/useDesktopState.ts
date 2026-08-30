@@ -343,6 +343,11 @@ export function useDesktopState() {
 
   function pruneThreadScopedState(flatThreads: UiThread[]): void {
     const activeThreadIds = new Set(flatThreads.map((thread) => thread.id))
+    // A direct /thread/:threadId link can be valid before catalog/thread-list has
+    // included it (for example after an App Server restart or list pagination).
+    // Keep its hydrated state until thread/read settles instead of treating it as
+    // stale catalog data and discarding the transcript.
+    if (selectedThreadId.value) activeThreadIds.add(selectedThreadId.value)
     const pruned = pruneDesktopThreadScopedState({
       readStateByThreadId: readStateByThreadId.value,
       scrollStateByThreadId: scrollStateByThreadId.value,
@@ -890,9 +895,7 @@ export function useDesktopState() {
       const flatThreads = flattenThreads(projectGroups.value)
       pruneThreadScopedState(flatThreads)
 
-      const currentExists = flatThreads.some((thread) => thread.id === selectedThreadId.value)
-
-      if (!currentExists) {
+      if (!selectedThreadId.value) {
         setSelectedThreadId(flatThreads[0]?.id ?? '')
       }
     } finally {

@@ -383,7 +383,6 @@ import {
   filterAppConversationMessages,
   findNewThreadWorkspaceGroup,
   homeComposerBusyLabel as buildHomeComposerBusyLabel,
-  knownThreadIds,
   newThreadProjectLabel as buildNewThreadProjectLabel,
   shouldShowThreadWorkLogAction,
   threadComposerBusyLabel as buildThreadComposerBusyLabel,
@@ -601,7 +600,6 @@ function onAskCode(attachment: WorkspaceComposerContext): void {
   contextInsertion.value = attachment
 }
 
-const knownThreadIdSet = computed(() => knownThreadIds(projectGroups.value))
 const isEffectiveSidebarCollapsed = computed(() => isSidebarCollapsed.value || isMobileViewport.value)
 const isCodeView = computed(() => route.name === 'thread' && route.query.view === 'code')
 const autoRefreshButtonLabel = computed(() => autoRefreshLabel({
@@ -1100,11 +1098,6 @@ async function syncThreadSelectionWithRoute(): Promise<void> {
   if (route.name === 'thread') {
     const threadId = routeThreadId.value
     if (!threadId) return
-
-    if (!knownThreadIdSet.value.has(threadId)) {
-      await router.replace({ name: 'home' })
-      return
-    }
 
     if (
       selectedThreadId.value === threadId &&
