@@ -1070,6 +1070,28 @@ describe('useDesktopState realtime messages', () => {
     ])
   })
 
+  it('recovers a deep-linked native thread before the restarted server catalog contains it', async () => {
+    installBrowserGlobals('thread-direct')
+    let resumed = false
+    codexApiMock.resumeThread.mockImplementation(async () => { resumed = true })
+    codexApiMock.getThreadGroups.mockImplementation(async () => resumed ? [{
+      projectName: 'repo', cwd: '/workspace/repo', threads: [{
+        id: 'thread-direct', title: 'Recovered thread', projectName: 'repo', cwd: '/workspace/repo',
+        createdAtIso: '2026-07-07T00:00:00.000Z', updatedAtIso: '2026-07-07T00:01:00.000Z',
+        preview: 'previous message', unread: false, inProgress: false,
+      }],
+    }] : [])
+    codexApiMock.getThreadMessages.mockResolvedValue([{ id: 'assistant-1', role: 'assistant', text: 'Recovered history' }])
+
+    const state = useDesktopState()
+    await state.recoverDirectThread('thread-direct')
+    await state.selectThread('thread-direct')
+
+    expect(codexApiMock.resumeThread).toHaveBeenCalledWith('thread-direct')
+    expect(state.selectedThread.value?.title).toBe('Recovered thread')
+    expect(state.messages.value.map((message) => message.text)).toEqual(['Recovered history'])
+  })
+
   it('shows outgoing user messages before the turn start response finishes', async () => {
     installBrowserGlobals('thread-a')
     const turnStart = deferred<string>()

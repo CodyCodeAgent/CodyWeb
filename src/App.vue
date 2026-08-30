@@ -455,6 +455,7 @@ const {
   clearError,
   refreshAll,
   refreshRateLimits,
+  recoverDirectThread,
   selectThread,
   loadMessages,
   loadEarlierMessages,
@@ -1106,9 +1107,14 @@ async function syncThreadSelectionWithRoute(): Promise<void> {
       return
     }
 
-    // Selection is synchronous; message hydration continues in the background.
-    // This keeps route changes latest-wins when users move through threads quickly.
+    // Render the route immediately, then materialize native threads that are
+    // absent from a freshly restarted App Server before rehydrating history.
+    // A deep link must not require the user to send a first message first.
     void selectThread(threadId)
+    void recoverDirectThread(threadId).then(() => selectThread(threadId)).catch(() => {
+      // The normal thread-cache load keeps the route usable and surfaces its
+      // own actionable error if this native thread can no longer be resumed.
+    })
   }
 }
 

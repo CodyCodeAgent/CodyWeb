@@ -185,6 +185,7 @@ export function useDesktopState() {
   let hasHydratedOutbox = false
   const drainingOutboxThreadIds = new Set<string>()
   const outboxRetryTimersByThreadId = new Map<string, number>()
+  const directThreadRecoveryById = new Map<string, Promise<void>>()
 
   const selectedThreadServerRequests = serverRequestState.selected
   const selectedCoreConversation = computed(() => (
@@ -901,6 +902,36 @@ export function useDesktopState() {
     } finally {
       if (requestId === latestThreadsRequestId) isLoadingThreads.value = false
     }
+  }
+
+  /**
+   * A native Codex thread is durable, but a newly started App Server does not
+   * necessarily include it in thread/list until thread/resume has materialized
+   * it in that process. Deep links must therefore recover the native session
+   * before treating an empty catalog as "thread not found".
+   */
+  async function recoverDirectThread(threadId: string): Promise<void> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId || allThreads.value.some((thread) => thread.id === normalizedThreadId)) return
+    if (resumedThreadById.value[normalizedThreadId] === true) return
+
+    const existing = directThreadRecoveryById.get(normalizedThreadId)
+    if (existing) return existing
+
+    const recovery = (async () => {
+      try {
+        await resumeThread(normalizedThreadId)
+        resumedThreadById.value = {
+          ...resumedThreadById.value,
+          [normalizedThreadId]: true,
+        }
+        await loadThreads()
+      } finally {
+        directThreadRecoveryById.delete(normalizedThreadId)
+      }
+    })()
+    directThreadRecoveryById.set(normalizedThreadId, recovery)
+    return recovery
   }
 
   async function loadMessages(threadId: string, options: { silent?: boolean } = {}) {
@@ -1762,6 +1793,7 @@ export function useDesktopState() {
     clearError,
     refreshAll,
     refreshRateLimits,
+    recoverDirectThread,
     selectThread,
     loadMessages,
     loadEarlierMessages,
