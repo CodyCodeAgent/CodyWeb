@@ -912,7 +912,7 @@ export function useDesktopState() {
    */
   async function recoverDirectThread(threadId: string): Promise<void> {
     const normalizedThreadId = threadId.trim()
-    if (!normalizedThreadId || allThreads.value.some((thread) => thread.id === normalizedThreadId)) return
+    if (!normalizedThreadId) return
     if (resumedThreadById.value[normalizedThreadId] === true) return
 
     const existing = directThreadRecoveryById.get(normalizedThreadId)
