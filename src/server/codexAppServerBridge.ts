@@ -1645,9 +1645,21 @@ async function handleCheckpointHealthRoute(url: URL, res: ServerResponse): Promi
 
 export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
   const { appServer, catalogSync, threadMessageCache, tokenUsageReconciliation, agentTasks, methodCatalog, stopNotificationDispatch, productEventHub, feishuIntegration } = getSharedBridgeState()
+  const rpc = async (method: string, params: unknown): Promise<unknown> => {
+    const result = await appServer.rpc(method, params)
+    // `thread/resume` is a request/response operation: an existing thread can
+    // become available without emitting a terminal notification.  If this
+    // process previously cached an empty transcript for a deep link, retain no
+    // authority for that snapshot after the resume succeeds.
+    if (method === 'thread/resume') {
+      const threadId = readThreadId(params)
+      if (threadId) threadMessageCache.markDirty(threadId)
+    }
+    return result
+  }
   const domainRoutes = [
     createGatewayRoutes({
-      rpc: (method, params) => appServer.rpc(method, params),
+      rpc,
       respond: (payload) => appServer.respondToServerRequest(payload),
       listPending: () => appServer.listPendingServerRequests(),
       listMethods: () => methodCatalog.listMethods(),
