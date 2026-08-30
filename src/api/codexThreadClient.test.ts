@@ -5,6 +5,7 @@ import {
   getThreadMessagesPage,
   startThread,
   startThreadTurn,
+  startThreadTurnWithResumeRecovery,
 } from './codexThreadClient'
 import type { Thread } from '@codycodeagent/cody-web-core/protocol'
 
@@ -238,6 +239,23 @@ describe('codex thread client', () => {
           developer_instructions: null,
         },
       },
+    })
+  })
+
+  it('materializes a durable thread once when turn/start reports it missing', async () => {
+    rpcMock.rpcCall
+      .mockRejectedValueOnce(new Error('thread not found: thread-1'))
+      .mockResolvedValueOnce({ thread: thread({ id: 'thread-1' }) })
+      .mockResolvedValueOnce({ turn: { id: 'turn-recovered' } })
+
+    await expect(startThreadTurnWithResumeRecovery('thread-1', 'continue', [], [])).resolves.toBe('turn-recovered')
+
+    expect(rpcMock.rpcCall).toHaveBeenNthCalledWith(1, 'turn/start', {
+      threadId: 'thread-1', input: [{ type: 'text', text: 'continue', text_elements: [] }],
+    })
+    expect(rpcMock.rpcCall).toHaveBeenNthCalledWith(2, 'thread/resume', { threadId: 'thread-1' })
+    expect(rpcMock.rpcCall).toHaveBeenNthCalledWith(3, 'turn/start', {
+      threadId: 'thread-1', input: [{ type: 'text', text: 'continue', text_elements: [] }],
     })
   })
 

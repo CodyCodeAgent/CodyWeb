@@ -27,6 +27,7 @@ import {
   resumeThread,
   startThread,
   startThreadTurn,
+  startThreadTurnWithResumeRecovery,
   steerThreadTurn,
 } from '../api/codexThreadClient'
 import {
@@ -1496,7 +1497,7 @@ export function useDesktopState() {
       }
 
       const turnId = permissionOverride
-        ? await startThreadTurn(
+        ? await startThreadTurnWithResumeRecovery(
           threadId,
           nextText,
           nextImages,
@@ -1506,7 +1507,7 @@ export function useDesktopState() {
           collaborationMode,
           permissionOverride,
         )
-        : await startThreadTurn(
+        : await startThreadTurnWithResumeRecovery(
           threadId,
           nextText,
           nextImages,

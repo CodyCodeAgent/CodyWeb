@@ -149,17 +149,53 @@ export async function startThreadTurn(
   permissionOverride?: TurnPermissionOverride | null,
 ): Promise<string> {
   try {
-    const params = {
-      input: buildTurnInput(text, images, skills),
-      ...(typeof model === 'string' && model.length > 0 ? { model } : {}),
-      ...(typeof effort === 'string' && effort.length > 0 ? { effort } : {}),
-      ...(collaborationMode ? { collaborationMode } : {}),
-      ...(permissionOverride?.approvalPolicy ? { approvalPolicy: permissionOverride.approvalPolicy } : {}),
-      ...(permissionOverride?.sandboxPolicy ? { sandboxPolicy: permissionOverride.sandboxPolicy } : {}),
-    }
+    const params = buildTurnStartParams(text, images, skills, model, effort, collaborationMode, permissionOverride)
     return await threadCommands.startTurn(threadId, params)
   } catch (error) {
     throw normalizeCodexApiError(error, `Failed to start turn for thread ${threadId}`, 'turn/start')
+  }
+}
+
+/**
+ * A browser can retain the prior App Server generation after the server has
+ * restarted. The shared Core command retries only an explicit native
+ * `thread not found` by materializing the durable thread once before retrying
+ * the turn. Timeouts and generic RPC errors are deliberately never retried.
+ */
+export async function startThreadTurnWithResumeRecovery(
+  threadId: string,
+  text: string,
+  images: ComposerImage[],
+  skills: ComposerSkill[],
+  model?: string,
+  effort?: ReasoningEffort,
+  collaborationMode?: TurnCollaborationMode | null,
+  permissionOverride?: TurnPermissionOverride | null,
+): Promise<string> {
+  try {
+    const params = buildTurnStartParams(text, images, skills, model, effort, collaborationMode, permissionOverride)
+    return await threadCommands.startTurnWithResumeRecovery(threadId, params)
+  } catch (error) {
+    throw normalizeCodexApiError(error, `Failed to start turn for thread ${threadId}`, 'turn/start')
+  }
+}
+
+function buildTurnStartParams(
+  text: string,
+  images: ComposerImage[],
+  skills: ComposerSkill[],
+  model?: string,
+  effort?: ReasoningEffort,
+  collaborationMode?: TurnCollaborationMode | null,
+  permissionOverride?: TurnPermissionOverride | null,
+) {
+  return {
+    input: buildTurnInput(text, images, skills),
+    ...(typeof model === 'string' && model.length > 0 ? { model } : {}),
+    ...(typeof effort === 'string' && effort.length > 0 ? { effort } : {}),
+    ...(collaborationMode ? { collaborationMode } : {}),
+    ...(permissionOverride?.approvalPolicy ? { approvalPolicy: permissionOverride.approvalPolicy } : {}),
+    ...(permissionOverride?.sandboxPolicy ? { sandboxPolicy: permissionOverride.sandboxPolicy } : {}),
   }
 }
 

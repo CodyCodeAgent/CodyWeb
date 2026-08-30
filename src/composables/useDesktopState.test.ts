@@ -40,6 +40,8 @@ const codexApiMock = vi.hoisted(() => {
       },
     }
   })
+  const startThreadTurn = vi.fn()
+  const startThreadTurnWithResumeRecovery = vi.fn((...args: unknown[]) => startThreadTurn(...args))
 
   return {
     getNotificationListener: () => notificationListener,
@@ -82,7 +84,8 @@ const codexApiMock = vi.hoisted(() => {
     respondServerRequest: vi.fn(),
     resumeThread: vi.fn(),
     startThread: vi.fn(),
-    startThreadTurn: vi.fn(),
+    startThreadTurn,
+    startThreadTurnWithResumeRecovery,
     steerThreadTurn: vi.fn(),
     subscribeRpcNotifications: vi.fn((listener: (value: RpcNotification) => void) => {
       notificationListener = listener
@@ -131,6 +134,7 @@ vi.mock('../api/codexThreadClient', () => ({
   resumeThread: codexApiMock.resumeThread,
   startThread: codexApiMock.startThread,
   startThreadTurn: codexApiMock.startThreadTurn,
+  startThreadTurnWithResumeRecovery: codexApiMock.startThreadTurnWithResumeRecovery,
   steerThreadTurn: codexApiMock.steerThreadTurn,
 }))
 
