@@ -4,6 +4,7 @@ import {
   buildAccessRequestCard,
   buildApprovalCard,
   buildAutoRouteCreatedCard,
+  buildBotHelpCard,
   buildProjectSelectionCard,
   buildResolvedRequestCard,
   buildResolvedAccessRequestCard,
@@ -14,6 +15,10 @@ import {
 } from './feishuCards'
 
 describe('Feishu cards', () => {
+  it('documents explicit card routing in help', () => {
+    expect(JSON.stringify(buildBotHelpCard({}))).toContain('/route [处理说明]')
+  })
+
   it('builds the project to session binding flow with namespaced actions', () => {
     const projectCard = buildProjectSelectionCard({
       bindingKey: 'bot:group:chat:chat',
