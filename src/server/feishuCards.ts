@@ -576,6 +576,7 @@ export function buildBotHelpCard(input: {
       '`/status` 查看状态',
       '`/mode plan|default` 切换对话模式',
       '`/permission yolo|normal` 切换执行权限',
+      '`/route [处理说明]` 回复卡片并创建自动路由',
       '`/stop` 停止当前回复',
       '`/answer 请求ID 问题ID 答案` 回答自定义问题',
       '`/rename 新名称` 重命名',

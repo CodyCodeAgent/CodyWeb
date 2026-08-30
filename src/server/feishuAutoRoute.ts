@@ -18,6 +18,25 @@ export type FeishuAutoRouteMatcher = Pick<FeishuAutoRouteDraft,
 const DEFAULT_ROUTE_INSTRUCTION = '请分析这张卡片中的异常或变化，给出明确结论、可能原因和下一步处理建议。'
 export const ANY_BOT_SOURCE_ID = '*'
 
+export type FeishuAutoRouteCommand = {
+  matched: boolean
+  instruction: string
+}
+
+/**
+ * Card routing is an explicit management action. A quoted card by itself is
+ * ordinary conversation context; only `/route` opts into route creation.
+ */
+export function parseFeishuAutoRouteCommand(prompt: string): FeishuAutoRouteCommand {
+  const withoutQuoteHint = prompt
+    .replace(/^\[用户引用了飞书消息 [^\]]+\]\s*/u, '')
+    .trim()
+  const match = withoutQuoteHint.match(/^\/route(?:\s+([\s\S]*))?$/iu)
+  return match
+    ? { matched: true, instruction: match[1]?.trim() ?? '' }
+    : { matched: false, instruction: '' }
+}
+
 function compact(value: string): string {
   return value.replace(/\s+/gu, ' ').trim()
 }

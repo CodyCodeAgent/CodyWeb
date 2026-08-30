@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DESKTOP_SETTING_KEYS, DESKTOP_STORAGE_KEYS } from './desktopSettingsKeys'
 import { buildRollbackAuditMessage, useDesktopState } from './useDesktopState'
 import { buildThreadActivityEntries } from './useThreadActivity'
-import { resetLocalMessageOutboxForTests } from './localMessageOutbox'
+import {
+  buildLocalMessageOutboxItem,
+  loadLocalMessageOutboxItems,
+  resetLocalMessageOutboxForTests,
+  saveLocalMessageOutboxItem,
+} from './localMessageOutbox'
 import type { UiMessage, UiProjectGroup, UiRateLimitSnapshot, UiThreadMessagePage, UiToolingRollbackFileResult } from '../types/codex'
 import type { RpcNotification } from '../api/codexRealtimeClient'
 
@@ -1168,6 +1173,54 @@ describe('useDesktopState realtime messages', () => {
     expect(state.error.value).toBe('turn start failed')
     expect(state.isSendingMessage.value).toBe(false)
     expect(state.projectGroups.value[0]?.threads[0]?.inProgress).not.toBe(true)
+  })
+
+  it('releases an accepted send without waiting for background history sync', async () => {
+    installBrowserGlobals('thread-a')
+    const stalledCatalogRefresh = deferred<never>()
+    codexApiMock.startThreadTurn.mockResolvedValue('turn-accepted')
+    codexApiMock.fetchCatalog.mockReturnValueOnce(stalledCatalogRefresh.promise)
+
+    const state = useDesktopState()
+    state.projectGroups.value = [{
+      projectName: 'repo', cwd: '/workspace/repo', threads: [{
+        id: 'thread-a', title: 'Thread A', projectName: 'repo', cwd: '/workspace/repo',
+        createdAtIso: '2026-07-07T00:00:00.000Z', updatedAtIso: '2026-07-07T00:01:00.000Z',
+        preview: '', unread: false, inProgress: false,
+      }],
+    }]
+
+    await state.sendMessageToSelectedThread({
+      text: '不要被后台刷新卡住',
+      images: [],
+      skills: [],
+    })
+
+    expect(state.isSendingMessage.value).toBe(false)
+    expect(state.selectedQueuedMessages.value).toEqual([])
+    expect(await loadLocalMessageOutboxItems()).toEqual([])
+  })
+
+  it('drops an outbox record that already has an accepted turn id during hydration', async () => {
+    installBrowserGlobals('thread-a')
+    const item = buildLocalMessageOutboxItem({
+      threadId: 'thread-a',
+      payload: { text: '已经被服务端接收', images: [], skills: [] },
+    })
+    await saveLocalMessageOutboxItem({ ...item, status: 'sending', turnId: 'turn-accepted' })
+    codexApiMock.getThreadGroups.mockResolvedValueOnce([{
+      projectName: 'repo', cwd: '/workspace/repo', threads: [{
+        id: 'thread-a', title: 'Thread A', projectName: 'repo', cwd: '/workspace/repo',
+        createdAtIso: '2026-07-07T00:00:00.000Z', updatedAtIso: '2026-07-07T00:01:00.000Z',
+        preview: '', unread: false, inProgress: false,
+      }],
+    }])
+
+    const state = useDesktopState()
+    await state.refreshAll({ loadSelectedMessages: false })
+
+    expect(state.selectedQueuedMessages.value).toEqual([])
+    expect(await loadLocalMessageOutboxItems()).toEqual([])
   })
 
   it('queues selected thread messages while a turn is already in progress', async () => {

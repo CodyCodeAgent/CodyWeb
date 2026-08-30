@@ -3,6 +3,7 @@ import {
   buildFeishuAutoRoutePrompt,
   createFeishuAutoRouteDraft,
   matchesFeishuAutoRoute,
+  parseFeishuAutoRouteCommand,
 } from './feishuAutoRoute'
 
 describe('Feishu card auto routes', () => {
@@ -69,5 +70,14 @@ describe('Feishu card auto routes', () => {
   it('builds a bounded, explicit instruction envelope', () => {
     expect(buildFeishuAutoRoutePrompt({ routeName: '差异播报', instruction: '分析根因', cardText: text }))
       .toContain('固定处理指令：分析根因')
+  })
+
+  it('requires an explicit route command after the quote hint', () => {
+    expect(parseFeishuAutoRouteCommand('[用户引用了飞书消息 om_card]\n普通分析请求'))
+      .toEqual({ matched: false, instruction: '' })
+    expect(parseFeishuAutoRouteCommand('[用户引用了飞书消息 om_card]\n/route 分析根因'))
+      .toEqual({ matched: true, instruction: '分析根因' })
+    expect(parseFeishuAutoRouteCommand('/route'))
+      .toEqual({ matched: true, instruction: '' })
   })
 })

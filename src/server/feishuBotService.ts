@@ -32,6 +32,7 @@ import {
   buildFeishuAutoRoutePrompt,
   createFeishuAutoRouteDraft,
   matchesFeishuAutoRoute,
+  parseFeishuAutoRouteCommand,
   type FeishuAutoRouteDraft,
 } from './feishuAutoRoute.js'
 import {
@@ -349,6 +350,7 @@ type NormalizedInbound = FeishuConversationRoute & {
   messageType: string
   eventKey: string
   topLevel: boolean
+  autoRouteRequested?: boolean
   autoRouteDraft?: FeishuAutoRouteDraft
 }
 
@@ -1843,21 +1845,24 @@ export class FeishuBotService {
     try {
       const completed = await this.completeInboundMessage(runtime, payload)
       const normalized = normalizeFeishuInbound(runtime.bot, completed.payload) ?? preliminary
+      const autoRouteCommand = parseFeishuAutoRouteCommand(normalized.prompt)
+      const autoRouteDraft = autoRouteCommand.matched
+        && completed.quote?.status === 'resolved'
+        && completed.quote.text
+        ? createFeishuAutoRouteDraft({
+            sourceSenderId: completed.quote.senderId ?? '',
+            sourceSenderType: completed.quote.senderType ?? '',
+            messageType: completed.quote.messageType,
+            text: completed.quote.text,
+            instruction: autoRouteCommand.instruction,
+          }) ?? undefined
+        : undefined
       const inbound = {
         ...normalized,
         prompt: completed.quoteText ? `${completed.quoteText}\n\n${normalized.prompt}`.trim() : normalized.prompt,
         resources: [...completed.quoteResources, ...normalized.resources],
-        ...(completed.quote?.status === 'resolved' && completed.quote.text
-          ? { autoRouteDraft: createFeishuAutoRouteDraft({
-              sourceSenderId: completed.quote.senderId ?? '',
-              sourceSenderType: completed.quote.senderType ?? '',
-              messageType: completed.quote.messageType,
-              text: completed.quote.text,
-              instruction: normalized.prompt
-                .replace(/^\[用户引用了飞书消息 [^\]]+\]\s*/u, '')
-                .trim(),
-            }) ?? undefined }
-          : {}),
+        ...(autoRouteCommand.matched ? { autoRouteRequested: true } : {}),
+        ...(autoRouteDraft ? { autoRouteDraft } : {}),
       }
       const processClaimed = () => this.processClaimedInbound(runtime, inbound)
       if (runtime.transport.withDeliveryScope) {
@@ -2077,7 +2082,16 @@ export class FeishuBotService {
       return
     }
 
-    if (inbound.chatType === 'group' && inbound.explicitlyMentioned && inbound.autoRouteDraft) {
+    if (inbound.autoRouteRequested) {
+      if (inbound.chatType !== 'group') {
+        await this.replyTextWithFallback(runtime, inbound.messageId, inbound.chatId, '/route 仅用于群聊中的卡片自动路由。', inbound.rootId, inbound.chatType)
+        return
+      }
+      if (!inbound.explicitlyMentioned) return
+      if (!inbound.autoRouteDraft) {
+        await this.replyTextWithFallback(runtime, inbound.messageId, inbound.chatId, '请回复一张飞书卡片并发送：@Cody /route [处理说明]', inbound.rootId, inbound.chatType)
+        return
+      }
       if (!this.dependencies.store.upsertAutoRoute || !this.dependencies.store.listAutoRoutes) {
         await this.replyTextWithFallback(runtime, inbound.messageId, inbound.chatId, '当前版本尚未启用卡片自动路由存储。', inbound.rootId, inbound.chatType)
         return

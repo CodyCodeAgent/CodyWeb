@@ -1358,7 +1358,7 @@ describe('FeishuBotService', () => {
     await service.stop()
   })
 
-  it('turns an explicitly quoted foreign-bot card into the route project picker', async () => {
+  it('keeps an ordinary quoted foreign-bot card in the normal conversation flow', async () => {
     const { service, store, transport, startTurn } = harness()
     transport.getMessage = async (messageId, options) => ({ data: { items: messageId === 'om_source_card'
       ? [{
@@ -1378,11 +1378,48 @@ describe('FeishuBotService', () => {
       message_id: 'om_config', parent_id: 'om_source_card', root_id: 'om_source_card',
       content: JSON.stringify({ text: '@_user_1 帮我分析根因' }),
     }))
+    await vi.waitFor(() => expect([...store.pending.values()].find((row) => row.messageId === 'om_config')).toBeTruthy())
+    expect([...store.pending.values()].find((row) => row.messageId === 'om_config')?.autoRouteDraft).toBeUndefined()
+    expect(transport.cards.some((row) => JSON.stringify(row.card).includes('配置卡片自动路由'))).toBe(false)
+    expect(transport.cards.some((row) => JSON.stringify(row.card).includes('连接 CodyWeb'))).toBe(true)
+    expect(startTurn).not.toHaveBeenCalled()
+    await service.stop()
+  })
+
+  it('turns /route on a quoted foreign-bot card into the route project picker', async () => {
+    const { service, store, transport, startTurn } = harness()
+    transport.getMessage = async (messageId, options) => ({ data: { items: messageId === 'om_source_card'
+      ? [{
+          message_id: messageId, msg_type: 'interactive',
+          sender: { id: 'on_alert_bot', id_type: 'union_id', sender_type: 'app', name: 'Alert bot' },
+          body: { content: JSON.stringify({
+            header: { title: { tag: 'plain_text', content: '【平台】差异播报' } },
+            elements: [{ tag: 'div', text: { tag: 'lark_md', content: '任务ID：T1\n校验结果：不一致' } }],
+          }) },
+        }]
+      : [{
+          message_id: messageId, msg_type: 'text',
+          body: { content: JSON.stringify({ text: '@_user_1 /route 帮我分析根因' }) },
+        }] } })
+    await service.start()
+    transport.handlers?.onMessage(inbound({
+      message_id: 'om_config', parent_id: 'om_source_card', root_id: 'om_source_card',
+      content: JSON.stringify({ text: '@_user_1 /route 帮我分析根因' }),
+    }))
     await vi.waitFor(() => expect([...store.pending.values()].find((row) => row.messageId === 'om_config')?.autoRouteDraft).toMatchObject({
       sourceSenderId: '*', cardTitle: '【平台】差异播报',
       requiredKeywords: ['任务ID', '校验结果'], instruction: '帮我分析根因',
     }))
     expect(transport.cards.some((row) => JSON.stringify(row.card).includes('配置卡片自动路由'))).toBe(true)
+    expect(startTurn).not.toHaveBeenCalled()
+    await service.stop()
+  })
+
+  it('explains that /route requires a quoted card', async () => {
+    const { service, transport, startTurn } = harness()
+    await service.start()
+    transport.handlers?.onMessage(commandMessage('om_route_without_quote', '/route 分析根因'))
+    await vi.waitFor(() => expect(transport.texts).toContain('请回复一张飞书卡片并发送：@Cody /route [处理说明]'))
     expect(startTurn).not.toHaveBeenCalled()
     await service.stop()
   })

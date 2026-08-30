@@ -557,15 +557,29 @@ export function useDesktopState() {
     hasHydratedOutbox = true
     const items = await loadLocalMessageOutboxItems()
     const byThread: Record<string, LocalMessageOutboxItem[]> = {}
+    const acceptedItems: LocalMessageOutboxItem[] = []
+    const recoveredItems: LocalMessageOutboxItem[] = []
     for (const item of items) {
       if (!item.threadId) continue
+      if (item.status === 'sending' && item.turnId) {
+        acceptedItems.push(item)
+        continue
+      }
       const rows = byThread[item.threadId] ?? []
-      rows.push(item.status === 'sending' ? { ...item, status: 'queued' } : item)
+      const recovered = item.status === 'sending'
+        ? { ...item, status: 'queued' as const, updatedAtIso: new Date().toISOString() }
+        : item
+      rows.push(recovered)
+      if (recovered !== item) recoveredItems.push(recovered)
       byThread[item.threadId] = rows
     }
     outboxItemsByThreadId.value = Object.fromEntries(
       Object.entries(byThread).map(([threadId, itemsForThread]) => [threadId, sortOutboxItems(itemsForThread)]),
     )
+    await Promise.all([
+      ...acceptedItems.map((item) => deleteLocalMessageOutboxItem(item.id)),
+      ...recoveredItems.map((item) => saveLocalMessageOutboxItem(item)),
+    ])
   }
 
   function recordRollbackAudit(result: UiToolingRollbackFileResult): void {
@@ -1174,12 +1188,17 @@ export function useDesktopState() {
         sendingItem.images,
         sendingItem.skills,
       )
-      await persistOutboxItem({
+      const acceptedItem = {
         ...sendingItem,
         turnId,
         updatedAtIso: new Date().toISOString(),
-      })
-      await reconcileOutboxForThread(normalizedThreadId)
+      }
+      // Persist the turn id before deleting so a reload in this narrow window
+      // can distinguish an accepted send from an unacknowledged request.
+      if ((outboxItemsByThreadId.value[normalizedThreadId] ?? []).some((row) => row.id === sendingItem.id)) {
+        await persistOutboxItem(acceptedItem)
+      }
+      await deleteOutboxItem(acceptedItem)
     } catch (unknownError) {
       const errorMessage = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
       shouldAutoScrollOnNextAgentEvent = false
@@ -1414,7 +1433,7 @@ export function useDesktopState() {
       }
 
       queueDesktopRealtimeSync(realtimeSyncQueue, threadId)
-      await syncFromNotifications()
+      void syncFromNotifications()
       return turnId
     } catch (unknownError) {
       throw unknownError
