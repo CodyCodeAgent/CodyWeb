@@ -576,6 +576,13 @@ export function useDesktopState() {
     outboxItemsByThreadId.value = Object.fromEntries(
       Object.entries(byThread).map(([threadId, itemsForThread]) => [threadId, sortOutboxItems(itemsForThread)]),
     )
+    for (const item of Object.values(byThread).flat()) {
+      if (item.status !== 'failed') ensureOutboxOptimisticUserMessage(item, false)
+    }
+    for (const item of acceptedItems) {
+      const optimisticMessageId = ensureOutboxOptimisticUserMessage(item, false)
+      if (item.turnId) bindOptimisticUserMessageToTurn(item.threadId, item.turnId, optimisticMessageId)
+    }
     await Promise.all([
       ...acceptedItems.map((item) => deleteLocalMessageOutboxItem(item.id)),
       ...recoveredItems.map((item) => saveLocalMessageOutboxItem(item)),
@@ -597,11 +604,13 @@ export function useDesktopState() {
       images: ComposerSubmission<UiComposerContextKind>['images']
       skills: ComposerSubmission<UiComposerContextKind>['skills']
     },
+    preferredMessageId = '',
+    registerPending = true,
   ): string {
     if (!threadId) return ''
 
-    nextOptimisticUserMessageId += 1
-    const messageId = `optimistic-user:${threadId}:${String(nextOptimisticUserMessageId)}`
+    if (!preferredMessageId) nextOptimisticUserMessageId += 1
+    const messageId = preferredMessageId || `optimistic-user:${threadId}:${String(nextOptimisticUserMessageId)}`
     const message: UiMessage = {
       id: messageId,
       role: 'user',
@@ -612,18 +621,26 @@ export function useDesktopState() {
     }
     const previous = persistedMessagesByThreadId.value[threadId] ?? []
     setPersistedMessagesForThread(threadId, upsertMessage(previous, message))
-    pendingOptimisticUserMessageIdsByThreadId.set(threadId, [
-      ...(pendingOptimisticUserMessageIdsByThreadId.get(threadId) ?? []),
-      messageId,
-    ])
+    const pending = pendingOptimisticUserMessageIdsByThreadId.get(threadId) ?? []
+    const isAlreadyBound = [...optimisticUserMessageIdsByTurnId.values()].some((ids) => ids.includes(messageId))
+    if (registerPending && !isAlreadyBound && !pending.includes(messageId)) {
+      pendingOptimisticUserMessageIdsByThreadId.set(threadId, [...pending, messageId])
+    }
     return messageId
+  }
+
+  function ensureOutboxOptimisticUserMessage(item: LocalMessageOutboxItem, registerPending = true): string {
+    return addOptimisticUserMessage(item.threadId, item, `optimistic-user:${item.id}`, registerPending)
   }
 
   function bindOptimisticUserMessageToTurn(threadId: string, turnId: string, messageId: string): void {
     if (!turnId || !(persistedMessagesByThreadId.value[threadId] ?? []).some((message) => message.id === messageId)) return
     const pending = pendingOptimisticUserMessageIdsByThreadId.get(threadId) ?? []
     pendingOptimisticUserMessageIdsByThreadId.set(threadId, pending.filter((id) => id !== messageId))
-    optimisticUserMessageIdsByTurnId.set(turnId, [...(optimisticUserMessageIdsByTurnId.get(turnId) ?? []), messageId])
+    const turnMessageIds = optimisticUserMessageIdsByTurnId.get(turnId) ?? []
+    if (!turnMessageIds.includes(messageId)) {
+      optimisticUserMessageIdsByTurnId.set(turnId, [...turnMessageIds, messageId])
+    }
     while (optimisticUserMessageIdsByTurnId.size > 1_000) {
       const oldestTurnId = optimisticUserMessageIdsByTurnId.keys().next().value as string | undefined
       if (!oldestTurnId) break
@@ -631,16 +648,26 @@ export function useDesktopState() {
     }
   }
 
-  function consumeOptimisticUserMessageId(threadId: string, turnId: string): string {
+  function consumeOptimisticUserMessageId(threadId: string, turnId: string, formalMessage?: UiMessage): string {
     const turnQueue = turnId ? optimisticUserMessageIdsByTurnId.get(turnId) ?? [] : []
-    const messageId = turnQueue[0] ?? ''
+    const pending = pendingOptimisticUserMessageIdsByThreadId.get(threadId) ?? []
+    const matchingPendingId = formalMessage
+      ? pending.find((id) => {
+        const candidate = (persistedMessagesByThreadId.value[threadId] ?? []).find((message) => message.id === id)
+        if (!candidate || candidate.role !== 'user') return false
+        if (candidate.text.replace(/\s+/gu, ' ').trim() !== formalMessage.text.replace(/\s+/gu, ' ').trim()) return false
+        const candidateSkills = (candidate.skills ?? []).map((skill) => `${skill.name}:${skill.path}`).join('|')
+        const formalSkills = (formalMessage.skills ?? []).map((skill) => `${skill.name}:${skill.path}`).join('|')
+        return candidateSkills === formalSkills
+      })
+      : undefined
+    const messageId = turnQueue[0] ?? matchingPendingId ?? ''
     if (!messageId) return ''
     if (turnQueue.length > 0) {
       const remaining = turnQueue.slice(1)
       if (remaining.length > 0) optimisticUserMessageIdsByTurnId.set(turnId, remaining)
       else optimisticUserMessageIdsByTurnId.delete(turnId)
     }
-    const pending = pendingOptimisticUserMessageIdsByThreadId.get(threadId) ?? []
     const remainingPending = pending.filter((id) => id !== messageId)
     if (remainingPending.length > 0) pendingOptimisticUserMessageIdsByThreadId.set(threadId, remainingPending)
     else pendingOptimisticUserMessageIdsByThreadId.delete(threadId)
@@ -768,7 +795,7 @@ export function useDesktopState() {
       const previousMessages = persistedMessagesByThreadId.value[notificationThreadId] ?? []
       const formalUserMessage = completedUserMessages.find((message) => message.role === 'user' && message.messageType === 'userMessage')
       const optimisticMessageId = formalUserMessage
-        ? consumeOptimisticUserMessageId(notificationThreadId, extractTurnIdFromNotification(notification))
+        ? consumeOptimisticUserMessageId(notificationThreadId, extractTurnIdFromNotification(notification), formalUserMessage)
         : ''
       const messagesWithFormalUser = formalUserMessage && optimisticMessageId
         ? replaceMessageById(previousMessages, optimisticMessageId, formalUserMessage)
@@ -900,8 +927,9 @@ export function useDesktopState() {
       const preservePreviousWindow = options.silent === true
         && previousPage !== undefined
         && page.total >= previousPage.total
+      const preserveOptimisticMessages = previousPersisted.some((message) => message.messageType === 'userMessage.optimistic')
       const mergedMessages = mergeMessages(previousPersisted, nextMessages, {
-        preserveMissing: preservePreviousWindow,
+        preserveMissing: preservePreviousWindow || preserveOptimisticMessages,
       })
       setPersistedMessagesForThread(threadId, mergedMessages)
       messagePageByThreadId.value = {
@@ -1152,6 +1180,9 @@ export function useDesktopState() {
       },
     })
     await persistOutboxItem(item)
+    // A queued follow-up is visible immediately, but it must not be bound to
+    // the currently active turn. Registration happens when this item drains.
+    ensureOutboxOptimisticUserMessage(item, false)
     return item
   }
 
@@ -1176,6 +1207,7 @@ export function useDesktopState() {
       lastError: undefined,
     }
     await persistOutboxItem(sendingItem)
+    const optimisticMessageId = ensureOutboxOptimisticUserMessage(sendingItem)
 
     isSendingMessage.value = true
     error.value = ''
@@ -1193,6 +1225,7 @@ export function useDesktopState() {
         turnId,
         updatedAtIso: new Date().toISOString(),
       }
+      bindOptimisticUserMessageToTurn(normalizedThreadId, turnId, optimisticMessageId)
       // Persist the turn id before deleting so a reload in this narrow window
       // can distinguish an accepted send from an unacknowledged request.
       if ((outboxItemsByThreadId.value[normalizedThreadId] ?? []).some((row) => row.id === sendingItem.id)) {
@@ -1200,6 +1233,7 @@ export function useDesktopState() {
       }
       await deleteOutboxItem(acceptedItem)
     } catch (unknownError) {
+      removeOptimisticUserMessage(normalizedThreadId, optimisticMessageId)
       const errorMessage = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
       shouldAutoScrollOnNextAgentEvent = false
       setThreadInProgress(normalizedThreadId, false)
@@ -1266,7 +1300,8 @@ export function useDesktopState() {
 
     if (inProgressById.value[normalizedThreadId] === true) {
       try {
-        await steerActiveTurn(normalizedThreadId, item.text, item.images, item.skills)
+        const optimisticMessageId = ensureOutboxOptimisticUserMessage(item)
+        await steerActiveTurn(normalizedThreadId, item.text, item.images, item.skills, optimisticMessageId)
         await deleteOutboxItem(item)
       } catch {
         // steerActiveTurn already surfaces the error in the selected thread state.
@@ -1283,6 +1318,7 @@ export function useDesktopState() {
     if (!normalizedThreadId || !normalizedItemId) return
     const item = (outboxItemsByThreadId.value[normalizedThreadId] ?? []).find((row) => row.id === normalizedItemId)
     if (!item || item.status === 'sending') return
+    removeOptimisticUserMessage(normalizedThreadId, `optimistic-user:${item.id}`)
     await deleteOutboxItem(item)
   }
 
@@ -1291,6 +1327,7 @@ export function useDesktopState() {
     nextText: string,
     nextImages: ComposerSubmission<UiComposerContextKind>['images'],
     nextSkills: ComposerSubmission<UiComposerContextKind>['skills'],
+    existingOptimisticMessageId = '',
   ): Promise<void> {
     const turnId = activeTurnIdForThread(threadId)
     if (!turnId) {
@@ -1303,7 +1340,7 @@ export function useDesktopState() {
     isSendingMessage.value = true
     error.value = ''
     beginSteeringTurnForThread(threadId)
-    const optimisticMessageId = addOptimisticUserMessage(threadId, {
+    const optimisticMessageId = existingOptimisticMessageId || addOptimisticUserMessage(threadId, {
       text: nextText,
       images: nextImages,
       skills: nextSkills,
