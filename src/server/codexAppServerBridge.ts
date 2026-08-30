@@ -22,7 +22,7 @@ import {
   readTurnId,
 } from '@codycodeagent/cody-web-core/protocol'
 import { latestTerminalTurnEvent } from '@codycodeagent/cody-web-core/conversation'
-import { normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
+import { CodexTurnRecoveryMonitor, normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
 import { NotificationDispatcher, type NotificationDispatchEvent } from './notificationDispatchService.js'
 import { buildSecurityAccessSnapshot } from './securityAccess.js'
 import { appendCodexSessionEvent } from './sessionEventStore.js'
@@ -637,6 +637,12 @@ class AppServerProcess {
   private readonly notificationListeners = new Set<(value: { method: string; params: unknown }) => void>()
   private readonly pendingServerRequests = new Map<number, PendingServerRequest>()
   private readonly pendingServerRequestApprovalScopes = new Map<number, ToolingApprovalDecisionScope>()
+  /**
+   * Every raw RPC turn must be supervised too. CodyWeb clients issue turn/start
+   * through the gateway, rather than through CodexSessionManager, so this is
+   * the owner-side equivalent of the shared session lifecycle watchdog.
+   */
+  private readonly turnRecovery: CodexTurnRecoveryMonitor
   private nextSmokeServerRequestId = 900_000
 
   constructor() {
@@ -650,6 +656,17 @@ class AppServerProcess {
         capabilities: { experimentalApi: true, requestAttestation: false },
       },
     })
+    this.turnRecovery = new CodexTurnRecoveryMonitor({
+      inactivityTimeoutMs: 2 * 60 * 1000,
+      onInactive: async ({ threadId, turnId }) => {
+        try {
+          await this.host.call('turn/interrupt', { threadId, turnId }, { timeoutMs: APP_SERVER_DIAGNOSTICS_RPC_TIMEOUT_MS })
+        } catch (error) {
+          this.pushLog('warning', 'bridge', `Failed to interrupt inactive Codex turn ${turnId}: ${getErrorMessage(error, 'unknown error')}`)
+        }
+      },
+      onTerminal: (event) => this.emitRecoveredTerminal(event),
+    })
     this.host.subscribe((notification) => {
       if (notification.method === 'server/request') {
         const request = asRecord(notification.params)
@@ -660,6 +677,7 @@ class AppServerProcess {
       }
       // CodyWeb emits a richer resolved notification after policy/audit work.
       if (notification.method === 'server/request/resolved') return
+      const recoveredTerminalEvents = this.turnRecovery.observe(notification)
       if (notification.method === 'server/request/expired') {
         const request = asRecord(notification.params)
         if (request && typeof request.id === 'number') {
@@ -667,7 +685,29 @@ class AppServerProcess {
           this.pendingServerRequestApprovalScopes.delete(request.id)
         }
       }
+      // Do not forward a final retry event after its synthetic terminal event:
+      // reducers must never move a failed turn back to a retrying state.
+      if (recoveredTerminalEvents.length) {
+        for (const event of recoveredTerminalEvents) this.emitRecoveredTerminal(event)
+        return
+      }
       this.emitNotification(notification)
+    })
+  }
+
+  private emitRecoveredTerminal(event: { threadId: string; turnId?: string; data: Record<string, unknown> }): void {
+    this.pushLog('warning', 'bridge', `Codex turn ${event.turnId || 'unknown'} reached a terminal recovery failure.`)
+    this.emitNotification({
+      method: 'turn/failed',
+      params: {
+        threadId: event.threadId,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        error: event.data.error,
+        cause: event.data.cause,
+        retryAttempt: event.data.retryAttempt,
+        retryLimit: event.data.retryLimit,
+        willRetry: event.data.willRetry,
+      },
     })
   }
 
@@ -1012,7 +1052,13 @@ class AppServerProcess {
 
   async rpc(method: string, params: unknown, timeoutMs = APP_SERVER_RPC_TIMEOUT_MS): Promise<unknown> {
     await this.ensureInitialized(timeoutMs)
-    return this.call(method, params, timeoutMs)
+    const result = await this.call(method, params, timeoutMs)
+    if (method === 'turn/start') {
+      const threadId = readThreadId(params)
+      const turnId = readTurnId(result)
+      if (threadId && turnId) this.turnRecovery.track({ threadId, turnId })
+    }
+    return result
   }
 
   onNotification(listener: (value: { method: string; params: unknown }) => void): () => void {
@@ -1152,6 +1198,7 @@ class AppServerProcess {
   }
 
   dispose(): void {
+    this.turnRecovery.dispose()
     this.pendingServerRequests.clear()
     this.pendingServerRequestApprovalScopes.clear()
     void this.host.dispose()
