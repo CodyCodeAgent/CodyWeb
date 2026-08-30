@@ -20,6 +20,12 @@ export type CodexJsonRequestOptions = {
   method: string
   networkErrorMessage: string
   httpErrorMessage: string
+  /**
+   * Browser-side deadline. The app-server has its own deadline too, but the
+   * client must never leave an outbox item in "sending" forever if a proxy or
+   * a torn-down page connection fails to return that response.
+   */
+  timeoutMs?: number
 }
 
 export type CodexQueryParams = Record<string, string | number | boolean | null | undefined>
@@ -49,14 +55,43 @@ export async function fetchCodexJson(
   path: string,
   options: CodexJsonRequestOptions,
 ): Promise<CodexJsonResponse> {
+  const timeoutMs = options.timeoutMs
+  const controller = timeoutMs && timeoutMs > 0 ? new AbortController() : null
+  const callerSignal = options.init?.signal
+  let timedOut = false
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+  const abortFromCaller = () => controller?.abort(callerSignal?.reason)
+  if (controller && callerSignal) {
+    if (callerSignal.aborted) abortFromCaller()
+    else callerSignal.addEventListener('abort', abortFromCaller, { once: true })
+  }
+  if (controller && timeoutMs && timeoutMs > 0) {
+    timeoutHandle = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, timeoutMs)
+  }
+
   let response: Response
   try {
-    response = await fetch(path, options.init)
+    const requestInit = controller
+      ? { ...options.init, signal: controller.signal }
+      : options.init
+    response = await fetch(path, requestInit)
   } catch (error) {
+    if (timedOut) {
+      throw new CodexApiError(
+        `${options.method} timed out after ${String(timeoutMs)}ms`,
+        { code: 'timeout_error', method: options.method },
+      )
+    }
     throw new CodexApiError(
       error instanceof Error ? error.message : options.networkErrorMessage,
       { code: 'network_error', method: options.method },
     )
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle)
+    if (controller && callerSignal) callerSignal.removeEventListener('abort', abortFromCaller)
   }
 
   let payload: unknown = null

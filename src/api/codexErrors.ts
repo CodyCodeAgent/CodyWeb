@@ -4,6 +4,7 @@ export type CodexErrorCode =
   | 'http_error'
   | 'rpc_error'
   | 'network_error'
+  | 'timeout_error'
   | 'invalid_response'
   | 'unknown_error'
 

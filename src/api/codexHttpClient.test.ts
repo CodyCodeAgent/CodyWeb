@@ -99,6 +99,29 @@ describe('codex http client', () => {
     })
   })
 
+  it('aborts a stalled request at the caller deadline', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn((_path: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+    })))
+
+    const request = fetchCodexJson('/codex-api/test', {
+      method: 'turn/start',
+      networkErrorMessage: 'network failed',
+      httpErrorMessage: 'request failed',
+      timeoutMs: 25,
+    })
+    const expectation = expect(request).rejects.toMatchObject({
+      name: 'CodexApiError',
+      code: 'timeout_error',
+      method: 'turn/start',
+      message: 'turn/start timed out after 25ms',
+    })
+    await vi.advanceTimersByTimeAsync(25)
+    await expectation
+    vi.useRealTimers()
+  })
+
   it('reads RPC result envelopes and rejects malformed responses', () => {
     expect(readRpcResult<{ ok: boolean }>({ result: { ok: true } }, 200, 'rpc/method', 'bad envelope')).toEqual({
       ok: true,

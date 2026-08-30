@@ -557,12 +557,17 @@ export function useDesktopState() {
     hasHydratedOutbox = true
     const items = await loadLocalMessageOutboxItems()
     const byThread: Record<string, LocalMessageOutboxItem[]> = {}
-    const acceptedItems: LocalMessageOutboxItem[] = []
     const recoveredItems: LocalMessageOutboxItem[] = []
     for (const item of items) {
       if (!item.threadId) continue
       if (item.status === 'sending' && item.turnId) {
-        acceptedItems.push(item)
+        // turn/start is only an acknowledgement. Keep the durable outbox
+        // record and its optimistic bubble until the formal user item arrives;
+        // otherwise a reload in the acknowledgement/event gap loses the
+        // user's message entirely.
+        const rows = byThread[item.threadId] ?? []
+        rows.push(item)
+        byThread[item.threadId] = rows
         continue
       }
       const rows = byThread[item.threadId] ?? []
@@ -579,14 +584,11 @@ export function useDesktopState() {
     for (const item of Object.values(byThread).flat()) {
       if (item.status !== 'failed') ensureOutboxOptimisticUserMessage(item, false)
     }
-    for (const item of acceptedItems) {
+    for (const item of Object.values(byThread).flat().filter((row) => row.status === 'sending' && row.turnId)) {
       const optimisticMessageId = ensureOutboxOptimisticUserMessage(item, false)
       if (item.turnId) bindOptimisticUserMessageToTurn(item.threadId, item.turnId, optimisticMessageId)
     }
-    await Promise.all([
-      ...acceptedItems.map((item) => deleteLocalMessageOutboxItem(item.id)),
-      ...recoveredItems.map((item) => saveLocalMessageOutboxItem(item)),
-    ])
+    await Promise.all(recoveredItems.map((item) => saveLocalMessageOutboxItem(item)))
   }
 
   function recordRollbackAudit(result: UiToolingRollbackFileResult): void {
@@ -1226,12 +1228,12 @@ export function useDesktopState() {
         updatedAtIso: new Date().toISOString(),
       }
       bindOptimisticUserMessageToTurn(normalizedThreadId, turnId, optimisticMessageId)
-      // Persist the turn id before deleting so a reload in this narrow window
-      // can distinguish an accepted send from an unacknowledged request.
+      // turn/start only acknowledges acceptance. Keep the record until the
+      // formal user item reconciles it, so a reload cannot lose a message in
+      // the acknowledgement/event gap.
       if ((outboxItemsByThreadId.value[normalizedThreadId] ?? []).some((row) => row.id === sendingItem.id)) {
         await persistOutboxItem(acceptedItem)
       }
-      await deleteOutboxItem(acceptedItem)
     } catch (unknownError) {
       removeOptimisticUserMessage(normalizedThreadId, optimisticMessageId)
       const errorMessage = unknownError instanceof Error ? unknownError.message : 'Unknown application error'

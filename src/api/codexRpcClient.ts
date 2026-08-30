@@ -10,6 +10,8 @@ type RpcRequestBody = {
   params?: unknown
 }
 
+const DEFAULT_RPC_TIMEOUT_MS = 25_000
+
 export async function rpcCall<T>(method: string, params?: unknown): Promise<T> {
   const body: RpcRequestBody = { method, params: params ?? null }
   const { payload, status } = await fetchCodexJson('/codex-api/rpc', {
@@ -17,6 +19,7 @@ export async function rpcCall<T>(method: string, params?: unknown): Promise<T> {
     method,
     networkErrorMessage: `RPC ${method} failed before request was sent`,
     httpErrorMessage: `RPC ${method} failed`,
+    timeoutMs: DEFAULT_RPC_TIMEOUT_MS,
   })
   return readRpcResult<T>(payload, status, method, `RPC ${method} returned malformed envelope`)
 }

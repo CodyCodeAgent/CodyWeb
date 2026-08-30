@@ -25,6 +25,17 @@ const STORE_NAME = 'items'
 const memoryItems = new Map<string, LocalMessageOutboxItem>()
 let dbPromise: Promise<IDBDatabase | null> | null = null
 
+function invalidateDatabase(db?: IDBDatabase | null): void {
+  if (db) {
+    try {
+      db.close()
+    } catch {
+      // Closing a connection that is already closing is harmless.
+    }
+  }
+  dbPromise = null
+}
+
 function cloneItem(item: LocalMessageOutboxItem): LocalMessageOutboxItem {
   return {
     ...item,
@@ -53,9 +64,24 @@ function openOutboxDb(): Promise<IDBDatabase | null> {
         store.createIndex('createdAtIso', 'createdAtIso', { unique: false })
       }
     }
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => resolve(null)
-    request.onblocked = () => resolve(null)
+    request.onsuccess = () => {
+      const db = request.result
+      // A page can retain a resolved promise while the browser closes this
+      // connection during navigation/version changes. Forget it so the next
+      // operation opens a fresh database instead of silently falling back to
+      // in-memory data (which disappears on reload).
+      db.onclose = () => invalidateDatabase(db)
+      db.onversionchange = () => invalidateDatabase(db)
+      resolve(db)
+    }
+    request.onerror = () => {
+      dbPromise = null
+      resolve(null)
+    }
+    request.onblocked = () => {
+      dbPromise = null
+      resolve(null)
+    }
   })
 
   return dbPromise
@@ -65,27 +91,36 @@ async function withStore<T>(
   mode: IDBTransactionMode,
   operation: (store: IDBObjectStore) => IDBRequest<T>,
 ): Promise<T | null> {
-  const db = await openOutboxDb()
-  if (!db) return null
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const db = await openOutboxDb()
+    if (!db) return null
 
-  return new Promise((resolve) => {
-    let settled = false
-    let result: T | null = null
-    const settle = (nextResult: T | null) => {
-      if (settled) return
-      settled = true
-      resolve(nextResult)
-    }
-    const transaction = db.transaction(STORE_NAME, mode)
-    const request = operation(transaction.objectStore(STORE_NAME))
-    request.onsuccess = () => {
-      result = request.result
-    }
-    request.onerror = () => settle(null)
-    transaction.oncomplete = () => settle(result)
-    transaction.onerror = () => settle(null)
-    transaction.onabort = () => settle(null)
-  })
+    const result = await new Promise<{ value: T | null; retry: boolean }>((resolve) => {
+      let settled = false
+      let value: T | null = null
+      const settle = (nextValue: T | null, retry = false) => {
+        if (settled) return
+        settled = true
+        resolve({ value: nextValue, retry })
+      }
+      try {
+        const transaction = db.transaction(STORE_NAME, mode)
+        const request = operation(transaction.objectStore(STORE_NAME))
+        request.onsuccess = () => {
+          value = request.result
+        }
+        request.onerror = () => settle(null, true)
+        transaction.oncomplete = () => settle(value)
+        transaction.onerror = () => settle(null, true)
+        transaction.onabort = () => settle(null, true)
+      } catch {
+        settle(null, true)
+      }
+    })
+    if (!result.retry) return result.value
+    invalidateDatabase(db)
+  }
+  return null
 }
 
 function sortOutboxItems(items: LocalMessageOutboxItem[]): LocalMessageOutboxItem[] {
@@ -94,25 +129,27 @@ function sortOutboxItems(items: LocalMessageOutboxItem[]): LocalMessageOutboxIte
 
 export async function loadLocalMessageOutboxItems(): Promise<LocalMessageOutboxItem[]> {
   const rows = await withStore<LocalMessageOutboxItem[]>('readonly', (store) => store.getAll())
-  if (rows) return sortOutboxItems(rows.map(cloneItem))
-  return sortOutboxItems([...memoryItems.values()].map(cloneItem))
+  const merged = new Map<string, LocalMessageOutboxItem>()
+  for (const item of rows ?? []) merged.set(item.id, cloneItem(item))
+  for (const item of memoryItems.values()) merged.set(item.id, cloneItem(item))
+  return sortOutboxItems([...merged.values()])
 }
 
 export async function saveLocalMessageOutboxItem(item: LocalMessageOutboxItem): Promise<void> {
   const cloned = cloneItem(item)
+  memoryItems.set(cloned.id, cloned)
   const result = await withStore<IDBValidKey>('readwrite', (store) => store.put(cloned))
-  if (result === null) {
-    memoryItems.set(cloned.id, cloned)
-  }
+  // memoryItems intentionally remains a mirror for the current page. IndexedDB
+  // is retried above; on a genuine storage outage it still keeps the pending
+  // submission visible and retryable instead of dropping it.
+  void result
 }
 
 export async function deleteLocalMessageOutboxItem(itemId: string): Promise<void> {
   const normalizedId = itemId.trim()
   if (!normalizedId) return
-  const result = await withStore<undefined>('readwrite', (store) => store.delete(normalizedId))
-  if (result === null) {
-    memoryItems.delete(normalizedId)
-  }
+  memoryItems.delete(normalizedId)
+  await withStore<undefined>('readwrite', (store) => store.delete(normalizedId))
 }
 
 export function buildLocalMessageOutboxItem(input: {

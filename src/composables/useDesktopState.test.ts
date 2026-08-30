@@ -1184,7 +1184,7 @@ describe('useDesktopState realtime messages', () => {
     expect(state.projectGroups.value[0]?.threads[0]?.inProgress).not.toBe(true)
   })
 
-  it('releases an accepted send without waiting for background history sync', async () => {
+  it('keeps an accepted send durable until the formal user item arrives', async () => {
     installBrowserGlobals('thread-a')
     const stalledCatalogRefresh = deferred<never>()
     codexApiMock.startThreadTurn.mockResolvedValue('turn-accepted')
@@ -1206,11 +1206,18 @@ describe('useDesktopState realtime messages', () => {
     })
 
     expect(state.isSendingMessage.value).toBe(false)
-    expect(state.selectedQueuedMessages.value).toEqual([])
-    expect(await loadLocalMessageOutboxItems()).toEqual([])
+    expect(state.selectedQueuedMessages.value).toEqual([
+      expect.objectContaining({
+        text: '不要被后台刷新卡住',
+        status: 'sending',
+      }),
+    ])
+    expect(await loadLocalMessageOutboxItems()).toEqual([
+      expect.objectContaining({ turnId: 'turn-accepted', status: 'sending' }),
+    ])
   })
 
-  it('drops an outbox record that already has an accepted turn id during hydration', async () => {
+  it('restores an accepted send during hydration until a formal user item reconciles it', async () => {
     installBrowserGlobals('thread-a')
     const item = buildLocalMessageOutboxItem({
       threadId: 'thread-a',
@@ -1228,8 +1235,46 @@ describe('useDesktopState realtime messages', () => {
     const state = useDesktopState()
     await state.refreshAll({ loadSelectedMessages: false })
 
-    expect(state.selectedQueuedMessages.value).toEqual([])
-    expect(await loadLocalMessageOutboxItems()).toEqual([])
+    expect(state.selectedQueuedMessages.value).toEqual([
+      expect.objectContaining({
+        id: item.id,
+        status: 'sending',
+        text: '已经被服务端接收',
+      }),
+    ])
+    expect(state.messages.value).toEqual([
+      expect.objectContaining({
+        id: `optimistic-user:${item.id}`,
+        role: 'user',
+        text: '已经被服务端接收',
+        messageType: 'userMessage.optimistic',
+      }),
+    ])
+    expect(await loadLocalMessageOutboxItems()).toEqual([
+      expect.objectContaining({ id: item.id, turnId: 'turn-accepted', status: 'sending' }),
+    ])
+
+    state.startRealtimeSync()
+    codexApiMock.getNotificationListener()?.({
+      method: 'item/completed',
+      atIso: '2026-07-07T00:00:01.000Z',
+      params: {
+        threadId: 'thread-a',
+        turnId: 'turn-accepted',
+        item: {
+          id: 'formal-user',
+          type: 'userMessage',
+          content: [{ type: 'text', text: '已经被服务端接收', text_elements: [] }],
+        },
+      },
+    })
+    await vi.waitFor(async () => {
+      expect(await loadLocalMessageOutboxItems()).toEqual([])
+    })
+    expect(state.messages.value).toEqual([
+      expect.objectContaining({ id: 'formal-user', role: 'user', text: '已经被服务端接收' }),
+    ])
+    state.stopRealtimeSync()
   })
 
   it('queues selected thread messages while a turn is already in progress', async () => {
