@@ -56,6 +56,21 @@ export async function getThreadMessages(threadId: string): Promise<UiMessage[]> 
   }
 }
 
+/**
+ * A persisted browser activity flag is only a hint. It can survive a server
+ * restart or a dropped terminal notification, so queue admission must defer
+ * to Codex's native thread status when no local turn id is known.
+ */
+export async function getThreadRuntimeStatus(threadId: string): Promise<'notLoaded' | 'idle' | 'systemError' | 'active'> {
+  const normalizedThreadId = threadId.trim()
+  if (!normalizedThreadId) return 'notLoaded'
+  try {
+    return (await sessionCatalog.readThreadSnapshot(normalizedThreadId, false)).summary.status
+  } catch (error) {
+    throw normalizeCodexApiError(error, `Failed to read runtime status for thread ${normalizedThreadId}`, 'thread/read')
+  }
+}
+
 export async function getThreadMessagesPage(
   threadId: string,
   options: { limit?: number; offset?: number; beforeMessageId?: string } = {},

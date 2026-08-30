@@ -20,6 +20,7 @@ import {
 import {
   compactThread,
   forkThread,
+  getThreadRuntimeStatus,
   getThreadMessagesPage,
   interruptThreadTurn,
   renameThread,
@@ -1226,7 +1227,23 @@ export function useDesktopState() {
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) return
     if (drainingOutboxThreadIds.has(normalizedThreadId)) return
-    if (inProgressById.value[normalizedThreadId] === true) return
+    if (inProgressById.value[normalizedThreadId] === true) {
+      // `inProgress` is persisted UI state, not the native runtime authority.
+      // A lost terminal event must not strand every later user message in the
+      // browser queue. A concrete local turn id remains authoritative while
+      // this process owns the active turn; otherwise reconcile with Codex.
+      if (activeTurnIdForThread(normalizedThreadId)) return
+      try {
+        if (await getThreadRuntimeStatus(normalizedThreadId) === 'active') return
+        setThreadInProgress(normalizedThreadId, false)
+        setTurnActivityForThread(normalizedThreadId, null)
+        setTurnErrorForThread(normalizedThreadId, null)
+      } catch {
+        // If native state cannot be read, retain the conservative queue and
+        // let the scheduled retry or a realtime terminal event release it.
+        return
+      }
+    }
 
     const rows = outboxItemsByThreadId.value[normalizedThreadId] ?? []
     const item = options.itemId
