@@ -1116,6 +1116,15 @@ describe('useDesktopState realtime messages', () => {
         status: 'queued',
       }),
     ])
+    await vi.waitFor(() => {
+      expect(state.messages.value).toEqual([
+        expect.objectContaining({
+          role: 'user',
+          text: '我觉得可以，干吧',
+          messageType: 'userMessage.optimistic',
+        }),
+      ])
+    })
 
     turnStart.resolve('turn-1')
     await sendPromise
@@ -1247,13 +1256,35 @@ describe('useDesktopState realtime messages', () => {
 
     expect(codexApiMock.steerThreadTurn).not.toHaveBeenCalled()
     expect(codexApiMock.startThreadTurn).not.toHaveBeenCalled()
-    expect(state.messages.value).toEqual([])
+    expect(state.messages.value).toEqual([
+      expect.objectContaining({
+        role: 'user',
+        text: '下一条排队处理',
+        messageType: 'userMessage.optimistic',
+      }),
+    ])
     expect(state.selectedQueuedMessages.value).toEqual([
       expect.objectContaining({
         text: '下一条排队处理',
         status: 'queued',
       }),
     ])
+    codexApiMock.getNotificationListener()?.({
+      method: 'item/completed',
+      atIso: '2026-07-07T00:00:01.000Z',
+      params: {
+        threadId: 'thread-a',
+        turnId: 'turn-active',
+        item: {
+          id: 'current-turn-user',
+          type: 'userMessage',
+          content: [{ type: 'text', text: '当前这一轮', text_elements: [] }],
+        },
+      },
+    })
+    expect(state.messages.value.some((message) => (
+      message.text === '下一条排队处理' && message.messageType === 'userMessage.optimistic'
+    ))).toBe(true)
     state.stopRealtimeSync()
   })
 
