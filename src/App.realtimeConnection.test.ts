@@ -9,6 +9,7 @@ describe('App realtime connection architecture', () => {
     expect(appSource).toContain('reconnectCodexRealtime()')
     expect(appSource).not.toContain('/codex-api/meta/version')
     expect(appSource).not.toContain('setInterval(')
+    expect(appSource).toContain('v-if="backendConnectionState === \'offline\'"')
   })
 
   it('exposes manual shell refresh without auto-refresh UI wiring', () => {

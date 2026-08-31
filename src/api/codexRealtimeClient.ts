@@ -235,7 +235,9 @@ export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = 
     if (hasBridgeSocketListeners()) return
     bridgeSocket?.close()
     bridgeSocket = null
-    publishConnection({ phase: 'idle', reconnectAttempt: 0 })
+    hasConnected = false
+    connectionSnapshot = initialConnectionSnapshot()
+    publishConnection({ phase: 'idle' })
   }
 
   function handleBridgeSocketMessage(rawData: MessageEvent['data']): void {

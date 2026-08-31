@@ -28,6 +28,7 @@ export function useCoreConversationRegistry() {
   const transportListenersByThreadId = new Map<string, Set<(event: ConversationSubscriptionEvent) => void>>()
   const eventListeners = new Set<(event: Parameters<ConversationController['ingestEvent']>[0]) => void>()
   let connectionSnapshot: RealtimeConnectionSnapshot | null = null
+  let focusedThreadId = ''
 
   const stopConversationEvents = subscribeConversationEvents((event) => {
     controllerFor(event.threadId).ingestEvent(event)
@@ -49,7 +50,14 @@ export function useCoreConversationRegistry() {
           }
         : null
     if (!event) return
-    for (const listeners of transportListenersByThreadId.values()) {
+    for (const [threadId, listeners] of transportListenersByThreadId) {
+      if (event.type === 'connected') {
+        const state = stateByThreadId.value[threadId]
+        const needsImmediateReconciliation = threadId === focusedThreadId
+          || Boolean(state?.activeTurnId)
+          || Boolean(state?.pendingRequests.length)
+        if (!needsImmediateReconciliation) continue
+      }
       for (const listener of listeners) listener(event)
     }
   })
@@ -57,14 +65,10 @@ export function useCoreConversationRegistry() {
   function transportForThread(threadId: string): ConversationTransport {
     return {
       async attach(attachedThreadId) {
-        const attachment = await attachThreadConversation(attachedThreadId)
-        // Attachment events are owner state, not native history. Forward them
-        // through the same product event channel so pre-admission persistence
-        // can complete its ownership handoff after refresh or in another tab.
-        for (const event of attachment.events) {
-          for (const listener of eventListeners) listener(event)
-        }
-        return attachment
+        // Attachment is a replaceable owner snapshot consumed by Core during
+        // reconciliation. It is deliberately not re-broadcast as a new live
+        // event; doing both gives reconnects two semantic paths.
+        return attachThreadConversation(attachedThreadId)
       },
       read: getThreadEvents,
       submit(command) {
@@ -114,6 +118,10 @@ export function useCoreConversationRegistry() {
 
   function stateFor(threadId: string): ConversationState {
     return stateByThreadId.value[threadId] ?? createConversationState(threadId)
+  }
+
+  function focus(threadId: string): void {
+    focusedThreadId = threadId.trim()
   }
 
   async function connect(threadId: string): Promise<void> {
@@ -203,5 +211,5 @@ export function useCoreConversationRegistry() {
     stateByThreadId.value = {}
   }
 
-  return { stateByThreadId, stateFor, connect, refresh, enqueue, submit, bind, fail, discard, ingest, subscribeEvents, prune, dispose }
+  return { stateByThreadId, stateFor, focus, connect, refresh, enqueue, submit, bind, fail, discard, ingest, subscribeEvents, prune, dispose }
 }

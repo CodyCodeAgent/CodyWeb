@@ -102,6 +102,7 @@ export function useDesktopState() {
     setSelectedModelId, setSelectedReasoningEffort, setSelectedCollaborationModeName, setSelectedPermissionMode,
     setSelectedSubmitMode } = composerState
   const coreConversations = useCoreConversationRegistry()
+  coreConversations.focus(selectedThreadId.value)
   const conversationStateByThreadId = coreConversations.stateByThreadId
   const serverRequestState = useServerRequestState(selectedThreadId, (message) => { error.value = message })
   const pendingServerRequestsByThreadId = serverRequestState.byThreadId
@@ -196,6 +197,7 @@ export function useDesktopState() {
   function setSelectedThreadId(nextThreadId: string): void {
     if (selectedThreadId.value === nextThreadId) return
     threadState.setSelectedThreadId(nextThreadId)
+    coreConversations.focus(nextThreadId)
     shouldAutoScrollOnNextAgentEvent = false
   }
 

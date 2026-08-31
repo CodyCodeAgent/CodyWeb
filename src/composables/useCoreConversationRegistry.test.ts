@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => {
   let eventListener: ((event: CodexEvent) => void) | null = null
   let connectionListener: ((snapshot: ConnectionSnapshot) => void) | null = null
   return {
-    attach: vi.fn(async () => undefined),
+    attach: vi.fn(async () => ({ events: [] as CodexEvent[] })),
     read: vi.fn(async () => [] as CodexEvent[]),
     submit: vi.fn(async (input: { clientCommandId: string }) => ({ clientCommandId: input.clientCommandId })),
     subscribeEvents: vi.fn((listener: (event: CodexEvent) => void) => {
@@ -134,6 +134,29 @@ describe('useCoreConversationRegistry', () => {
     })
     expect(state.activeTurnId).toBe('turn-a')
     expect(state.turns['turn-a']?.lifecycle).toBe('running')
+    registry.dispose()
+  })
+
+  it('reconciles only the focused or active conversations after one socket reconnect', async () => {
+    const registry = useCoreConversationRegistry()
+    registry.focus('thread-a')
+    await registry.connect('thread-a')
+    await registry.connect('thread-b')
+    mocks.read.mockClear()
+
+    mocks.connection({
+      phase: 'reconnecting', reconnectAttempt: 1,
+      connectedAtIso: '2026-09-01T00:00:00.000Z', disconnectedAtIso: '2026-09-01T00:00:01.000Z',
+      closeCode: 1006, closeReason: 'network changed',
+    })
+    mocks.connection({
+      phase: 'connected', reconnectAttempt: 0,
+      connectedAtIso: '2026-09-01T00:00:02.000Z', disconnectedAtIso: '2026-09-01T00:00:01.000Z',
+      closeCode: null, closeReason: '',
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mocks.read.mock.calls).toEqual([['thread-a']])
     registry.dispose()
   })
 })

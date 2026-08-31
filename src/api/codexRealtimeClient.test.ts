@@ -217,4 +217,23 @@ describe('codex realtime client', () => {
     stopProduct()
     expect(FakeWebSocket.instances[0].closeCount).toBe(1)
   })
+
+  it('starts a fresh connection lifecycle after the last subscriber releases the hub', () => {
+    FakeWebSocket.instances = []
+    const client = createCodexRealtimeClient({
+      getWindow: () => fakeWindow(),
+      getWebSocket: () => FakeWebSocket,
+    })
+    const firstStates: string[] = []
+    const stopFirst = client.subscribeConnection((state) => firstStates.push(state.phase))
+    FakeWebSocket.instances[0]!.emit('open')
+    stopFirst()
+
+    const secondStates: string[] = []
+    const stopSecond = client.subscribeConnection((state) => secondStates.push(state.phase))
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(firstStates).toEqual(['idle', 'connecting', 'connected'])
+    expect(secondStates).toEqual(['idle', 'connecting'])
+    stopSecond()
+  })
 })

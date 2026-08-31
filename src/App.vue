@@ -257,7 +257,7 @@
             <strong>{{ backendConnectionTitle }}</strong>
             <span>{{ backendConnectionMessage }}</span>
           </div>
-          <button type="button" @click="reconnectBackendNow">
+          <button v-if="backendConnectionState === 'offline'" type="button" @click="reconnectBackendNow">
             {{ t('app.backend.retry') }}
           </button>
         </div>
