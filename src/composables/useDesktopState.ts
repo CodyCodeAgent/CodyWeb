@@ -53,14 +53,7 @@ import {
   normalizeNewThreadTurnInput,
   normalizeThreadTextTurnInput,
 } from './desktopTurnState'
-import {
-  buildLocalMessageOutboxItem,
-  deleteLocalMessageOutboxItem,
-  loadLocalMessageOutboxItems,
-  saveLocalMessageOutboxItem,
-  type LocalMessageOutboxItem,
-} from './localMessageOutbox'
-import { recoverOutboxItemAfterReload, selectReconciledOutboxItems } from './outboxReconciliation'
+import { buildPendingConversationCommand, type PendingConversationCommand } from './conversationCommand'
 import { normalizeThreadScrollState, saveProjectDisplayNames, saveProjectOrder, saveReadStateMap, saveThreadScrollStateMap } from './desktopStateStorage'
 import {
   areStringArraysEqual,
@@ -108,7 +101,6 @@ export function useDesktopState() {
     hydrate: hydrateTurnPreferencesFromSettingsStore, refreshCollaborationModes, refreshModelPreferences,
     setSelectedModelId, setSelectedReasoningEffort, setSelectedCollaborationModeName, setSelectedPermissionMode,
     setSelectedSubmitMode } = composerState
-  const outboxItemsByThreadId = ref<Record<string, LocalMessageOutboxItem[]>>({})
   const coreConversations = useCoreConversationRegistry()
   const conversationStateByThreadId = coreConversations.stateByThreadId
   const serverRequestState = useServerRequestState(selectedThreadId, (message) => { error.value = message })
@@ -133,35 +125,14 @@ export function useDesktopState() {
   let nextMessageLoadRequestId = 0
   let latestThreadsRequestId = 0
   let nextOptimisticUserMessageId = 0
-  let hasHydratedOutbox = false
   const directThreadRecoveryById = new Map<string, Promise<void>>()
   const stopCoreEventSubscription = coreConversations.subscribeEvents((event) => {
-    const commandId = typeof event.data.clientCommandId === 'string' ? event.data.clientCommandId : event.itemId
-    if (event.type === 'command.queued' && commandId) {
-      const item = (outboxItemsByThreadId.value[event.threadId] ?? []).find((row) => row.id === commandId)
-      // SessionManager admission is the ownership handoff. IndexedDB only
-      // protects the pre-admission HTTP window and must not become a second
-      // queue after the process owner confirms the command.
-      if (item) void deleteOutboxItem(item)
+    if (event.type === 'command.failed') {
+      const message = typeof event.data.error === 'string' ? event.data.error : 'Command failed before a native Turn was created.'
+      error.value = message
     }
-    if (event.type === 'command.bound' && commandId && event.turnId) {
-      const item = (outboxItemsByThreadId.value[event.threadId] ?? []).find((row) => row.id === commandId)
-      if (item) void persistOutboxItem({ ...item, turnId: event.turnId, status: 'sending', updatedAtIso: event.atIso })
-    }
-    if (event.type === 'command.failed' && commandId) {
-      const item = (outboxItemsByThreadId.value[event.threadId] ?? []).find((row) => row.id === commandId)
-      if (item) {
-        const message = typeof event.data.error === 'string' ? event.data.error : 'Command failed before a native Turn was created.'
-        void persistOutboxItem({ ...item, status: 'failed', lastError: message, updatedAtIso: event.atIso })
-        error.value = message
-      }
-    }
-    if (event.type === 'user.completed') void reconcileOutboxForThread(event.threadId)
     const conversation = coreConversations.stateFor(event.threadId)
     if (event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.interrupted') {
-      for (const item of (outboxItemsByThreadId.value[event.threadId] ?? []).filter((row) => row.turnId === event.turnId)) {
-        void deleteOutboxItem(item)
-      }
       markThreadUnreadByEvent(event.threadId)
       if (event.threadId === selectedThreadId.value) shouldAutoScrollOnNextAgentEvent = false
     }
@@ -403,109 +374,21 @@ export function useDesktopState() {
     saveThreadScrollStateMap(scrollStateByThreadId.value)
   }
 
-  function sortOutboxItems(items: LocalMessageOutboxItem[]): LocalMessageOutboxItem[] {
-    return [...items].sort((a, b) => a.createdAtIso.localeCompare(b.createdAtIso))
-  }
-
-  function setOutboxItemsForThread(threadId: string, items: LocalMessageOutboxItem[]): void {
-    if (!threadId) return
-    const nextItems = sortOutboxItems(items)
-    if (nextItems.length === 0) {
-      outboxItemsByThreadId.value = omitKey(outboxItemsByThreadId.value, threadId)
-      return
-    }
-    outboxItemsByThreadId.value = {
-      ...outboxItemsByThreadId.value,
-      [threadId]: nextItems,
-    }
-  }
-
-  function upsertOutboxItem(item: LocalMessageOutboxItem): void {
-    const previous = outboxItemsByThreadId.value[item.threadId] ?? []
-    setOutboxItemsForThread(item.threadId, [
-      ...previous.filter((row) => row.id !== item.id),
-      item,
-    ])
-  }
-
-  function removeOutboxItemFromState(threadId: string, itemId: string): void {
-    const previous = outboxItemsByThreadId.value[threadId] ?? []
-    setOutboxItemsForThread(threadId, previous.filter((row) => row.id !== itemId))
-  }
-
-  async function persistOutboxItem(item: LocalMessageOutboxItem): Promise<void> {
-    upsertOutboxItem(item)
-    await saveLocalMessageOutboxItem(item)
-  }
-
-  async function deleteOutboxItem(item: LocalMessageOutboxItem): Promise<void> {
-    removeOutboxItemFromState(item.threadId, item.id)
-    await deleteLocalMessageOutboxItem(item.id)
-  }
-
   function queuedMessagesForThread(threadId: string): UiQueuedMessage[] {
-    const localItems = outboxItemsByThreadId.value[threadId] ?? []
     return coreConversations.stateFor(threadId).messages
       .filter((message) => message.role === 'user' && Boolean(message.outbox))
       .map((message) => {
         const id = message.id.startsWith('user:') ? message.id.slice('user:'.length) : message.id
-        const local = localItems.find((item) => item.id === id)
         return {
           id,
           threadId,
           text: message.text,
           status: message.outbox!.status,
-          createdAtIso: local?.createdAtIso ?? '',
+          createdAtIso: '',
           lastError: message.outbox?.lastError,
-          canManage: message.outbox?.status === 'failed' || Boolean(local && local.status !== 'sending'),
+          canManage: message.outbox?.status === 'failed',
         }
       })
-  }
-
-  async function reconcileOutboxForThread(threadId: string): Promise<void> {
-    const items = outboxItemsByThreadId.value[threadId] ?? []
-    if (items.length === 0) return
-    const messages = (conversationTranscriptFromState(coreConversations.stateFor(threadId)) as UiMessage[])
-    const removable = selectReconciledOutboxItems(items, messages)
-    await Promise.all(removable.map((item) => deleteOutboxItem(item)))
-  }
-
-  async function hydrateOutboxFromStore(): Promise<void> {
-    if (hasHydratedOutbox) return
-    hasHydratedOutbox = true
-    const items = await loadLocalMessageOutboxItems()
-    const byThread: Record<string, LocalMessageOutboxItem[]> = {}
-    const recoveredItems: LocalMessageOutboxItem[] = []
-    for (const item of items) {
-      if (!item.threadId) continue
-      if (item.status === 'sending' && item.turnId) {
-        // turn/start is only an acknowledgement. Keep the durable outbox
-        // record and its optimistic bubble until the formal user item arrives;
-        // otherwise a reload in the acknowledgement/event gap loses the
-        // user's message entirely.
-        const rows = byThread[item.threadId] ?? []
-        rows.push(item)
-        byThread[item.threadId] = rows
-        continue
-      }
-      const rows = byThread[item.threadId] ?? []
-      const recovered = recoverOutboxItemAfterReload(item, new Date().toISOString())
-      rows.push(recovered)
-      if (recovered !== item) recoveredItems.push(recovered)
-      byThread[item.threadId] = rows
-    }
-    outboxItemsByThreadId.value = Object.fromEntries(
-      Object.entries(byThread).map(([threadId, itemsForThread]) => [threadId, sortOutboxItems(itemsForThread)]),
-    )
-    for (const item of Object.values(byThread).flat()) {
-      const commandId = ensureOutboxOptimisticUserMessage(item)
-      if (item.status === 'failed') coreConversations.fail(item.threadId, commandId, item.lastError ?? 'Command failed before a native Turn was created.')
-    }
-    for (const item of Object.values(byThread).flat().filter((row) => row.status === 'sending' && row.turnId)) {
-      const optimisticMessageId = ensureOutboxOptimisticUserMessage(item)
-      if (item.turnId) bindOptimisticUserMessageToTurn(item.threadId, item.turnId, optimisticMessageId)
-    }
-    await Promise.all(recoveredItems.map((item) => saveLocalMessageOutboxItem(item)))
   }
 
   function recordRollbackAudit(result: UiToolingRollbackFileResult): void {
@@ -545,7 +428,7 @@ export function useDesktopState() {
     return messageId
   }
 
-  function ensureOutboxOptimisticUserMessage(item: LocalMessageOutboxItem): string {
+  function ensureOutboxOptimisticUserMessage(item: PendingConversationCommand): string {
     return addOptimisticUserMessage(item.threadId, item, item.id)
   }
 
@@ -702,8 +585,6 @@ export function useDesktopState() {
       }
       const historyError = coreConversations.stateFor(threadId).history.error
       if (historyError) throw new Error(historyError)
-      void reconcileOutboxForThread(threadId)
-
       loadedMessagesByThreadId.value = markThreadMessagesLoaded(loadedMessagesByThreadId.value, threadId)
 
       const version = currentThreadVersion(threadId)
@@ -732,7 +613,6 @@ export function useDesktopState() {
     error.value = ''
 
     try {
-      await hydrateOutboxFromStore()
       await hydrateTurnPreferencesFromSettingsStore()
       await Promise.all([
         loadThreads(),
@@ -853,11 +733,11 @@ export function useDesktopState() {
   async function enqueueMessageForThread(
     threadId: string,
     payload: ComposerSubmission<UiComposerContextKind>,
-  ): Promise<LocalMessageOutboxItem | null> {
+  ): Promise<PendingConversationCommand | null> {
     const turnInput = normalizeComposerTurnInput(payload)
     if (!threadId || !turnInput.hasContent) return null
 
-    const item = buildLocalMessageOutboxItem({
+    const item = buildPendingConversationCommand({
       threadId,
       payload: {
         text: turnInput.text,
@@ -866,21 +746,14 @@ export function useDesktopState() {
         contexts: payload.contexts,
       },
     })
-    await persistOutboxItem(item)
-    // A queued follow-up is visible immediately, but it must not be bound to
-    // the currently active turn. Registration happens when this item drains.
+    // Core owns the optimistic row immediately. Browser storage must never
+    // become a second durable queue that can resurrect stale commands after
+    // a refresh or service deployment.
     ensureOutboxOptimisticUserMessage(item)
     return item
   }
 
-  async function submitOutboxItem(item: LocalMessageOutboxItem, mode: 'queue' | 'steer'): Promise<void> {
-    const attemptItem: LocalMessageOutboxItem = {
-      ...item,
-      attempts: item.attempts + 1,
-      updatedAtIso: new Date().toISOString(),
-      lastError: undefined,
-    }
-    await persistOutboxItem(attemptItem)
+  async function submitOutboxItem(item: PendingConversationCommand, mode: 'queue' | 'steer'): Promise<void> {
     isSendingMessage.value = true
     error.value = ''
     const modelId = selectedModelId.value.trim()
@@ -904,14 +777,8 @@ export function useDesktopState() {
           ...(permissionOverride?.sandboxPolicy ? { sandboxPolicy: permissionOverride.sandboxPolicy } : {}),
         },
       })
-      const current = (outboxItemsByThreadId.value[item.threadId] ?? []).find((row) => row.id === item.id)
-      if (current && current.status !== 'failed') await deleteOutboxItem(current)
     } catch (unknownError) {
       const message = unknownError instanceof Error ? unknownError.message : 'Conversation command was not accepted.'
-      const current = (outboxItemsByThreadId.value[item.threadId] ?? []).find((row) => row.id === item.id)
-      if (!current?.turnId) {
-        await persistOutboxItem({ ...(current ?? attemptItem), status: 'failed', lastError: message, updatedAtIso: new Date().toISOString() })
-      }
       error.value = message
       throw unknownError
     } finally {
@@ -963,41 +830,34 @@ export function useDesktopState() {
     const normalizedItemId = itemId.trim()
     if (!normalizedThreadId || !normalizedItemId) return
 
-    let item = (outboxItemsByThreadId.value[normalizedThreadId] ?? []).find((row) => row.id === normalizedItemId)
-    if (!item) {
-      const failed = coreConversations.stateFor(normalizedThreadId).messages.find((message) => (
-        message.id === `user:${normalizedItemId}` && message.role === 'user' && message.outbox?.status === 'failed'
-      ))
-      if (!failed) return
-      const replacement = await enqueueMessageForThread(normalizedThreadId, {
-        text: failed.text,
-        images: (failed.images ?? []).map((url, index) => {
-          const encodedPath = url.startsWith('local-image://') ? url.slice('local-image://'.length) : ''
-          let path = url
-          if (encodedPath) {
-            try { path = decodeURIComponent(encodedPath) } catch { path = encodedPath }
-          }
-          return { id: `retry-image-${String(index)}`, name: `image-${String(index + 1)}`, path, url, mimeType: 'application/octet-stream' }
-        }),
-        skills: (failed.skills ?? []).map((skill) => ({ ...skill, description: '', displayName: skill.displayName ?? skill.name })),
-      })
-      if (!replacement) return
-      item = replacement
-      coreConversations.discard(normalizedThreadId, normalizedItemId)
-    }
-    if (!item || item.status === 'sending') return
-
-    await submitOutboxItem(item, coreConversations.stateFor(normalizedThreadId).activeTurnId ? 'steer' : 'queue')
+    const failed = coreConversations.stateFor(normalizedThreadId).messages.find((message) => (
+      message.id === `user:${normalizedItemId}` && message.role === 'user' && message.outbox?.status === 'failed'
+    ))
+    if (!failed) return
+    const replacement = await enqueueMessageForThread(normalizedThreadId, {
+      text: failed.text,
+      images: (failed.images ?? []).map((url, index) => {
+        const encodedPath = url.startsWith('local-image://') ? url.slice('local-image://'.length) : ''
+        let path = url
+        if (encodedPath) {
+          try { path = decodeURIComponent(encodedPath) } catch { path = encodedPath }
+        }
+        return { id: `retry-image-${String(index)}`, name: `image-${String(index + 1)}`, path, url, mimeType: 'application/octet-stream' }
+      }),
+      skills: (failed.skills ?? []).map((skill) => ({ ...skill, description: '', displayName: skill.displayName ?? skill.name })),
+    })
+    if (!replacement) return
+    coreConversations.discard(normalizedThreadId, normalizedItemId)
+    await submitOutboxItem(replacement, coreConversations.stateFor(normalizedThreadId).activeTurnId ? 'steer' : 'queue')
   }
 
   async function deleteQueuedMessage(threadId: string, itemId: string): Promise<void> {
     const normalizedThreadId = threadId.trim()
     const normalizedItemId = itemId.trim()
     if (!normalizedThreadId || !normalizedItemId) return
-    const item = (outboxItemsByThreadId.value[normalizedThreadId] ?? []).find((row) => row.id === normalizedItemId)
-    if (item?.status === 'sending') return
+    const message = coreConversations.stateFor(normalizedThreadId).messages.find((row) => row.id === `user:${normalizedItemId}`)
+    if (message?.outbox?.status !== 'failed') return
     removeOptimisticUserMessage(normalizedThreadId, normalizedItemId)
-    if (item) await deleteOutboxItem(item)
   }
 
   async function sendMessageToNewThread(payload: ComposerSubmission<UiComposerContextKind>, cwd: string): Promise<string> {
