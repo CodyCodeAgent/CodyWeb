@@ -8,7 +8,6 @@ import { WebSocket } from 'ws'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   APP_SERVER_DIAGNOSTICS_RPC_TIMEOUT_MS,
-  APP_SERVER_RESTART_COOLDOWN_MS,
   APP_SERVER_RPC_TIMEOUT_MS,
   attachCodexBridgeWebSocketServer,
   CODEX_APP_SERVER_ARGS,
@@ -34,7 +33,6 @@ describe('app-server launch contract', () => {
   it('uses bounded RPC timeouts for stuck bridge requests', () => {
     expect(APP_SERVER_RPC_TIMEOUT_MS).toBeGreaterThan(APP_SERVER_DIAGNOSTICS_RPC_TIMEOUT_MS)
     expect(APP_SERVER_DIAGNOSTICS_RPC_TIMEOUT_MS).toBeGreaterThan(0)
-    expect(APP_SERVER_RESTART_COOLDOWN_MS).toBeLessThan(APP_SERVER_DIAGNOSTICS_RPC_TIMEOUT_MS)
     expect(appServerRpcTimeoutMessage('thread/list', 1234))
       .toBe('codex app-server RPC thread/list timed out after 1234ms')
   })

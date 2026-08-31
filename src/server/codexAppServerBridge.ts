@@ -121,6 +121,9 @@ type McpServerDiagnostic = {
 
 type AppServerDiagnostics = {
   status: 'running' | 'stopped'
+  lifecycle: 'not_started' | 'running' | 'unavailable' | 'disposed'
+  startCount: number
+  unavailableReason: string | null
   pid: number | null
   initialized: boolean
   startedAtIso: string | null
@@ -618,7 +621,6 @@ async function handleRunWorkspaceWorkflowValidationWithNotifications(
 export const CODEX_APP_SERVER_ARGS = ['app-server', '--listen', 'stdio://'] as const
 export const APP_SERVER_RPC_TIMEOUT_MS = 20_000
 export const APP_SERVER_DIAGNOSTICS_RPC_TIMEOUT_MS = 5_000
-export const APP_SERVER_RESTART_COOLDOWN_MS = 1_750
 export function appServerRpcTimeoutMessage(method: string, timeoutMs: number): string {
   return `codex app-server RPC ${method} timed out after ${String(timeoutMs)}ms`
 }
@@ -648,7 +650,6 @@ class AppServerProcess {
       command: 'codex',
       args: [...CODEX_APP_SERVER_ARGS],
       rpcTimeoutMs: APP_SERVER_RPC_TIMEOUT_MS,
-      restartCooldownMs: APP_SERVER_RESTART_COOLDOWN_MS,
       initializeParams: {
         clientInfo: { name: 'cody-web-ui', title: 'CodyWeb', version: '0.5.0' },
         capabilities: { experimentalApi: true, requestAttestation: false },
