@@ -186,6 +186,13 @@ describe('bridge server request endpoints', () => {
     const globalScope = globalThis as typeof globalThis & Record<string, unknown>
     globalScope[sharedBridgeKey] = {
       appServer: fakeAppServer,
+      conversations: {
+        submit: async () => ({ clientCommandId: 'test-command' }),
+        attach: async () => {},
+        interrupt: async () => false,
+        subscribe: () => () => {},
+        dispose: async () => {},
+      },
       catalogSync: {
         start: () => {},
         stop: () => {},
@@ -301,6 +308,13 @@ describe('bridge server request endpoints', () => {
     const globalScope = globalThis as typeof globalThis & Record<string, unknown>
     globalScope[sharedBridgeKey] = {
       appServer: fakeAppServer,
+      conversations: {
+        submit: async () => ({ clientCommandId: 'test-command' }),
+        attach: async () => {},
+        interrupt: async () => false,
+        subscribe: () => () => {},
+        dispose: async () => {},
+      },
       catalogSync: {
         start: () => {},
         stop: () => {},

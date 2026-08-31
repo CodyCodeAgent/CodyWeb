@@ -1,31 +1,12 @@
-import type { ReasoningEffort } from '@codycodeagent/cody-web-core/protocol'
 import { normalizeCodexApiError } from './codexErrors'
 import { rpcCall } from './codexRpcClient'
 import { normalizeCatalogThreadGroups } from './normalizers/v2'
-import { toLocalImagePreviewUrl } from './normalizers/userMessageContent'
-import type { UiMessage, UiProjectGroup } from '../types/codex'
-import type { TurnPermissionOverride } from '../composables/desktopTurnPermissions'
+import type { UiProjectGroup } from '../types/codex'
 import { buildTurnUserInput, CodexSessionCatalog, CodexThreadCommands } from '@codycodeagent/cody-web-core/session'
-import {
-  conversationTranscriptFromState,
-  createConversationState,
-  reduceConversationEvents,
-  type CodexEvent,
-} from '@codycodeagent/cody-web-core/conversation'
-import type {
-  ComposerCollaborationModeOption,
-  ComposerImage,
-  ComposerSkill,
-} from '@codycodeagent/cody-web-core/composer'
-
-export type TurnCollaborationMode = {
-  mode: ComposerCollaborationModeOption['mode']
-  settings: {
-    model: string
-    reasoning_effort: ReasoningEffort | null
-    developer_instructions: string | null
-  }
-}
+import type { ExecutionContext, TurnInput } from '@codycodeagent/cody-web-core/session'
+import { fetchCodexJson, jsonPostInit, readRpcResult } from './codexHttpClient'
+import type { CodexEvent } from '@codycodeagent/cody-web-core/conversation'
+import type { ComposerImage, ComposerSkill } from '@codycodeagent/cody-web-core/composer'
 
 async function callRpc<T>(method: string, params?: unknown): Promise<T> {
   try {
@@ -42,28 +23,14 @@ async function getThreadGroupsV2(archived = false): Promise<UiProjectGroup[]> {
   return normalizeCatalogThreadGroups(await sessionCatalog.listThreads({ archived }))
 }
 
-async function getThreadMessagesV2(threadId: string): Promise<UiMessage[]> {
+export async function getThreadEvents(threadId: string): Promise<CodexEvent[]> {
   const normalizedThreadId = threadId.trim()
   if (!normalizedThreadId) return []
-  const snapshot = await sessionCatalog.readThreadSnapshot(normalizedThreadId)
-  return normalizeThreadMessages(normalizedThreadId, snapshot.events)
-}
-
-function normalizeThreadMessages(threadId: string, events: CodexEvent[]): UiMessage[] {
-  const state = reduceConversationEvents(createConversationState(threadId), events)
-  return conversationTranscriptFromState(state).map((message): UiMessage => ({
-    ...message,
-    ...(message.images?.length ? {
-      images: message.images.map((image) => image.startsWith('/') ? toLocalImagePreviewUrl(image) : image),
-    } : {}),
-    ...(message.skills?.length ? {
-      skills: message.skills.map((skill) => ({
-        ...skill,
-        displayName: skill.displayName ?? skill.name,
-        description: '',
-      })),
-    } : {}),
-  }))
+  try {
+    return (await sessionCatalog.readThreadSnapshot(normalizedThreadId)).events
+  } catch (error) {
+    throw normalizeCodexApiError(error, `Failed to load thread ${normalizedThreadId}`, 'thread/read')
+  }
 }
 
 export async function getThreadGroups(archived = false): Promise<UiProjectGroup[]> {
@@ -72,33 +39,6 @@ export async function getThreadGroups(archived = false): Promise<UiProjectGroup[
   } catch (error) {
     throw normalizeCodexApiError(error, 'Failed to load thread groups', 'thread/list')
   }
-}
-
-export async function getThreadMessages(threadId: string): Promise<UiMessage[]> {
-  try {
-    return await getThreadMessagesV2(threadId)
-  } catch (error) {
-    throw normalizeCodexApiError(error, `Failed to load thread ${threadId}`, 'thread/read')
-  }
-}
-
-/**
- * A persisted browser activity flag is only a hint. It can survive a server
- * restart or a dropped terminal notification, so queue admission must defer
- * to Codex's native thread status when no local turn id is known.
- */
-export async function getThreadRuntimeStatus(threadId: string): Promise<'notLoaded' | 'idle' | 'systemError' | 'active'> {
-  const normalizedThreadId = threadId.trim()
-  if (!normalizedThreadId) return 'notLoaded'
-  try {
-    return (await sessionCatalog.readThreadSnapshot(normalizedThreadId, false)).summary.status
-  } catch (error) {
-    throw normalizeCodexApiError(error, `Failed to read runtime status for thread ${normalizedThreadId}`, 'thread/read')
-  }
-}
-
-export async function resumeThread(threadId: string): Promise<void> {
-  await threadCommands.resumeThread(threadId)
 }
 
 export async function renameThread(threadId: string, name: string): Promise<void> {
@@ -137,65 +77,41 @@ export async function startThread(cwd?: string, model?: string): Promise<string>
   }
 }
 
-export async function startThreadTurn(
-  threadId: string,
-  text: string,
-  images: ComposerImage[],
-  skills: ComposerSkill[],
-  model?: string,
-  effort?: ReasoningEffort,
-  collaborationMode?: TurnCollaborationMode | null,
-  permissionOverride?: TurnPermissionOverride | null,
-): Promise<string> {
-  try {
-    const params = buildTurnStartParams(text, images, skills, model, effort, collaborationMode, permissionOverride)
-    return await threadCommands.startTurn(threadId, params)
-  } catch (error) {
-    throw normalizeCodexApiError(error, `Failed to start turn for thread ${threadId}`, 'turn/start')
-  }
+/** Submit through the one process-wide Core SessionManager owner. */
+export async function submitThreadCommand(input: {
+  threadId: string
+  clientCommandId: string
+  mode: 'queue' | 'steer'
+  turnInput: TurnInput
+  context?: ExecutionContext
+}): Promise<{ clientCommandId: string }> {
+  const { payload, status } = await fetchCodexJson('/codex-api/conversations/submit', {
+    init: jsonPostInit({
+      threadId: input.threadId,
+      clientCommandId: input.clientCommandId,
+      mode: input.mode,
+      context: input.context ?? { thread: {} },
+      input: input.turnInput,
+    }),
+    method: 'conversation/submit',
+    networkErrorMessage: 'Conversation command failed before request was sent',
+    httpErrorMessage: 'Conversation command failed',
+    timeoutMs: 25_000,
+  })
+  return readRpcResult(payload, status, 'conversation/submit', 'Conversation submit returned malformed envelope')
 }
 
-/**
- * A browser can retain the prior App Server generation after the server has
- * restarted. The shared Core command retries only an explicit native
- * `thread not found` by materializing the durable thread once before retrying
- * the turn. Timeouts and generic RPC errors are deliberately never retried.
- */
-export async function startThreadTurnWithResumeRecovery(
-  threadId: string,
-  text: string,
-  images: ComposerImage[],
-  skills: ComposerSkill[],
-  model?: string,
-  effort?: ReasoningEffort,
-  collaborationMode?: TurnCollaborationMode | null,
-  permissionOverride?: TurnPermissionOverride | null,
-): Promise<string> {
-  try {
-    const params = buildTurnStartParams(text, images, skills, model, effort, collaborationMode, permissionOverride)
-    return await threadCommands.startTurnWithResumeRecovery(threadId, params)
-  } catch (error) {
-    throw normalizeCodexApiError(error, `Failed to start turn for thread ${threadId}`, 'turn/start')
-  }
-}
-
-function buildTurnStartParams(
-  text: string,
-  images: ComposerImage[],
-  skills: ComposerSkill[],
-  model?: string,
-  effort?: ReasoningEffort,
-  collaborationMode?: TurnCollaborationMode | null,
-  permissionOverride?: TurnPermissionOverride | null,
-) {
-  return {
-    input: buildTurnInput(text, images, skills),
-    ...(typeof model === 'string' && model.length > 0 ? { model } : {}),
-    ...(typeof effort === 'string' && effort.length > 0 ? { effort } : {}),
-    ...(collaborationMode ? { collaborationMode } : {}),
-    ...(permissionOverride?.approvalPolicy ? { approvalPolicy: permissionOverride.approvalPolicy } : {}),
-    ...(permissionOverride?.sandboxPolicy ? { sandboxPolicy: permissionOverride.sandboxPolicy } : {}),
-  }
+export async function attachThreadConversation(threadId: string): Promise<void> {
+  const normalizedThreadId = threadId.trim()
+  if (!normalizedThreadId) return
+  const { payload, status } = await fetchCodexJson('/codex-api/conversations/attach', {
+    init: jsonPostInit({ threadId: normalizedThreadId, context: { thread: {} } }),
+    method: 'conversation/attach',
+    networkErrorMessage: 'Conversation owner attach failed before request was sent',
+    httpErrorMessage: 'Conversation owner attach failed',
+    timeoutMs: 25_000,
+  })
+  readRpcResult(payload, status, 'conversation/attach', 'Conversation attach returned malformed envelope')
 }
 
 export function buildTurnInput(
@@ -210,31 +126,19 @@ export function buildTurnInput(
   })
 }
 
-export async function steerThreadTurn(
-  threadId: string,
-  expectedTurnId: string,
-  text: string,
-  images: ComposerImage[],
-  skills: ComposerSkill[],
-): Promise<void> {
-  const normalizedThreadId = threadId.trim()
-  const normalizedTurnId = expectedTurnId.trim()
-  if (!normalizedThreadId) return
-
-  try {
-    await threadCommands.steerTurn(normalizedThreadId, normalizedTurnId, buildTurnInput(text, images, skills))
-  } catch (error) {
-    throw normalizeCodexApiError(error, `Failed to steer turn for thread ${normalizedThreadId}`, 'turn/steer')
-  }
-}
-
 export async function interruptThreadTurn(threadId: string, turnId?: string): Promise<void> {
   const normalizedThreadId = threadId.trim()
-  const normalizedTurnId = turnId?.trim() || ''
   if (!normalizedThreadId) return
 
   try {
-    await threadCommands.interruptTurn(normalizedThreadId, normalizedTurnId)
+    const { payload, status } = await fetchCodexJson('/codex-api/conversations/interrupt', {
+      init: jsonPostInit({ threadId: normalizedThreadId, context: { thread: {} } }),
+      method: 'conversation/interrupt',
+      networkErrorMessage: 'Conversation interrupt failed before request was sent',
+      httpErrorMessage: 'Conversation interrupt failed',
+      timeoutMs: 25_000,
+    })
+    readRpcResult(payload, status, 'conversation/interrupt', 'Conversation interrupt returned malformed envelope')
   } catch (error) {
     throw normalizeCodexApiError(error, `Failed to interrupt turn for thread ${normalizedThreadId}`, 'turn/interrupt')
   }

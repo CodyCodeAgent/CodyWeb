@@ -107,7 +107,7 @@ describe('notificationFromRpcNotification', () => {
     })
   })
 
-  it('keeps retryable reconnect diagnostics quiet but surfaces an exhausted reconnect', () => {
+  it('keeps upstream transport diagnostics out of the product notification center', () => {
     expect(notificationFromRpcNotification(buildNotification('error', {
       threadId: 'thread-1',
       turnId: 'turn-1',
@@ -118,11 +118,7 @@ describe('notificationFromRpcNotification', () => {
       threadId: 'thread-1',
       turnId: 'turn-1',
       message: 'Reconnecting... 5/5',
-    }))).toMatchObject({
-      kind: 'turn-failed',
-      severity: 'danger',
-      body: 'Codex 上游响应流恢复失败，未自动重发。Reconnecting... 5/5',
-    })
+    }))).toBeNull()
   })
 })
 

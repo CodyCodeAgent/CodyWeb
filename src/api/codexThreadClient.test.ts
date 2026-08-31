@@ -1,18 +1,24 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  attachThreadConversation,
   buildTurnInput,
+  getThreadEvents,
   getThreadGroups,
-  getThreadMessages,
   startThread,
-  startThreadTurn,
-  startThreadTurnWithResumeRecovery,
+  submitThreadCommand,
 } from './codexThreadClient'
 import type { Thread } from '@codycodeagent/cody-web-core/protocol'
 
 const rpcMock = vi.hoisted(() => ({
   rpcCall: vi.fn(),
 }))
+const httpMock = vi.hoisted(() => ({
+  fetchCodexJson: vi.fn(),
+  jsonPostInit: vi.fn((body: unknown) => ({ method: 'POST', body: JSON.stringify(body) })),
+  readRpcResult: vi.fn((payload: unknown) => (payload as { result: unknown }).result),
+}))
 vi.mock('./codexRpcClient', () => rpcMock)
+vi.mock('./codexHttpClient', () => httpMock)
 
 afterEach(() => {
   vi.clearAllMocks()
@@ -112,7 +118,7 @@ describe('codex thread client', () => {
     })
   })
 
-  it('loads the authoritative native Thread transcript directly through RPC', async () => {
+  it('loads authoritative native Thread events for the Core controller', async () => {
     rpcMock.rpcCall.mockResolvedValue({
       thread: thread({
         turns: [{
@@ -135,13 +141,11 @@ describe('codex thread client', () => {
       }),
     })
 
-    await expect(getThreadMessages(' thread-1 ')).resolves.toEqual([
-      expect.objectContaining({
-        id: 'tool:cmd-1', messageType: 'tool.command',
-        tool: expect.objectContaining({ summary: 'npm test', output: '2 passed', status: 'completed' }),
-      }),
-      expect.objectContaining({ id: 'agent:answer-1', role: 'assistant', text: 'Done.' }),
-    ])
+    await expect(getThreadEvents(' thread-1 ')).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'tool.completed', itemId: 'cmd-1' }),
+      expect.objectContaining({ type: 'assistant.completed', itemId: 'answer-1' }),
+      expect.objectContaining({ type: 'turn.completed', turnId: 'turn-1' }),
+    ]))
 
     expect(rpcMock.rpcCall).toHaveBeenCalledWith('thread/read', {
       threadId: 'thread-1',
@@ -160,117 +164,23 @@ describe('codex thread client', () => {
     })
   })
 
-  it('starts turns with plan collaboration settings when selected', async () => {
-    rpcMock.rpcCall.mockResolvedValue({ turn: { id: ' turn-1 ' } })
+  it('attaches and submits only through the process-wide conversation owner', async () => {
+    httpMock.fetchCodexJson
+      .mockResolvedValueOnce({ payload: { result: { attached: true } }, status: 200 })
+      .mockResolvedValueOnce({ payload: { result: { clientCommandId: 'command-1' } }, status: 202 })
 
-    await expect(startThreadTurn(
-      'thread-1',
-      'hello',
-      [],
-      [],
-      'gpt-5',
-      'medium',
-      {
-        mode: 'plan',
-        settings: {
-          model: 'gpt-5',
-          reasoning_effort: 'medium',
-          developer_instructions: null,
-        },
-      },
-    )).resolves.toBe('turn-1')
+    await expect(attachThreadConversation(' thread-1 ')).resolves.toBeUndefined()
+    await expect(submitThreadCommand({
+      threadId: 'thread-1', clientCommandId: 'command-1', mode: 'queue',
+      turnInput: { input: [{ type: 'text', text: 'hello', text_elements: [] }] },
+    })).resolves.toEqual({ clientCommandId: 'command-1' })
 
-    expect(rpcMock.rpcCall).toHaveBeenCalledWith('turn/start', {
-      threadId: 'thread-1',
-      input: [{ type: 'text', text: 'hello', text_elements: [] }],
-      model: 'gpt-5',
-      effort: 'medium',
-      collaborationMode: {
-        mode: 'plan',
-        settings: {
-          model: 'gpt-5',
-          reasoning_effort: 'medium',
-          developer_instructions: null,
-        },
-      },
-    })
-  })
-
-  it('starts turns with explicit default collaboration mode when selected', async () => {
-    rpcMock.rpcCall.mockResolvedValue({ turn: { id: ' turn-1 ' } })
-
-    await expect(startThreadTurn(
-      'thread-1',
-      'hello',
-      [],
-      [],
-      'gpt-5',
-      'medium',
-      {
-        mode: 'default',
-        settings: {
-          model: 'gpt-5',
-          reasoning_effort: 'medium',
-          developer_instructions: null,
-        },
-      },
-    )).resolves.toBe('turn-1')
-
-    expect(rpcMock.rpcCall).toHaveBeenCalledWith('turn/start', {
-      threadId: 'thread-1',
-      input: [{ type: 'text', text: 'hello', text_elements: [] }],
-      model: 'gpt-5',
-      effort: 'medium',
-      collaborationMode: {
-        mode: 'default',
-        settings: {
-          model: 'gpt-5',
-          reasoning_effort: 'medium',
-          developer_instructions: null,
-        },
-      },
-    })
-  })
-
-  it('materializes a durable thread once when turn/start reports it missing', async () => {
-    rpcMock.rpcCall
-      .mockRejectedValueOnce(new Error('thread not found: thread-1'))
-      .mockResolvedValueOnce({ thread: thread({ id: 'thread-1' }) })
-      .mockResolvedValueOnce({ turn: { id: 'turn-recovered' } })
-
-    await expect(startThreadTurnWithResumeRecovery('thread-1', 'continue', [], [])).resolves.toBe('turn-recovered')
-
-    expect(rpcMock.rpcCall).toHaveBeenNthCalledWith(1, 'turn/start', {
-      threadId: 'thread-1', input: [{ type: 'text', text: 'continue', text_elements: [] }],
-    })
-    expect(rpcMock.rpcCall).toHaveBeenNthCalledWith(2, 'thread/resume', { threadId: 'thread-1' })
-    expect(rpcMock.rpcCall).toHaveBeenNthCalledWith(3, 'turn/start', {
-      threadId: 'thread-1', input: [{ type: 'text', text: 'continue', text_elements: [] }],
-    })
-  })
-
-  it('starts turns with explicit permission overrides', async () => {
-    rpcMock.rpcCall.mockResolvedValue({ turn: { id: ' turn-1 ' } })
-
-    await expect(startThreadTurn(
-      'thread-1',
-      'hello',
-      [],
-      [],
-      undefined,
-      undefined,
-      null,
-      {
-        approvalPolicy: 'never',
-        sandboxPolicy: { type: 'dangerFullAccess' },
-      },
-    )).resolves.toBe('turn-1')
-
-    expect(rpcMock.rpcCall).toHaveBeenCalledWith('turn/start', {
-      threadId: 'thread-1',
-      input: [{ type: 'text', text: 'hello', text_elements: [] }],
-      approvalPolicy: 'never',
-      sandboxPolicy: { type: 'dangerFullAccess' },
-    })
+    expect(httpMock.fetchCodexJson).toHaveBeenNthCalledWith(1, '/codex-api/conversations/attach', expect.objectContaining({
+      method: 'conversation/attach',
+    }))
+    expect(httpMock.fetchCodexJson).toHaveBeenNthCalledWith(2, '/codex-api/conversations/submit', expect.objectContaining({
+      method: 'conversation/submit',
+    }))
+    expect(rpcMock.rpcCall).not.toHaveBeenCalledWith('turn/start', expect.anything())
   })
 })

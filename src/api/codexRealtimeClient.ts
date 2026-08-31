@@ -1,4 +1,9 @@
 import { asRecord } from './protocolValueReaders'
+import type { CodexEvent } from '@codycodeagent/cody-web-core/conversation'
+import {
+  createReconnectingConversationSocket,
+  type ReconnectingSocket,
+} from '@codycodeagent/cody-web-core/client'
 
 export type RpcNotification = {
   method: string
@@ -18,6 +23,17 @@ export type ProductNotification = {
   method: string
 }
 
+export type RealtimeConnectionPhase = 'idle' | 'connecting' | 'connected' | 'reconnecting'
+
+export type RealtimeConnectionSnapshot = {
+  phase: RealtimeConnectionPhase
+  reconnectAttempt: number
+  connectedAtIso: string
+  disconnectedAtIso: string
+  closeCode: number | null
+  closeReason: string
+}
+
 type BridgeWebSocketMessage =
   | {
       type: 'ready'
@@ -33,6 +49,11 @@ type BridgeWebSocketMessage =
       notification?: unknown
       atIso?: string
     }
+  | {
+      type: 'conversation'
+      event?: unknown
+      atIso?: string
+    }
 
 type ParsedBridgeWebSocketMessage =
   | {
@@ -43,6 +64,10 @@ type ParsedBridgeWebSocketMessage =
       type: 'product'
       notification: ProductNotification
     }
+  | {
+      type: 'conversation'
+      event: CodexEvent
+    }
 
 type SocketEventMap = {
   open: Event
@@ -51,7 +76,7 @@ type SocketEventMap = {
   error: Event
 }
 
-type RealtimeSocket = Pick<WebSocket, 'readyState' | 'close'> & {
+type RealtimeSocket = Pick<WebSocket, 'readyState' | 'close' | 'send'> & {
   addEventListener<K extends keyof SocketEventMap>(
     type: K,
     listener: (event: SocketEventMap[K]) => void,
@@ -68,6 +93,17 @@ type CodexRealtimeClientOptions = {
   getWindow?: () => Window | undefined
   getWebSocket?: () => RealtimeSocketConstructor | undefined
   nowIso?: () => string
+}
+
+function initialConnectionSnapshot(): RealtimeConnectionSnapshot {
+  return {
+    phase: 'idle',
+    reconnectAttempt: 0,
+    connectedAtIso: '',
+    disconnectedAtIso: '',
+    closeCode: null,
+    closeReason: '',
+  }
 }
 
 function defaultNowIso(): string {
@@ -155,6 +191,16 @@ export function parseBridgeWebSocketMessage(
       const notification = normalizeProductNotification(parsed.notification, nowIso())
       return notification ? { type: 'product', notification } : null
     }
+
+    if (parsed.type === 'conversation') {
+      const event = asRecord(parsed.event)
+      if (
+        event && typeof event.id === 'string' && typeof event.type === 'string' &&
+        typeof event.threadId === 'string' && typeof event.atIso === 'string' && asRecord(event.data)
+      ) {
+        return { type: 'conversation', event: event as unknown as CodexEvent }
+      }
+    }
   } catch {
     return null
   }
@@ -165,44 +211,30 @@ export function parseBridgeWebSocketMessage(
 export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = {}) {
   const rpcNotificationListeners = new Set<(value: RpcNotification) => void>()
   const productNotificationListeners = new Set<(value: ProductNotification) => void>()
-  let bridgeSocket: RealtimeSocket | null = null
-  let bridgeSocketReconnectTimer: number | null = null
-  let bridgeSocketReconnectDelayMs = 500
+  const connectionListeners = new Set<(value: RealtimeConnectionSnapshot) => void>()
+  const conversationEventListeners = new Set<(value: CodexEvent) => void>()
+  let bridgeSocket: ReconnectingSocket | null = null
+  let connectionSnapshot = initialConnectionSnapshot()
+  let hasConnected = false
 
   const getWindow = options.getWindow ?? defaultWindow
   const getWebSocket = options.getWebSocket ?? defaultWebSocket
   const nowIso = options.nowIso ?? defaultNowIso
 
   function hasBridgeSocketListeners(): boolean {
-    return rpcNotificationListeners.size > 0 || productNotificationListeners.size > 0
+    return rpcNotificationListeners.size > 0 || productNotificationListeners.size > 0 || conversationEventListeners.size > 0 || connectionListeners.size > 0
   }
 
-  function clearBridgeSocketReconnect(): void {
-    const windowRef = getWindow()
-    if (bridgeSocketReconnectTimer === null || !windowRef) return
-    windowRef.clearTimeout(bridgeSocketReconnectTimer)
-    bridgeSocketReconnectTimer = null
-  }
-
-  function scheduleBridgeSocketReconnect(): void {
-    const windowRef = getWindow()
-    if (!windowRef) return
-    if (!hasBridgeSocketListeners()) return
-    if (bridgeSocketReconnectTimer !== null) return
-
-    const delayMs = bridgeSocketReconnectDelayMs
-    bridgeSocketReconnectDelayMs = Math.min(10_000, bridgeSocketReconnectDelayMs * 1.6)
-    bridgeSocketReconnectTimer = windowRef.setTimeout(() => {
-      bridgeSocketReconnectTimer = null
-      ensureBridgeSocket()
-    }, delayMs)
+  function publishConnection(patch: Partial<RealtimeConnectionSnapshot>): void {
+    connectionSnapshot = { ...connectionSnapshot, ...patch }
+    for (const listener of connectionListeners) listener({ ...connectionSnapshot })
   }
 
   function closeBridgeSocketIfIdle(): void {
     if (hasBridgeSocketListeners()) return
-    clearBridgeSocketReconnect()
     bridgeSocket?.close()
     bridgeSocket = null
+    publishConnection({ phase: 'idle', reconnectAttempt: 0 })
   }
 
   function handleBridgeSocketMessage(rawData: MessageEvent['data']): void {
@@ -216,9 +248,11 @@ export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = 
       return
     }
 
-    for (const listener of productNotificationListeners) {
-      listener(message.notification)
+    if (message.type === 'product') {
+      for (const listener of productNotificationListeners) listener(message.notification)
+      return
     }
+    for (const listener of conversationEventListeners) listener(message.event)
   }
 
   function ensureBridgeSocket(): void {
@@ -227,33 +261,38 @@ export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = 
     if (!windowRef || !WebSocketRef) return
     if (!hasBridgeSocketListeners()) return
 
-    const openState = WebSocketRef.OPEN ?? 1
-    const connectingState = WebSocketRef.CONNECTING ?? 0
-    if (bridgeSocket && (bridgeSocket.readyState === openState || bridgeSocket.readyState === connectingState)) {
-      return
-    }
-
-    clearBridgeSocketReconnect()
-    const socket = new WebSocketRef(bridgeWebSocketUrl(windowRef))
-    bridgeSocket = socket
-
-    socket.addEventListener('open', () => {
-      bridgeSocketReconnectDelayMs = 500
+    if (bridgeSocket) return
+    publishConnection({
+      phase: hasConnected ? 'reconnecting' : 'connecting',
     })
-
-    socket.addEventListener('message', (event) => {
-      handleBridgeSocketMessage(event.data)
-    })
-
-    socket.addEventListener('close', () => {
-      if (bridgeSocket === socket) {
-        bridgeSocket = null
-      }
-      scheduleBridgeSocketReconnect()
-    })
-
-    socket.addEventListener('error', () => {
-      socket.close()
+    bridgeSocket = createReconnectingConversationSocket({
+      url: bridgeWebSocketUrl(windowRef),
+      createSocket: (url) => new WebSocketRef(url) as unknown as WebSocket,
+      parse(data) {
+        handleBridgeSocketMessage(data as MessageEvent['data'])
+        return null
+      },
+      listener(event) {
+        if (event.type === 'event') return
+        if (event.type === 'connected') {
+          hasConnected = true
+          publishConnection({
+            phase: 'connected',
+            reconnectAttempt: 0,
+            connectedAtIso: event.atIso ?? nowIso(),
+            closeCode: null,
+            closeReason: '',
+          })
+          return
+        }
+        publishConnection({
+          phase: 'reconnecting',
+          reconnectAttempt: event.reconnectAttempt ?? connectionSnapshot.reconnectAttempt + 1,
+          disconnectedAtIso: event.atIso ?? nowIso(),
+          closeCode: event.closeCode ?? null,
+          closeReason: event.closeReason ?? event.error ?? '',
+        })
+      },
     })
   }
 
@@ -285,7 +324,39 @@ export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = 
     }
   }
 
+  function subscribeConversationEvents(onEvent: (value: CodexEvent) => void): () => void {
+    if (!getWindow() || !getWebSocket()) return () => {}
+    conversationEventListeners.add(onEvent)
+    ensureBridgeSocket()
+    return () => {
+      conversationEventListeners.delete(onEvent)
+      closeBridgeSocketIfIdle()
+    }
+  }
+
+  function subscribeConnection(onConnection: (value: RealtimeConnectionSnapshot) => void): () => void {
+    if (!getWindow() || !getWebSocket()) return () => {}
+    connectionListeners.add(onConnection)
+    onConnection({ ...connectionSnapshot })
+    ensureBridgeSocket()
+    return () => {
+      connectionListeners.delete(onConnection)
+      closeBridgeSocketIfIdle()
+    }
+  }
+
+  function reconnectNow(): void {
+    if (!hasBridgeSocketListeners()) return
+    const socket = bridgeSocket
+    bridgeSocket = null
+    socket?.close()
+    ensureBridgeSocket()
+  }
+
   return {
+    reconnectNow,
+    subscribeConversationEvents,
+    subscribeConnection,
     subscribeProductNotifications,
     subscribeRpcNotifications,
   }
@@ -295,3 +366,6 @@ const defaultRealtimeClient = createCodexRealtimeClient()
 
 export const subscribeRpcNotifications = defaultRealtimeClient.subscribeRpcNotifications
 export const subscribeProductNotifications = defaultRealtimeClient.subscribeProductNotifications
+export const subscribeConversationEvents = defaultRealtimeClient.subscribeConversationEvents
+export const subscribeRealtimeConnection = defaultRealtimeClient.subscribeConnection
+export const reconnectCodexRealtime = defaultRealtimeClient.reconnectNow

@@ -22,7 +22,13 @@ import {
   readTurnId,
 } from '@codycodeagent/cody-web-core/protocol'
 import { latestTerminalTurnEvent } from '@codycodeagent/cody-web-core/conversation'
-import { CodexTurnRecoveryMonitor, normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
+import {
+  CodexSessionManager,
+  normalizeCodexNotification,
+  type ExecutionContext,
+  type TurnInput,
+} from '@codycodeagent/cody-web-core/session'
+import type { CodexEvent } from '@codycodeagent/cody-web-core/conversation'
 import { NotificationDispatcher, type NotificationDispatchEvent } from './notificationDispatchService.js'
 import { buildSecurityAccessSnapshot } from './securityAccess.js'
 import { appendCodexSessionEvent } from './sessionEventStore.js'
@@ -637,12 +643,6 @@ class AppServerProcess {
   private readonly notificationListeners = new Set<(value: { method: string; params: unknown }) => void>()
   private readonly pendingServerRequests = new Map<number, PendingServerRequest>()
   private readonly pendingServerRequestApprovalScopes = new Map<number, ToolingApprovalDecisionScope>()
-  /**
-   * Every raw RPC turn must be supervised too. CodyWeb clients issue turn/start
-   * through the gateway, rather than through CodexSessionManager, so this is
-   * the owner-side equivalent of the shared session lifecycle watchdog.
-   */
-  private readonly turnRecovery: CodexTurnRecoveryMonitor
   private nextSmokeServerRequestId = 900_000
 
   constructor() {
@@ -655,17 +655,6 @@ class AppServerProcess {
         capabilities: { experimentalApi: true, requestAttestation: false },
       },
     })
-    this.turnRecovery = new CodexTurnRecoveryMonitor({
-      inactivityTimeoutMs: 2 * 60 * 1000,
-      onInactive: async ({ threadId, turnId }) => {
-        try {
-          await this.host.call('turn/interrupt', { threadId, turnId }, { timeoutMs: APP_SERVER_DIAGNOSTICS_RPC_TIMEOUT_MS })
-        } catch (error) {
-          this.pushLog('warning', 'bridge', `Failed to interrupt inactive Codex turn ${turnId}: ${getErrorMessage(error, 'unknown error')}`)
-        }
-      },
-      onTerminal: (event) => this.emitRecoveredTerminal(event),
-    })
     this.host.subscribe((notification) => {
       if (notification.method === 'server/request') {
         const request = asRecord(notification.params)
@@ -676,7 +665,6 @@ class AppServerProcess {
       }
       // CodyWeb emits a richer resolved notification after policy/audit work.
       if (notification.method === 'server/request/resolved') return
-      const recoveredTerminalEvents = this.turnRecovery.observe(notification)
       if (notification.method === 'server/request/expired') {
         const request = asRecord(notification.params)
         if (request && typeof request.id === 'number') {
@@ -684,30 +672,29 @@ class AppServerProcess {
           this.pendingServerRequestApprovalScopes.delete(request.id)
         }
       }
-      // Do not forward a final retry event after its synthetic terminal event:
-      // reducers must never move a failed turn back to a retrying state.
-      if (recoveredTerminalEvents.length) {
-        for (const event of recoveredTerminalEvents) this.emitRecoveredTerminal(event)
-        return
-      }
       this.emitNotification(notification)
     })
   }
 
-  private emitRecoveredTerminal(event: { threadId: string; turnId?: string; data: Record<string, unknown> }): void {
-    this.pushLog('warning', 'bridge', `Codex turn ${event.turnId || 'unknown'} reached a terminal recovery failure.`)
-    this.emitNotification({
-      method: 'turn/failed',
-      params: {
-        threadId: event.threadId,
-        ...(event.turnId ? { turnId: event.turnId } : {}),
-        error: event.data.error,
-        cause: event.data.cause,
-        retryAttempt: event.data.retryAttempt,
-        retryLimit: event.data.retryLimit,
-        willRetry: event.data.willRetry,
-      },
-    })
+  /**
+   * A non-owning host view for the shared SessionManager. Product policy still
+   * owns server/request handling, while every ordinary runtime notification is
+   * normalized exactly once by Core for browser conversation consumers.
+   */
+  sessionHost(): CoreAppServerHost {
+    return {
+      ensureInitialized: () => this.host.ensureInitialized(),
+      call: (method, params, options) => this.host.call(method, params, options),
+      subscribe: (listener) => this.host.subscribe((notification) => {
+        if (notification.method === 'server/request' || notification.method === 'server/request/resolved') return
+        listener(notification)
+      }),
+      listPendingRequests: () => this.host.listPendingRequests(),
+      resolveServerRequest: (id, reply) => this.host.resolveServerRequest(id, reply),
+      diagnostics: () => this.host.diagnostics(),
+      failureReport: () => this.host.failureReport(),
+      dispose: async () => undefined,
+    }
   }
 
   private pushLog(
@@ -1051,13 +1038,7 @@ class AppServerProcess {
 
   async rpc(method: string, params: unknown, timeoutMs = APP_SERVER_RPC_TIMEOUT_MS): Promise<unknown> {
     await this.ensureInitialized(timeoutMs)
-    const result = await this.call(method, params, timeoutMs)
-    if (method === 'turn/start') {
-      const threadId = readThreadId(params)
-      const turnId = readTurnId(result)
-      if (threadId && turnId) this.turnRecovery.track({ threadId, turnId })
-    }
-    return result
+    return this.call(method, params, timeoutMs)
   }
 
   onNotification(listener: (value: { method: string; params: unknown }) => void): () => void {
@@ -1197,7 +1178,6 @@ class AppServerProcess {
   }
 
   dispose(): void {
-    this.turnRecovery.dispose()
     this.pendingServerRequests.clear()
     this.pendingServerRequestApprovalScopes.clear()
     void this.host.dispose()
@@ -1316,6 +1296,7 @@ type CodexBridgeMiddleware = ((req: IncomingMessage, res: ServerResponse, next: 
 
 type SharedBridgeState = {
   appServer: AppServerProcess
+  conversations: CodyWebConversationService
   catalogSync: CatalogSyncService
   tokenUsageReconciliation?: TokenUsageReconciliationService
   agentTasks?: AgentTaskService
@@ -1327,7 +1308,10 @@ type SharedBridgeState = {
 
 export type CodexBridgeWebSocketOptions = {
   authorizeUpgrade?: (req: IncomingMessage) => boolean
+  heartbeatIntervalMs?: number
 }
+
+export const CODEX_BRIDGE_WEBSOCKET_HEARTBEAT_MS = 30_000
 
 type BridgeWebSocketMessage =
   | {
@@ -1344,6 +1328,87 @@ type BridgeWebSocketMessage =
       notification: NotificationDispatchEvent
       atIso: string
     }
+  | {
+      type: 'conversation'
+      event: CodexEvent
+      atIso: string
+    }
+
+type ConversationSubmitRequest = {
+  threadId: string
+  clientCommandId: string
+  mode: 'queue' | 'steer'
+  context: ExecutionContext
+  input: TurnInput
+}
+
+/** One process-wide owner for native thread attachment, queueing and Turn ids. */
+class CodyWebConversationService {
+  private readonly manager: CodexSessionManager
+  private readonly attachedThreadIds = new Set<string>()
+  private readonly attachmentByThreadId = new Map<string, Promise<void>>()
+  private readonly listeners = new Set<(event: CodexEvent) => void>()
+  private readonly stopManagerEvents: () => void
+
+  constructor(host: CoreAppServerHost) {
+    this.manager = new CodexSessionManager({ host })
+    this.stopManagerEvents = this.manager.subscribe((event) => {
+      for (const listener of this.listeners) listener(event)
+    })
+  }
+
+  subscribe(listener: (event: CodexEvent) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  async attach(threadId: string, context: ExecutionContext): Promise<void> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) throw new Error('threadId is required')
+    await this.ensureAttached(normalizedThreadId, context)
+    this.manager.setContext(normalizedThreadId, context)
+  }
+
+  async submit(request: ConversationSubmitRequest): Promise<{ clientCommandId: string }> {
+    const threadId = request.threadId.trim()
+    const clientCommandId = request.clientCommandId.trim()
+    if (!threadId || !clientCommandId) throw new Error('threadId and clientCommandId are required')
+    await this.ensureAttached(threadId, request.context)
+    this.manager.setContext(threadId, request.context)
+    const submission = this.manager.submit(threadId, request.input, request.mode, clientCommandId)
+    // Submission acceptance is synchronous. Native acknowledgement and any
+    // failure are delivered as command.bound/command.failed events so an HTTP
+    // request never stays open behind a queued Turn.
+    return { clientCommandId: submission.clientCommandId }
+  }
+
+  async interrupt(threadId: string, context: ExecutionContext): Promise<boolean> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) return false
+    await this.ensureAttached(normalizedThreadId, context)
+    this.manager.setContext(normalizedThreadId, context)
+    return this.manager.interrupt(normalizedThreadId)
+  }
+
+  async dispose(): Promise<void> {
+    this.stopManagerEvents()
+    this.listeners.clear()
+    this.attachmentByThreadId.clear()
+    this.attachedThreadIds.clear()
+    await this.manager.dispose()
+  }
+
+  private async ensureAttached(threadId: string, context: ExecutionContext): Promise<void> {
+    if (this.attachedThreadIds.has(threadId)) return
+    const pending = this.attachmentByThreadId.get(threadId)
+    if (pending) return pending
+    const attaching = this.manager.resume({ id: threadId, threadId }, context)
+      .then(() => { this.attachedThreadIds.add(threadId) })
+      .finally(() => { this.attachmentByThreadId.delete(threadId) })
+    this.attachmentByThreadId.set(threadId, attaching)
+    return attaching
+  }
+}
 
 type ProductEventListener = (event: NotificationDispatchEvent) => void
 
@@ -1484,10 +1549,14 @@ function getSharedBridgeState(): SharedBridgeState {
         catalogSync: existing.catalogSync,
       })
     }
+    if (!existing.conversations) {
+      existing.conversations = new CodyWebConversationService(existing.appServer.sessionHost())
+    }
     return existing
   }
 
   const appServer = new AppServerProcess()
+  const conversations = new CodyWebConversationService(appServer.sessionHost())
   const catalogSync = new CatalogSyncService((method, params) => appServer.rpc(method, params))
   const tokenUsageReconciliation = new TokenUsageReconciliationService()
   const productEventHub = new ProductEventHub()
@@ -1548,6 +1617,7 @@ function getSharedBridgeState(): SharedBridgeState {
 
   const created: SharedBridgeState = {
     appServer,
+    conversations,
     catalogSync,
     tokenUsageReconciliation,
     agentTasks,
@@ -1621,11 +1691,14 @@ async function handleCheckpointHealthRoute(url: URL, res: ServerResponse): Promi
 }
 
 export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
-  const { appServer, catalogSync, tokenUsageReconciliation, agentTasks, methodCatalog, stopNotificationDispatch, productEventHub, feishuIntegration } = getSharedBridgeState()
+  const { appServer, conversations, catalogSync, tokenUsageReconciliation, agentTasks, methodCatalog, stopNotificationDispatch, productEventHub, feishuIntegration } = getSharedBridgeState()
   const rpc = (method: string, params: unknown): Promise<unknown> => appServer.rpc(method, params)
   const domainRoutes = [
     createGatewayRoutes({
       rpc,
+      attachConversation: (threadId, context) => conversations.attach(threadId, context as ExecutionContext),
+      submitConversation: (payload) => conversations.submit(payload as ConversationSubmitRequest),
+      interruptConversation: (threadId, context) => conversations.interrupt(threadId, context as ExecutionContext),
       respond: (payload) => appServer.respondToServerRequest(payload),
       listPending: () => appServer.listPendingServerRequests(),
       listMethods: () => methodCatalog.listMethods(),
@@ -1675,6 +1748,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     stopNotificationDispatch()
     productEventHub.clear()
     void feishuIntegration.stop()
+    void conversations.dispose()
     appServer.dispose()
     const globalScope = globalThis as typeof globalThis & {
       [SHARED_BRIDGE_KEY]?: SharedBridgeState
@@ -1691,9 +1765,22 @@ export function attachCodexBridgeWebSocketServer(
   server: HttpServer,
   options: CodexBridgeWebSocketOptions = {},
 ): () => void {
-  const { appServer, productEventHub } = getSharedBridgeState()
+  const { appServer, conversations, productEventHub } = getSharedBridgeState()
   const webSocketServer = new WebSocketServer({ noServer: true })
   const clients = new Set<WebSocket>()
+  const liveClients = new WeakMap<WebSocket, boolean>()
+  const heartbeatInterval = setInterval(() => {
+    for (const client of clients) {
+      if (client.readyState !== WebSocket.OPEN) continue
+      if (liveClients.get(client) === false) {
+        client.terminate()
+        continue
+      }
+      liveClients.set(client, false)
+      client.ping()
+    }
+  }, options.heartbeatIntervalMs ?? CODEX_BRIDGE_WEBSOCKET_HEARTBEAT_MS)
+  heartbeatInterval.unref?.()
 
   const onUpgrade = (req: IncomingMessage, socket: Socket, head: Buffer): void => {
     const url = new URL(req.url ?? '/', 'http://localhost')
@@ -1712,6 +1799,20 @@ export function attachCodexBridgeWebSocketServer(
 
   webSocketServer.on('connection', (socket) => {
     clients.add(socket)
+    liveClients.set(socket, true)
+    socket.on('pong', () => {
+      liveClients.set(socket, true)
+    })
+    socket.on('message', (data) => {
+      try {
+        const message = JSON.parse(String(data)) as { type?: string }
+        if (message.type === 'ping' && socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: 'pong', atIso: new Date().toISOString() }))
+        }
+      } catch {
+        // Browser-to-server messages are optional transport heartbeats only.
+      }
+    })
     sendBridgeWebSocketMessage(socket, {
       type: 'ready',
       atIso: new Date().toISOString(),
@@ -1733,9 +1834,18 @@ export function attachCodexBridgeWebSocketServer(
       })
     })
 
+    const unsubscribeConversationEvents = conversations.subscribe((event) => {
+      sendBridgeWebSocketMessage(socket, {
+        type: 'conversation',
+        event,
+        atIso: new Date().toISOString(),
+      })
+    })
+
     socket.on('close', () => {
       unsubscribeNotifications()
       unsubscribeProductEvents()
+      unsubscribeConversationEvents()
       clients.delete(socket)
     })
   })
@@ -1743,6 +1853,7 @@ export function attachCodexBridgeWebSocketServer(
   server.on('upgrade', onUpgrade)
 
   return () => {
+    clearInterval(heartbeatInterval)
     server.off('upgrade', onUpgrade)
     for (const client of clients) {
       client.close()

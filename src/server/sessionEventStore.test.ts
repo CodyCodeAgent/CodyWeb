@@ -158,7 +158,7 @@ describe('codexSessionEventFromNotification', () => {
     })
   })
 
-  it('persists an exhausted reconnect as a terminal task failure', () => {
+  it('does not persist an upstream transport diagnostic as a native terminal', () => {
     expect(codexSessionEventFromNotification(
       { cwd: '/repo', repoRoot: '/repo' },
       {
@@ -166,11 +166,7 @@ describe('codexSessionEventFromNotification', () => {
         atIso: '2026-07-05T10:00:00.000Z',
         params: { threadId: 'thread-1', turnId: 'turn-1', message: 'Reconnecting... 5/5' },
       },
-    )).toMatchObject({
-      kind: 'task_failed',
-      severity: 'danger',
-      summary: 'Codex 上游响应流恢复失败，未自动重发。Reconnecting... 5/5',
-    })
+    )).toBeNull()
 
     expect(codexSessionEventFromNotification(
       { cwd: '/repo', repoRoot: '/repo' },

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   bridgeWebSocketUrl,
   createCodexRealtimeClient,
@@ -13,6 +13,7 @@ class FakeWebSocket {
   readonly listeners = new Map<string, Array<(event: any) => void>>()
   readyState = FakeWebSocket.CONNECTING
   closeCount = 0
+  sent: string[] = []
 
   constructor(readonly url: string) {
     FakeWebSocket.instances.push(this)
@@ -29,6 +30,8 @@ class FakeWebSocket {
     this.readyState = 3
   }
 
+  send(value: string): void { this.sent.push(value) }
+
   emit(type: string, event: any = {}): void {
     for (const listener of this.listeners.get(type) ?? []) {
       listener(event)
@@ -43,6 +46,8 @@ function fakeWindow(protocol = 'http:', host = 'localhost:5173'): Window {
     clearTimeout: (() => undefined) as Window['clearTimeout'],
   } as unknown as Window
 }
+
+afterEach(() => vi.useRealTimers())
 
 describe('codex realtime client', () => {
   it('builds websocket URLs from the current page origin', () => {
@@ -148,5 +153,67 @@ describe('codex realtime client', () => {
     expect(socket.closeCount).toBe(0)
     unsubscribeProduct()
     expect(socket.closeCount).toBe(1)
+  })
+
+  it('publishes authoritative websocket connection state and reconnect diagnostics', () => {
+    vi.useFakeTimers()
+    FakeWebSocket.instances = []
+    const states: Array<Record<string, unknown>> = []
+    let now = 0
+    const client = createCodexRealtimeClient({
+      getWindow: () => fakeWindow(),
+      getWebSocket: () => FakeWebSocket,
+      nowIso: () => `2026-07-07T03:00:0${String(now++)}.000Z`,
+    })
+
+    const unsubscribe = client.subscribeConnection((state) => states.push(state))
+    expect(states.map((state) => state.phase)).toEqual(['idle', 'connecting'])
+
+    const firstSocket = FakeWebSocket.instances[0]
+    firstSocket.readyState = FakeWebSocket.OPEN
+    firstSocket.emit('open')
+    expect(states.at(-1)).toMatchObject({
+      phase: 'connected',
+      reconnectAttempt: 0,
+      closeCode: null,
+      closeReason: '',
+    })
+
+    firstSocket.readyState = 3
+    firstSocket.emit('close', { code: 1006, reason: 'network changed' })
+    expect(states.at(-1)).toMatchObject({
+      phase: 'reconnecting',
+      reconnectAttempt: 1,
+      closeCode: 1006,
+      closeReason: 'network changed',
+    })
+    vi.advanceTimersByTime(500)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    const secondSocket = FakeWebSocket.instances[1]
+    secondSocket.readyState = FakeWebSocket.OPEN
+    secondSocket.emit('open')
+    expect(states.at(-1)).toMatchObject({ phase: 'connected', reconnectAttempt: 0 })
+
+    unsubscribe()
+    expect(secondSocket.closeCount).toBe(1)
+  })
+
+  it('keeps one socket when connection and notification subscribers coexist', () => {
+    FakeWebSocket.instances = []
+    const client = createCodexRealtimeClient({
+      getWindow: () => fakeWindow(),
+      getWebSocket: () => FakeWebSocket,
+    })
+
+    const stopConnection = client.subscribeConnection(() => undefined)
+    const stopRpc = client.subscribeRpcNotifications(() => undefined)
+    const stopProduct = client.subscribeProductNotifications(() => undefined)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    stopConnection()
+    stopRpc()
+    expect(FakeWebSocket.instances[0].closeCount).toBe(0)
+    stopProduct()
+    expect(FakeWebSocket.instances[0].closeCount).toBe(1)
   })
 })

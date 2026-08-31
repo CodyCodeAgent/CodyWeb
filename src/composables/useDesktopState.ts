@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   buildTurnCollaborationMode,
   resolveComposerSubmitMode,
@@ -8,27 +8,17 @@ import {
 import {
   conversationFeedFromState,
   conversationLiveOverlayFromState,
-  conversationOverlayMessagesFromState,
-  conversationStateFromRegistry,
-  latestTerminalTurnEvent,
-  pruneConversationStateRegistry,
-  reduceConversationRegistryEvents,
+  conversationTranscriptFromState,
   type CodexEvent,
   type ConversationScrollState,
-  type ConversationStateRegistry,
 } from '@codycodeagent/cody-web-core/conversation'
 import {
   compactThread,
+  buildTurnInput,
   forkThread,
-  getThreadMessages,
-  getThreadRuntimeStatus,
   interruptThreadTurn,
   renameThread,
-  resumeThread,
   startThread,
-  startThreadTurn,
-  startThreadTurnWithResumeRecovery,
-  steerThreadTurn,
 } from '../api/codexThreadClient'
 import {
   fetchCatalog,
@@ -39,53 +29,26 @@ import {
 } from '../api/codexCatalogClient'
 import type { RpcNotification } from '../api/codexRealtimeClient'
 import {
-  extractThreadIdFromNotification,
-  extractTurnIdFromNotification,
-  isAgentContentEvent,
-  normalizeRealtimeNotification,
   readStartedThread,
-  readUserMessageCompleted,
 } from './realtimeNotificationReaders'
 import { useServerRequestState } from './useServerRequestState'
 import { useDesktopComposerState } from './useDesktopComposerState'
 import { useDesktopRealtimeState } from './useDesktopRealtimeState'
 import { useDesktopThreadState } from './useDesktopThreadState'
 import type { DesktopPlanState } from './desktopPlanState'
+import { useCoreConversationRegistry } from './useCoreConversationRegistry'
 import { shouldQueueEventDrivenSyncForMethod } from './realtimeSyncPolicy'
 import { useRateLimitState } from './useRateLimitState'
 import {
-  clearDesktopRealtimeSyncQueue,
-  consumeDesktopRealtimeSyncQueue,
-  createDesktopRealtimeSyncQueue,
-  hasPendingDesktopRealtimeSync,
-  queueDesktopRealtimeSync,
-} from './desktopRealtimeSyncQueue'
-import {
-  buildDisplayedMessages,
-  buildLiveOverlay,
   buildRollbackAuditMessage,
-  mergeMessages,
-  removeMessageById,
-  replaceMessageById,
-  removeRedundantLiveAgentMessages,
-  updateMessagesForThread,
-  upsertMessage,
-  updateTurnActivityState,
-  updateTurnErrorState,
-  type TurnActivityState,
-  type TurnErrorState,
-  type TurnSummaryState,
 } from './desktopMessageState'
 import {
   markThreadMessagesLoaded,
-  pruneDesktopThreadScopedState,
   setThreadLoadedVersion,
   shouldShowMessagesLoading,
 } from './desktopThreadScopedState'
 import { buildTurnPermissionOverride } from './desktopTurnPermissions'
 import {
-  buildPendingTurnActivity,
-  buildSteeringTurnActivity,
   normalizeComposerTurnInput,
   normalizeNewThreadTurnInput,
   normalizeThreadTextTurnInput,
@@ -97,6 +60,7 @@ import {
   saveLocalMessageOutboxItem,
   type LocalMessageOutboxItem,
 } from './localMessageOutbox'
+import { recoverOutboxItemAfterReload, selectReconciledOutboxItems } from './outboxReconciliation'
 import { normalizeThreadScrollState, saveProjectDisplayNames, saveProjectOrder, saveReadStateMap, saveThreadScrollStateMap } from './desktopStateStorage'
 import {
   areStringArraysEqual,
@@ -133,7 +97,6 @@ export function useDesktopState() {
   const threadState = useDesktopThreadState()
   const {
     projectGroups, sourceGroups, optimisticThreadById, selectedThreadId, isHiddenView,
-    persistedMessagesByThreadId,
     inProgressById, eventUnreadByThreadId, readStateByThreadId, scrollStateByThreadId,
     projectOrder, projectDisplayNameById, loadedVersionByThreadId, loadedMessagesByThreadId,
     resumedThreadById, allThreads, selectedThread, selectedThreadScrollState,
@@ -145,10 +108,9 @@ export function useDesktopState() {
     hydrate: hydrateTurnPreferencesFromSettingsStore, refreshCollaborationModes, refreshModelPreferences,
     setSelectedModelId, setSelectedReasoningEffort, setSelectedCollaborationModeName, setSelectedPermissionMode,
     setSelectedSubmitMode } = composerState
-  const turnActivityByThreadId = ref<Record<string, TurnActivityState>>({})
   const outboxItemsByThreadId = ref<Record<string, LocalMessageOutboxItem[]>>({})
-  const turnErrorByThreadId = ref<Record<string, TurnErrorState>>({})
-  const conversationStateByThreadId = ref<ConversationStateRegistry>({})
+  const coreConversations = useCoreConversationRegistry()
+  const conversationStateByThreadId = coreConversations.stateByThreadId
   const serverRequestState = useServerRequestState(selectedThreadId, (message) => { error.value = message })
   const pendingServerRequestsByThreadId = serverRequestState.byThreadId
   const {
@@ -164,26 +126,50 @@ export function useDesktopState() {
   const isSendingMessage = ref(false)
   const isInterruptingTurn = ref(false)
   const error = ref('')
-  const isPolling = ref(false)
   const hasLoadedThreads = ref(false)
   let eventSyncTimer: number | null = null
-  const realtimeSyncQueue = createDesktopRealtimeSyncQueue()
   let shouldAutoScrollOnNextAgentEvent = false
-  let localCoreEventSequence = 0
-  const optimisticUserMessageIdsByTurnId = new Map<string, string[]>()
-  const pendingOptimisticUserMessageIdsByThreadId = new Map<string, string[]>()
   const latestMessageLoadRequestIdByThreadId = new Map<string, number>()
   let nextMessageLoadRequestId = 0
   let latestThreadsRequestId = 0
   let nextOptimisticUserMessageId = 0
   let hasHydratedOutbox = false
-  const drainingOutboxThreadIds = new Set<string>()
-  const outboxRetryTimersByThreadId = new Map<string, number>()
   const directThreadRecoveryById = new Map<string, Promise<void>>()
+  const stopCoreEventSubscription = coreConversations.subscribeEvents((event) => {
+    const commandId = typeof event.data.clientCommandId === 'string' ? event.data.clientCommandId : event.itemId
+    if (event.type === 'command.bound' && commandId && event.turnId) {
+      const item = (outboxItemsByThreadId.value[event.threadId] ?? []).find((row) => row.id === commandId)
+      if (item) void persistOutboxItem({ ...item, turnId: event.turnId, status: 'sending', updatedAtIso: event.atIso })
+    }
+    if (event.type === 'command.failed' && commandId) {
+      const item = (outboxItemsByThreadId.value[event.threadId] ?? []).find((row) => row.id === commandId)
+      if (item) {
+        const message = typeof event.data.error === 'string' ? event.data.error : 'Command failed before a native Turn was created.'
+        void persistOutboxItem({ ...item, status: 'failed', lastError: message, updatedAtIso: event.atIso })
+        error.value = message
+      }
+    }
+    if (event.type === 'user.completed') void reconcileOutboxForThread(event.threadId)
+    const conversation = coreConversations.stateFor(event.threadId)
+    if (event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.interrupted') {
+      markThreadUnreadByEvent(event.threadId)
+      if (event.threadId === selectedThreadId.value) shouldAutoScrollOnNextAgentEvent = false
+    }
+    if (event.type === 'turn.failed' || event.type === 'turn.disconnected') {
+      const turnId = event.turnId || conversation.activeTurnId
+      const message = turnId ? conversation.turns[turnId]?.error ?? '' : ''
+      if (message) error.value = message
+    }
+    if (event.type === 'assistant.delta' || event.type === 'assistant.completed' || event.type === 'reasoning.delta' || event.type === 'plan.delta' || event.type === 'plan.replaced') {
+      if (event.threadId === selectedThreadId.value && shouldAutoScrollOnNextAgentEvent) {
+        setThreadScrollState(event.threadId, { scrollTop: 0, isAtBottom: true, scrollRatio: 1 })
+      }
+    }
+  })
 
   const selectedThreadServerRequests = serverRequestState.selected
   const selectedCoreConversation = computed(() => (
-    conversationStateFromRegistry(conversationStateByThreadId.value, selectedThreadId.value)
+    coreConversations.stateFor(selectedThreadId.value)
   ))
   const isLoadingMessages = computed(() => loadingMessagesByThreadId.value[selectedThreadId.value] === true)
   const hasLoadedSelectedMessages = computed(
@@ -191,20 +177,7 @@ export function useDesktopState() {
   )
   const allPendingServerRequests = serverRequestState.all
   const selectedLiveOverlay = computed(() => {
-    const coreOverlay = conversationLiveOverlayFromState(selectedCoreConversation.value)
-    const localOverlay = buildLiveOverlay(
-      selectedThreadId.value,
-      turnActivityByThreadId.value,
-      turnErrorByThreadId.value,
-    )
-    if (!coreOverlay) return localOverlay
-    if (!localOverlay) return coreOverlay
-    return {
-      activityLabel: coreOverlay.activityLabel || localOverlay.activityLabel,
-      activityDetails: coreOverlay.activityDetails.length ? coreOverlay.activityDetails : localOverlay.activityDetails,
-      reasoningText: coreOverlay.reasoningText || localOverlay.reasoningText,
-      errorText: coreOverlay.errorText || localOverlay.errorText,
-    }
+    return conversationLiveOverlayFromState(selectedCoreConversation.value)
   })
   const selectedStructuredPlan = computed<DesktopPlanState | null>(() => {
     const plan = selectedCoreConversation.value.plan
@@ -235,14 +208,7 @@ export function useDesktopState() {
     const threadId = selectedThreadId.value
     if (!threadId) return []
 
-    const persisted = persistedMessagesByThreadId.value[threadId] ?? []
-    const liveAgent = removeRedundantLiveAgentMessages(
-      conversationOverlayMessagesFromState(
-        conversationStateFromRegistry(conversationStateByThreadId.value, threadId),
-      ) as UiMessage[],
-      persisted,
-    )
-    return buildDisplayedMessages(persisted, liveAgent, completedTurnSummaryForThread(threadId))
+    return conversationTranscriptFromState(coreConversations.stateFor(threadId)) as UiMessage[]
   })
   const selectedQueuedMessages = computed<UiQueuedMessage[]>(() => queuedMessagesForThread(selectedThreadId.value))
 
@@ -324,44 +290,23 @@ export function useDesktopState() {
     // Keep its hydrated state until thread/read settles instead of treating it as
     // stale catalog data and discarding the transcript.
     if (selectedThreadId.value) activeThreadIds.add(selectedThreadId.value)
-    const pruned = pruneDesktopThreadScopedState({
-      readStateByThreadId: readStateByThreadId.value,
-      scrollStateByThreadId: scrollStateByThreadId.value,
-      loadedMessagesByThreadId: loadedMessagesByThreadId.value,
-      loadedVersionByThreadId: loadedVersionByThreadId.value,
-      resumedThreadById: resumedThreadById.value,
-      persistedMessagesByThreadId: persistedMessagesByThreadId.value,
-      turnActivityByThreadId: turnActivityByThreadId.value,
-      turnErrorByThreadId: turnErrorByThreadId.value,
-      eventUnreadByThreadId: eventUnreadByThreadId.value,
-      inProgressById: inProgressById.value,
-      pendingServerRequestsByThreadId: pendingServerRequestsByThreadId.value,
-    }, activeThreadIds)
-
-    if (pruned.readStateByThreadId !== readStateByThreadId.value) {
-      readStateByThreadId.value = pruned.readStateByThreadId
-      saveReadStateMap(pruned.readStateByThreadId)
-    }
-    if (pruned.scrollStateByThreadId !== scrollStateByThreadId.value) {
-      scrollStateByThreadId.value = pruned.scrollStateByThreadId
-      saveThreadScrollStateMap(pruned.scrollStateByThreadId)
-    }
-    loadedMessagesByThreadId.value = pruned.loadedMessagesByThreadId
-    loadedVersionByThreadId.value = pruned.loadedVersionByThreadId
-    resumedThreadById.value = pruned.resumedThreadById
-    persistedMessagesByThreadId.value = pruned.persistedMessagesByThreadId
-    turnActivityByThreadId.value = pruned.turnActivityByThreadId
-    turnErrorByThreadId.value = pruned.turnErrorByThreadId
+    const pruneMap = <T>(value: Record<string, T>): Record<string, T> => Object.fromEntries(
+      Object.entries(value).filter(([threadId]) => activeThreadIds.has(threadId)),
+    )
+    readStateByThreadId.value = pruneMap(readStateByThreadId.value)
+    saveReadStateMap(readStateByThreadId.value)
+    scrollStateByThreadId.value = pruneMap(scrollStateByThreadId.value)
+    saveThreadScrollStateMap(scrollStateByThreadId.value)
+    loadedMessagesByThreadId.value = pruneMap(loadedMessagesByThreadId.value)
+    loadedVersionByThreadId.value = pruneMap(loadedVersionByThreadId.value)
+    resumedThreadById.value = pruneMap(resumedThreadById.value)
     messageLoadErrorByThreadId.value = Object.fromEntries(
       Object.entries(messageLoadErrorByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
     )
-    eventUnreadByThreadId.value = pruned.eventUnreadByThreadId
-    inProgressById.value = pruned.inProgressById
-    pendingServerRequestsByThreadId.value = pruned.pendingServerRequestsByThreadId
-    conversationStateByThreadId.value = pruneConversationStateRegistry(
-      conversationStateByThreadId.value,
-      activeThreadIds,
-    )
+    eventUnreadByThreadId.value = pruneMap(eventUnreadByThreadId.value)
+    inProgressById.value = pruneMap(inProgressById.value)
+    pendingServerRequestsByThreadId.value = pruneMap(pendingServerRequestsByThreadId.value)
+    coreConversations.prune(activeThreadIds)
     loadingMessagesByThreadId.value = Object.fromEntries(
       Object.entries(loadingMessagesByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
     )
@@ -399,25 +344,24 @@ export function useDesktopState() {
     applyThreadFlags()
   }
 
+  // Sidebar activity is a projection of Core state, including state replaced
+  // by a native history refresh. It must never be advanced independently by
+  // an HTTP acknowledgement or a product event handler.
+  watch(conversationStateByThreadId, (states) => {
+    let nextState = inProgressById.value
+    for (const [threadId, state] of Object.entries(states)) {
+      nextState = updateThreadBooleanState(nextState, threadId, Boolean(state.activeTurnId))
+    }
+    if (nextState === inProgressById.value) return
+    inProgressById.value = nextState
+    applyThreadFlags()
+  })
+
   function markThreadUnreadByEvent(threadId: string): void {
     const nextState = markThreadUnreadState(eventUnreadByThreadId.value, threadId, selectedThreadId.value)
     if (nextState !== eventUnreadByThreadId.value) {
       eventUnreadByThreadId.value = nextState
       applyThreadFlags()
-    }
-  }
-
-  function setTurnActivityForThread(threadId: string, activity: TurnActivityState | null): void {
-    const nextState = updateTurnActivityState(turnActivityByThreadId.value, threadId, activity)
-    if (nextState !== turnActivityByThreadId.value) {
-      turnActivityByThreadId.value = nextState
-    }
-  }
-
-  function setTurnErrorForThread(threadId: string, message: string | null): void {
-    const nextState = updateTurnErrorState(turnErrorByThreadId.value, threadId, message)
-    if (nextState !== turnErrorByThreadId.value) {
-      turnErrorByThreadId.value = nextState
     }
   }
 
@@ -447,14 +391,6 @@ export function useDesktopState() {
       [threadId]: normalizedState,
     }
     saveThreadScrollStateMap(scrollStateByThreadId.value)
-  }
-
-  function setPersistedMessagesForThread(threadId: string, nextMessages: UiMessage[]): void {
-    persistedMessagesByThreadId.value = updateMessagesForThread(
-      persistedMessagesByThreadId.value,
-      threadId,
-      nextMessages,
-    )
   }
 
   function sortOutboxItems(items: LocalMessageOutboxItem[]): LocalMessageOutboxItem[] {
@@ -510,20 +446,11 @@ export function useDesktopState() {
       }))
   }
 
-  function isMatchingOutboxMessage(item: LocalMessageOutboxItem, message: UiMessage): boolean {
-    if (message.role !== 'user') return false
-    if (item.turnId && message.turnId === item.turnId) return true
-    if (item.text.replace(/\s+/gu, ' ').trim() !== message.text.replace(/\s+/gu, ' ').trim()) return false
-    const itemSkills = item.skills.map((skill) => `${skill.name}:${skill.path}`).join('|')
-    const messageSkills = (message.skills ?? []).map((skill) => `${skill.name}:${skill.path}`).join('|')
-    return itemSkills === messageSkills
-  }
-
   async function reconcileOutboxForThread(threadId: string): Promise<void> {
     const items = outboxItemsByThreadId.value[threadId] ?? []
     if (items.length === 0) return
-    const messages = persistedMessagesByThreadId.value[threadId] ?? []
-    const removable = items.filter((item) => messages.some((message) => isMatchingOutboxMessage(item, message)))
+    const messages = (conversationTranscriptFromState(coreConversations.stateFor(threadId)) as UiMessage[])
+    const removable = selectReconciledOutboxItems(items, messages)
     await Promise.all(removable.map((item) => deleteOutboxItem(item)))
   }
 
@@ -546,9 +473,7 @@ export function useDesktopState() {
         continue
       }
       const rows = byThread[item.threadId] ?? []
-      const recovered = item.status === 'sending'
-        ? { ...item, status: 'queued' as const, updatedAtIso: new Date().toISOString() }
-        : item
+      const recovered = recoverOutboxItemAfterReload(item, new Date().toISOString())
       rows.push(recovered)
       if (recovered !== item) recoveredItems.push(recovered)
       byThread[item.threadId] = rows
@@ -557,10 +482,11 @@ export function useDesktopState() {
       Object.entries(byThread).map(([threadId, itemsForThread]) => [threadId, sortOutboxItems(itemsForThread)]),
     )
     for (const item of Object.values(byThread).flat()) {
-      if (item.status !== 'failed') ensureOutboxOptimisticUserMessage(item, false)
+      const commandId = ensureOutboxOptimisticUserMessage(item)
+      if (item.status === 'failed') coreConversations.fail(item.threadId, commandId, item.lastError ?? 'Command failed before a native Turn was created.')
     }
     for (const item of Object.values(byThread).flat().filter((row) => row.status === 'sending' && row.turnId)) {
-      const optimisticMessageId = ensureOutboxOptimisticUserMessage(item, false)
+      const optimisticMessageId = ensureOutboxOptimisticUserMessage(item)
       if (item.turnId) bindOptimisticUserMessageToTurn(item.threadId, item.turnId, optimisticMessageId)
     }
     await Promise.all(recoveredItems.map((item) => saveLocalMessageOutboxItem(item)))
@@ -569,9 +495,15 @@ export function useDesktopState() {
   function recordRollbackAudit(result: UiToolingRollbackFileResult): void {
     const threadId = selectedThreadId.value
     if (!threadId) return
-
-    const previous = persistedMessagesByThreadId.value[threadId] ?? []
-    setPersistedMessagesForThread(threadId, upsertMessage(previous, buildRollbackAuditMessage(result)))
+    const message = buildRollbackAuditMessage(result)
+    coreConversations.ingest(threadId, {
+      id: message.id,
+      type: 'tool.completed',
+      threadId,
+      itemId: message.id,
+      atIso: new Date().toISOString(),
+      data: { tool: message.tool },
+    })
   }
 
   function addOptimisticUserMessage(
@@ -582,147 +514,38 @@ export function useDesktopState() {
       skills: ComposerSubmission<UiComposerContextKind>['skills']
     },
     preferredMessageId = '',
-    registerPending = true,
   ): string {
     if (!threadId) return ''
 
     if (!preferredMessageId) nextOptimisticUserMessageId += 1
-    const messageId = preferredMessageId || `optimistic-user:${threadId}:${String(nextOptimisticUserMessageId)}`
-    const message: UiMessage = {
-      id: messageId,
-      role: 'user',
+    const messageId = preferredMessageId || `command:${threadId}:${String(nextOptimisticUserMessageId)}`
+    coreConversations.enqueue({
+      threadId,
+      commandId: messageId,
       text: turnInput.text,
       images: turnInput.images.map((image) => image.url).filter((url) => url.trim().length > 0),
       skills: turnInput.skills,
-      messageType: 'userMessage.optimistic',
-    }
-    const previous = persistedMessagesByThreadId.value[threadId] ?? []
-    setPersistedMessagesForThread(threadId, upsertMessage(previous, message))
-    const pending = pendingOptimisticUserMessageIdsByThreadId.get(threadId) ?? []
-    const isAlreadyBound = [...optimisticUserMessageIdsByTurnId.values()].some((ids) => ids.includes(messageId))
-    if (registerPending && !isAlreadyBound && !pending.includes(messageId)) {
-      pendingOptimisticUserMessageIdsByThreadId.set(threadId, [...pending, messageId])
-    }
+    })
     return messageId
   }
 
-  function ensureOutboxOptimisticUserMessage(item: LocalMessageOutboxItem, registerPending = true): string {
-    return addOptimisticUserMessage(item.threadId, item, `optimistic-user:${item.id}`, registerPending)
+  function ensureOutboxOptimisticUserMessage(item: LocalMessageOutboxItem): string {
+    return addOptimisticUserMessage(item.threadId, item, item.id)
   }
 
   function bindOptimisticUserMessageToTurn(threadId: string, turnId: string, messageId: string): void {
-    if (!turnId || !(persistedMessagesByThreadId.value[threadId] ?? []).some((message) => message.id === messageId)) return
-    const previousMessages = persistedMessagesByThreadId.value[threadId] ?? []
-    const optimisticMessage = previousMessages.find((message) => message.id === messageId)
-    if (optimisticMessage && optimisticMessage.turnId !== turnId) {
-      setPersistedMessagesForThread(
-        threadId,
-        replaceMessageById(previousMessages, messageId, { ...optimisticMessage, turnId }),
-      )
-    }
-    const pending = pendingOptimisticUserMessageIdsByThreadId.get(threadId) ?? []
-    pendingOptimisticUserMessageIdsByThreadId.set(threadId, pending.filter((id) => id !== messageId))
-    const turnMessageIds = optimisticUserMessageIdsByTurnId.get(turnId) ?? []
-    if (!turnMessageIds.includes(messageId)) {
-      optimisticUserMessageIdsByTurnId.set(turnId, [...turnMessageIds, messageId])
-    }
-    while (optimisticUserMessageIdsByTurnId.size > 1_000) {
-      const oldestTurnId = optimisticUserMessageIdsByTurnId.keys().next().value as string | undefined
-      if (!oldestTurnId) break
-      optimisticUserMessageIdsByTurnId.delete(oldestTurnId)
-    }
-  }
-
-  function consumeOptimisticUserMessageId(threadId: string, turnId: string, formalMessage?: UiMessage): string {
-    const turnQueue = turnId ? optimisticUserMessageIdsByTurnId.get(turnId) ?? [] : []
-    const pending = pendingOptimisticUserMessageIdsByThreadId.get(threadId) ?? []
-    const matchingPendingId = formalMessage
-      ? pending.find((id) => {
-        const candidate = (persistedMessagesByThreadId.value[threadId] ?? []).find((message) => message.id === id)
-        if (!candidate || candidate.role !== 'user') return false
-        if (candidate.text.replace(/\s+/gu, ' ').trim() !== formalMessage.text.replace(/\s+/gu, ' ').trim()) return false
-        const candidateSkills = (candidate.skills ?? []).map((skill) => `${skill.name}:${skill.path}`).join('|')
-        const formalSkills = (formalMessage.skills ?? []).map((skill) => `${skill.name}:${skill.path}`).join('|')
-        return candidateSkills === formalSkills
-      })
-      : undefined
-    const messageId = turnQueue[0] ?? matchingPendingId ?? ''
-    if (!messageId) return ''
-    if (turnQueue.length > 0) {
-      const remaining = turnQueue.slice(1)
-      if (remaining.length > 0) optimisticUserMessageIdsByTurnId.set(turnId, remaining)
-      else optimisticUserMessageIdsByTurnId.delete(turnId)
-    }
-    const remainingPending = pending.filter((id) => id !== messageId)
-    if (remainingPending.length > 0) pendingOptimisticUserMessageIdsByThreadId.set(threadId, remainingPending)
-    else pendingOptimisticUserMessageIdsByThreadId.delete(threadId)
-    return messageId
+    if (!turnId || !messageId) return
+    coreConversations.bind(threadId, messageId, turnId)
   }
 
   function removeOptimisticUserMessage(threadId: string, messageId: string): void {
     if (!threadId || !messageId) return
-    const previous = persistedMessagesByThreadId.value[threadId] ?? []
-    setPersistedMessagesForThread(threadId, removeMessageById(previous, messageId))
-    const pending = pendingOptimisticUserMessageIdsByThreadId.get(threadId) ?? []
-    const nextPending = pending.filter((id) => id !== messageId)
-    if (nextPending.length > 0) pendingOptimisticUserMessageIdsByThreadId.set(threadId, nextPending)
-    else pendingOptimisticUserMessageIdsByThreadId.delete(threadId)
-    for (const [turnId, ids] of optimisticUserMessageIdsByTurnId) {
-      const nextIds = ids.filter((id) => id !== messageId)
-      if (nextIds.length > 0) optimisticUserMessageIdsByTurnId.set(turnId, nextIds)
-      else optimisticUserMessageIdsByTurnId.delete(turnId)
-    }
-  }
-
-  function beginPendingTurnForThread(
-    threadId: string,
-    mode: ComposerCollaborationModeOption = selectedCollaborationMode.value,
-  ): void {
-    shouldAutoScrollOnNextAgentEvent = true
-    setTurnActivityForThread(
-      threadId,
-      buildPendingTurnActivity({
-        modelId: selectedModelId.value,
-        reasoningEffort: selectedReasoningEffort.value,
-        mode,
-      }),
-    )
-    setTurnErrorForThread(threadId, null)
-    setThreadInProgress(threadId, true)
-  }
-
-  function failPendingTurnForThread(
-    threadId: string,
-    unknownError: unknown,
-    fallbackMessage: string,
-  ): Error {
-    shouldAutoScrollOnNextAgentEvent = false
-    setThreadInProgress(threadId, false)
-    setTurnActivityForThread(threadId, null)
-    const errorMessage = unknownError instanceof Error ? unknownError.message : fallbackMessage
-    setTurnErrorForThread(threadId, errorMessage)
-    error.value = errorMessage
-    return unknownError instanceof Error ? unknownError : new Error(errorMessage)
-  }
-
-  function beginSteeringTurnForThread(threadId: string): void {
-    shouldAutoScrollOnNextAgentEvent = true
-    setTurnActivityForThread(
-      threadId,
-      buildSteeringTurnActivity({
-        modelId: selectedModelId.value,
-        reasoningEffort: selectedReasoningEffort.value,
-      }),
-    )
-    setTurnErrorForThread(threadId, null)
+    coreConversations.discard(threadId, messageId)
   }
 
   function applyRealtimeUpdates(notification: RpcNotification): void {
-    // Establish one Core event snapshot at the transport boundary. Every
-    // reader below consumes this exact snapshot instead of reparsing payloads.
-    const conversationEvents = normalizeRealtimeNotification(notification)
-    applyCoreConversationEvents(conversationEvents)
-
+    // Raw RPC notifications are product metadata only. Conversation lifecycle
+    // is normalized once on the server and consumed through Core above.
     if (handleRateLimitNotification(notification)) {
       return
     }
@@ -736,92 +559,16 @@ export function useDesktopState() {
       return
     }
 
-    const startedTurn = conversationEvents.find((event) => event.type === 'turn.started' && Boolean(event.turnId))
-    if (startedTurn?.turnId) {
-      const pendingOptimisticId = (pendingOptimisticUserMessageIdsByThreadId.get(startedTurn.threadId) ?? [])[0]
-      if (pendingOptimisticId) bindOptimisticUserMessageToTurn(startedTurn.threadId, startedTurn.turnId, pendingOptimisticId)
-      setTurnErrorForThread(startedTurn.threadId, null)
-      setThreadInProgress(startedTurn.threadId, true)
-      if (eventUnreadByThreadId.value[startedTurn.threadId] === true) {
-        eventUnreadByThreadId.value = omitKey(eventUnreadByThreadId.value, startedTurn.threadId)
-      }
-    }
-
-    const completedTurn = latestTerminalTurnEvent(conversationEvents)
-    if (completedTurn?.turnId) {
-      setThreadInProgress(completedTurn.threadId, false)
-      setTurnActivityForThread(completedTurn.threadId, null)
-      markThreadUnreadByEvent(completedTurn.threadId)
-      void drainOutboxForThread(completedTurn.threadId)
-    }
-
-    const coreTurnError = completedTurn?.turnId
-      ? conversationStateFromRegistry(conversationStateByThreadId.value, completedTurn.threadId).turns[completedTurn.turnId]?.error ?? ''
-      : ''
-    if (coreTurnError) {
-      error.value = coreTurnError
-    } else if (completedTurn) {
-      setTurnErrorForThread(completedTurn.threadId, null)
-    }
-
-    const compaction = conversationEvents.find((event) => event.type === 'thread.compacted')
-    if (compaction) {
-      setThreadInProgress(compaction.threadId, false)
-      setTurnActivityForThread(compaction.threadId, null)
-      setTurnErrorForThread(compaction.threadId, null)
-    }
-
-    const notificationThreadId = extractThreadIdFromNotification(notification)
-    if (!notificationThreadId) return
-    const isSelectedNotificationThread = notificationThreadId === selectedThreadId.value
-
-    const completedUserMessages = readUserMessageCompleted(notification)
-    if (completedUserMessages.length > 0) {
-      const previousMessages = persistedMessagesByThreadId.value[notificationThreadId] ?? []
-      const formalUserMessage = completedUserMessages.find((message) => message.role === 'user' && message.messageType === 'userMessage')
-      const optimisticMessageId = formalUserMessage
-        ? consumeOptimisticUserMessageId(notificationThreadId, extractTurnIdFromNotification(notification), formalUserMessage)
-        : ''
-      const messagesWithFormalUser = formalUserMessage && optimisticMessageId
-        ? replaceMessageById(previousMessages, optimisticMessageId, formalUserMessage)
-        : previousMessages
-      setPersistedMessagesForThread(
-        notificationThreadId,
-        mergeMessages(messagesWithFormalUser, completedUserMessages, { preserveMissing: true }),
-      )
-      void reconcileOutboxForThread(notificationThreadId)
-    }
-
-    if (isAgentContentEvent(notification)) {
-      if (isSelectedNotificationThread && shouldAutoScrollOnNextAgentEvent && selectedThreadId.value) {
-        setThreadScrollState(selectedThreadId.value, {
-          scrollTop: 0,
-          isAtBottom: true,
-          scrollRatio: 1,
-        })
-      }
-    }
-
-    if (normalizeRealtimeNotification(notification).some((event) => (
-      event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.interrupted'
-    ))) {
-      if (isSelectedNotificationThread) {
-        shouldAutoScrollOnNextAgentEvent = false
-      }
-    }
-
   }
 
   function queueEventDrivenSync(notification: RpcNotification): void {
     if (!shouldQueueEventDrivenSyncForMethod(notification.method)) return
-
-    const threadId = extractThreadIdFromNotification(notification)
-    queueDesktopRealtimeSync(realtimeSyncQueue, threadId || undefined)
-
     if (eventSyncTimer !== null || typeof window === 'undefined') return
     eventSyncTimer = window.setTimeout(() => {
       eventSyncTimer = null
-      void syncFromNotifications()
+      // Realtime conversation state already arrived through Core. This refresh
+      // is only for catalog metadata (title, unread grouping, project tree).
+      void loadThreads().catch(() => undefined)
     }, EVENT_SYNC_DEBOUNCE_MS)
   }
 
@@ -897,7 +644,9 @@ export function useDesktopState() {
 
     const recovery = (async () => {
       try {
-        await resumeThread(normalizedThreadId)
+        await coreConversations.connect(normalizedThreadId)
+        const historyError = coreConversations.stateFor(normalizedThreadId).history.error
+        if (historyError) throw new Error(historyError)
         resumedThreadById.value = {
           ...resumedThreadById.value,
           [normalizedThreadId]: true,
@@ -930,22 +679,13 @@ export function useDesktopState() {
     setMessageLoadErrorForThread(threadId, '')
 
     try {
-      const nextMessages = await getThreadMessages(threadId)
+      if (loadedMessagesByThreadId.value[threadId] === true) await coreConversations.refresh(threadId)
+      else await coreConversations.connect(threadId)
       if (latestMessageLoadRequestIdByThreadId.get(threadId) !== requestId) {
         return
       }
-      const previousPersisted = persistedMessagesByThreadId.value[threadId] ?? []
-      const localPendingMessages = previousPersisted.filter((message) => (
-        message.role === 'user'
-        && (
-          message.messageType === 'userMessage.optimistic'
-          || message.messageType?.startsWith('userMessage.outbox.') === true
-        )
-      ))
-      const mergedMessages = mergeMessages(localPendingMessages, nextMessages, {
-        preserveMissing: localPendingMessages.length > 0,
-      })
-      setPersistedMessagesForThread(threadId, mergedMessages)
+      const historyError = coreConversations.stateFor(threadId).history.error
+      if (historyError) throw new Error(historyError)
       void reconcileOutboxForThread(threadId)
 
       loadedMessagesByThreadId.value = markThreadMessagesLoaded(loadedMessagesByThreadId.value, threadId)
@@ -986,9 +726,6 @@ export function useDesktopState() {
       ])
       if (options.loadSelectedMessages !== false) {
         await loadMessages(selectedThreadId.value)
-      }
-      if (selectedThreadId.value) {
-        void drainOutboxForThread(selectedThreadId.value)
       }
     } catch (unknownError) {
       error.value = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
@@ -1042,27 +779,14 @@ export function useDesktopState() {
   }
 
   async function compactThreadById(threadId: string): Promise<void> {
-    const previousUsage = conversationStateFromRegistry(conversationStateByThreadId.value, threadId).contextUsage
     try {
-      applyLocalConversationEvent('thread.compaction.started', threadId)
-      setTurnErrorForThread(threadId, null)
       setThreadInProgress(threadId, true)
       await compactThread(threadId)
-      queueDesktopRealtimeSync(realtimeSyncQueue, threadId)
-      await syncFromNotifications()
+      await coreConversations.refresh(threadId)
+      await loadThreads()
     } catch (unknownError) {
-      applyLocalConversationEvent('thread.context.updated', threadId, previousUsage?.turnId ?? '', {
-        turnId: previousUsage?.turnId ?? '',
-        usedTokens: previousUsage?.usedTokens ?? 0,
-        inputTokens: previousUsage?.inputTokens ?? 0,
-        contextWindow: previousUsage?.contextWindow ?? null,
-        autoCompactTokenLimit: previousUsage?.autoCompactTokenLimit ?? null,
-      })
-      applyLocalConversationEvent('turn.activity', threadId, '', { label: '', details: [] })
       setThreadInProgress(threadId, false)
-      setTurnActivityForThread(threadId, null)
       const errorMessage = unknownError instanceof Error ? unknownError.message : 'Failed to compact thread'
-      setTurnErrorForThread(threadId, errorMessage)
       error.value = errorMessage
     }
   }
@@ -1075,7 +799,6 @@ export function useDesktopState() {
     loadedMessagesByThreadId.value = {}
     loadingMessagesByThreadId.value = {}
     latestMessageLoadRequestIdByThreadId.clear()
-    persistedMessagesByThreadId.value = {}
     shouldAutoScrollOnNextAgentEvent = false
 
     try {
@@ -1111,15 +834,6 @@ export function useDesktopState() {
     }
   }
 
-  function scheduleOutboxRetry(threadId: string): void {
-    if (typeof window === 'undefined' || outboxRetryTimersByThreadId.has(threadId)) return
-    const timerId = window.setTimeout(() => {
-      outboxRetryTimersByThreadId.delete(threadId)
-      void drainOutboxForThread(threadId)
-    }, 5_000)
-    outboxRetryTimersByThreadId.set(threadId, timerId)
-  }
-
   async function enqueueMessageForThread(
     threadId: string,
     payload: ComposerSubmission<UiComposerContextKind>,
@@ -1139,39 +853,11 @@ export function useDesktopState() {
     await persistOutboxItem(item)
     // A queued follow-up is visible immediately, but it must not be bound to
     // the currently active turn. Registration happens when this item drains.
-    ensureOutboxOptimisticUserMessage(item, false)
+    ensureOutboxOptimisticUserMessage(item)
     return item
   }
 
-  async function drainOutboxForThread(threadId: string, options: { itemId?: string } = {}): Promise<void> {
-    const normalizedThreadId = threadId.trim()
-    if (!normalizedThreadId) return
-    if (drainingOutboxThreadIds.has(normalizedThreadId)) return
-    if (inProgressById.value[normalizedThreadId] === true) {
-      // `inProgress` is persisted UI state, not the native runtime authority.
-      // A lost terminal event must not strand every later user message in the
-      // browser queue. A concrete local turn id remains authoritative while
-      // this process owns the active turn; otherwise reconcile with Codex.
-      if (activeTurnIdForThread(normalizedThreadId)) return
-      try {
-        if (await getThreadRuntimeStatus(normalizedThreadId) === 'active') return
-        setThreadInProgress(normalizedThreadId, false)
-        setTurnActivityForThread(normalizedThreadId, null)
-        setTurnErrorForThread(normalizedThreadId, null)
-      } catch {
-        // If native state cannot be read, retain the conservative queue and
-        // let the scheduled retry or a realtime terminal event release it.
-        return
-      }
-    }
-
-    const rows = outboxItemsByThreadId.value[normalizedThreadId] ?? []
-    const item = options.itemId
-      ? rows.find((row) => row.id === options.itemId && (row.status === 'queued' || row.status === 'failed'))
-      : rows.find((row) => row.status === 'queued' || row.status === 'failed')
-    if (!item) return
-
-    drainingOutboxThreadIds.add(normalizedThreadId)
+  async function submitOutboxItem(item: LocalMessageOutboxItem, mode: 'queue' | 'steer'): Promise<void> {
     const sendingItem: LocalMessageOutboxItem = {
       ...item,
       status: 'sending',
@@ -1180,48 +866,35 @@ export function useDesktopState() {
       lastError: undefined,
     }
     await persistOutboxItem(sendingItem)
-    const optimisticMessageId = ensureOutboxOptimisticUserMessage(sendingItem)
-
     isSendingMessage.value = true
     error.value = ''
-    beginPendingTurnForThread(normalizedThreadId)
-
+    const modelId = selectedModelId.value.trim()
+    const reasoningEffort = selectedReasoningEffort.value
+    const collaborationMode = buildTurnCollaborationMode(selectedCollaborationMode.value, modelId, reasoningEffort)
+    const permissionOverride = buildTurnPermissionOverride(selectedPermissionMode.value)
     try {
-      const turnId = await startTurnForThread(
-        normalizedThreadId,
-        sendingItem.text,
-        sendingItem.images,
-        sendingItem.skills,
-      )
-      const acceptedItem = {
-        ...sendingItem,
-        turnId,
-        updatedAtIso: new Date().toISOString(),
-      }
-      bindOptimisticUserMessageToTurn(normalizedThreadId, turnId, optimisticMessageId)
-      // turn/start only acknowledges acceptance. Keep the record until the
-      // formal user item reconciles it, so a reload cannot lose a message in
-      // the acknowledgement/event gap.
-      if ((outboxItemsByThreadId.value[normalizedThreadId] ?? []).some((row) => row.id === sendingItem.id)) {
-        await persistOutboxItem(acceptedItem)
-      }
-    } catch (unknownError) {
-      removeOptimisticUserMessage(normalizedThreadId, optimisticMessageId)
-      const errorMessage = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
-      shouldAutoScrollOnNextAgentEvent = false
-      setThreadInProgress(normalizedThreadId, false)
-      setTurnActivityForThread(normalizedThreadId, null)
-      setTurnErrorForThread(normalizedThreadId, errorMessage)
-      error.value = errorMessage
-      await persistOutboxItem({
-        ...sendingItem,
-        status: 'failed',
-        updatedAtIso: new Date().toISOString(),
-        lastError: errorMessage,
+      await coreConversations.submit({
+        threadId: item.threadId,
+        commandId: item.id,
+        text: item.text,
+        images: item.images.map((image) => image.url).filter(Boolean),
+        skills: item.skills,
+        mode,
+        turnInput: {
+          input: buildTurnInput(item.text, item.images, item.skills),
+          ...(modelId ? { model: modelId } : {}),
+          ...(reasoningEffort ? { effort: reasoningEffort } : {}),
+          ...(collaborationMode ? { collaborationMode } : {}),
+          ...(permissionOverride?.approvalPolicy ? { approvalPolicy: permissionOverride.approvalPolicy } : {}),
+          ...(permissionOverride?.sandboxPolicy ? { sandboxPolicy: permissionOverride.sandboxPolicy } : {}),
+        },
       })
-      scheduleOutboxRetry(normalizedThreadId)
+    } catch (unknownError) {
+      const message = unknownError instanceof Error ? unknownError.message : 'Conversation command was not accepted.'
+      await persistOutboxItem({ ...sendingItem, status: 'failed', lastError: message, updatedAtIso: new Date().toISOString() })
+      error.value = message
+      throw unknownError
     } finally {
-      drainingOutboxThreadIds.delete(normalizedThreadId)
       isSendingMessage.value = false
     }
   }
@@ -1234,16 +907,18 @@ export function useDesktopState() {
     const turnInput = normalizeComposerTurnInput(payload)
     if (!threadId || !turnInput.hasContent) return
 
-    if (resolveComposerSubmitMode(inProgressById.value[threadId] === true, selectedSubmitMode.value) === 'steer') {
-      await steerActiveTurn(threadId, turnInput.text, turnInput.images, turnInput.skills)
+    if (resolveComposerSubmitMode(Boolean(coreConversations.stateFor(threadId).activeTurnId), selectedSubmitMode.value) === 'steer') {
+      const item = await enqueueMessageForThread(threadId, payload)
+      if (!item) return
       options.onAccepted?.()
+      await submitOutboxItem(item, 'steer')
       return
     }
 
     const item = await enqueueMessageForThread(threadId, payload)
     if (!item) return
     options.onAccepted?.()
-    await drainOutboxForThread(threadId)
+    await submitOutboxItem(item, 'queue')
   }
 
   async function sendTextToThreadById(threadId: string, text: string): Promise<void> {
@@ -1260,7 +935,7 @@ export function useDesktopState() {
       skills: turnInput.skills,
     })
     if (!item) return
-    await drainOutboxForThread(turnInput.threadId)
+    await submitOutboxItem(item, 'queue')
   }
 
   async function sendQueuedMessageNow(threadId: string, itemId: string): Promise<void> {
@@ -1271,18 +946,7 @@ export function useDesktopState() {
     const item = (outboxItemsByThreadId.value[normalizedThreadId] ?? []).find((row) => row.id === normalizedItemId)
     if (!item || item.status === 'sending') return
 
-    if (inProgressById.value[normalizedThreadId] === true) {
-      try {
-        const optimisticMessageId = ensureOutboxOptimisticUserMessage(item)
-        await steerActiveTurn(normalizedThreadId, item.text, item.images, item.skills, optimisticMessageId)
-        await deleteOutboxItem(item)
-      } catch {
-        // steerActiveTurn already surfaces the error in the selected thread state.
-      }
-      return
-    }
-
-    await drainOutboxForThread(normalizedThreadId, { itemId: normalizedItemId })
+    await submitOutboxItem(item, coreConversations.stateFor(normalizedThreadId).activeTurnId ? 'steer' : 'queue')
   }
 
   async function deleteQueuedMessage(threadId: string, itemId: string): Promise<void> {
@@ -1291,49 +955,8 @@ export function useDesktopState() {
     if (!normalizedThreadId || !normalizedItemId) return
     const item = (outboxItemsByThreadId.value[normalizedThreadId] ?? []).find((row) => row.id === normalizedItemId)
     if (!item || item.status === 'sending') return
-    removeOptimisticUserMessage(normalizedThreadId, `optimistic-user:${item.id}`)
+    removeOptimisticUserMessage(normalizedThreadId, item.id)
     await deleteOutboxItem(item)
-  }
-
-  async function steerActiveTurn(
-    threadId: string,
-    nextText: string,
-    nextImages: ComposerSubmission<UiComposerContextKind>['images'],
-    nextSkills: ComposerSubmission<UiComposerContextKind>['skills'],
-    existingOptimisticMessageId = '',
-  ): Promise<void> {
-    const turnId = activeTurnIdForThread(threadId)
-    if (!turnId) {
-      const errorMessage = 'The current turn is still starting. Wait a moment and try again.'
-      setTurnErrorForThread(threadId, errorMessage)
-      error.value = errorMessage
-      throw new Error(errorMessage)
-    }
-
-    isSendingMessage.value = true
-    error.value = ''
-    beginSteeringTurnForThread(threadId)
-    const optimisticMessageId = existingOptimisticMessageId || addOptimisticUserMessage(threadId, {
-      text: nextText,
-      images: nextImages,
-      skills: nextSkills,
-    })
-
-    try {
-      bindOptimisticUserMessageToTurn(threadId, turnId, optimisticMessageId)
-      await steerThreadTurn(threadId, turnId, nextText, nextImages, nextSkills)
-      queueDesktopRealtimeSync(realtimeSyncQueue, threadId)
-      await syncFromNotifications()
-    } catch (unknownError) {
-      removeOptimisticUserMessage(threadId, optimisticMessageId)
-      shouldAutoScrollOnNextAgentEvent = false
-      const errorMessage = unknownError instanceof Error ? unknownError.message : 'Failed to steer active turn'
-      setTurnErrorForThread(threadId, errorMessage)
-      error.value = errorMessage
-      throw unknownError
-    } finally {
-      isSendingMessage.value = false
-    }
   }
 
   async function sendMessageToNewThread(payload: ComposerSubmission<UiComposerContextKind>, cwd: string): Promise<string> {
@@ -1362,30 +985,16 @@ export function useDesktopState() {
         unread: false,
         inProgress: false,
       })
-      setThreadInProgress(threadId, true)
-
-      void loadThreads().catch(() => {
-        queueDesktopRealtimeSync(realtimeSyncQueue)
-      })
+      void loadThreads().catch(() => undefined)
 
       resumedThreadById.value = {
         ...resumedThreadById.value,
         [threadId]: true,
       }
-      beginPendingTurnForThread(threadId)
-      const optimisticMessageId = addOptimisticUserMessage(threadId, turnInput)
-
-      void startTurnForThread(threadId, turnInput.text, turnInput.images, turnInput.skills)
-        .then((turnId) => bindOptimisticUserMessageToTurn(threadId, turnId, optimisticMessageId))
-        .catch((unknownError) => {
-          removeOptimisticUserMessage(threadId, optimisticMessageId)
-          failPendingTurnForThread(threadId, unknownError, 'Unknown application error')
-        })
+      const item = await enqueueMessageForThread(threadId, payload)
+      if (item) void submitOutboxItem(item, 'queue').catch(() => undefined)
       return threadId
     } catch (unknownError) {
-      if (threadId) {
-        throw failPendingTurnForThread(threadId, unknownError, 'Unknown application error')
-      }
       const errorMessage = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
       shouldAutoScrollOnNextAgentEvent = false
       error.value = errorMessage
@@ -1395,85 +1004,16 @@ export function useDesktopState() {
     }
   }
 
-  async function startTurnForThread(
-    threadId: string,
-    nextText: string,
-    nextImages: ComposerSubmission<UiComposerContextKind>['images'],
-    nextSkills: ComposerSubmission<UiComposerContextKind>['skills'],
-  ): Promise<string> {
-    const modelId = selectedModelId.value.trim()
-    const reasoningEffort = selectedReasoningEffort.value
-    const collaborationMode = buildTurnCollaborationMode(
-      selectedCollaborationMode.value,
-      modelId,
-      reasoningEffort,
-    )
-    const permissionOverride = buildTurnPermissionOverride(selectedPermissionMode.value)
-
-    try {
-      if (resumedThreadById.value[threadId] !== true) {
-        await resumeThread(threadId)
-      }
-
-      const turnId = permissionOverride
-        ? await startThreadTurnWithResumeRecovery(
-          threadId,
-          nextText,
-          nextImages,
-          nextSkills,
-          modelId || undefined,
-          reasoningEffort || undefined,
-          collaborationMode,
-          permissionOverride,
-        )
-        : await startThreadTurnWithResumeRecovery(
-          threadId,
-          nextText,
-          nextImages,
-          nextSkills,
-          modelId || undefined,
-          reasoningEffort || undefined,
-          collaborationMode,
-        )
-      applyLocalConversationEvent('turn.started', threadId, turnId, { optimistic: true })
-
-      resumedThreadById.value = {
-        ...resumedThreadById.value,
-        [threadId]: true,
-      }
-
-      queueDesktopRealtimeSync(realtimeSyncQueue, threadId)
-      void syncFromNotifications()
-      return turnId
-    } catch (unknownError) {
-      throw unknownError
-    }
-  }
-
   async function interruptTurnForThread(threadId: string): Promise<void> {
     if (!threadId) return
-    if (inProgressById.value[threadId] !== true) return
-    const turnId = activeTurnIdForThread(threadId)
-    if (!turnId) {
-      const errorMessage = 'The current turn is still starting. Wait a moment before interrupting.'
-      setTurnErrorForThread(threadId, errorMessage)
-      error.value = errorMessage
-      return
-    }
+    if (!coreConversations.stateFor(threadId).activeTurnId) return
 
     isInterruptingTurn.value = true
     error.value = ''
     try {
-      await interruptThreadTurn(threadId, turnId)
-      setThreadInProgress(threadId, false)
-      setTurnActivityForThread(threadId, null)
-      setTurnErrorForThread(threadId, null)
-      applyLocalConversationEvent('turn.interrupted', threadId, turnId, { optimistic: true })
-      queueDesktopRealtimeSync(realtimeSyncQueue, threadId)
-      await syncFromNotifications()
+      await interruptThreadTurn(threadId)
     } catch (unknownError) {
       const errorMessage = unknownError instanceof Error ? unknownError.message : 'Failed to interrupt active turn'
-      setTurnErrorForThread(threadId, errorMessage)
       error.value = errorMessage
     } finally {
       isInterruptingTurn.value = false
@@ -1536,89 +1076,11 @@ export function useDesktopState() {
     void saveCatalogProjectOrder(nextProjectOrder)
   }
 
-  async function syncThreadStatus(): Promise<void> {
-    if (isPolling.value) return
-    isPolling.value = true
-
-    try {
-      await loadThreads()
-
-      if (!selectedThreadId.value) return
-
-      const threadId = selectedThreadId.value
-      const currentVersion = currentThreadVersion(threadId)
-      const loadedVersion = loadedVersionByThreadId.value[threadId] ?? ''
-      const hasVersionChange = currentVersion.length > 0 && currentVersion !== loadedVersion
-      const isInProgress = inProgressById.value[threadId] === true
-
-      if (isInProgress || hasVersionChange) {
-        await loadMessages(threadId, { silent: true })
-      }
-    } catch {
-      // ignore poll failures and keep last known state
-    } finally {
-      isPolling.value = false
-    }
-  }
-
-  async function syncFromNotifications(): Promise<void> {
-    if (isPolling.value) {
-      if (typeof window !== 'undefined' && eventSyncTimer === null) {
-        eventSyncTimer = window.setTimeout(() => {
-          eventSyncTimer = null
-          void syncFromNotifications()
-        }, EVENT_SYNC_DEBOUNCE_MS)
-      }
-      return
-    }
-
-    isPolling.value = true
-
-    const syncBatch = consumeDesktopRealtimeSyncQueue(realtimeSyncQueue)
-    const shouldRefreshThreads = syncBatch.shouldRefreshThreads
-    const threadIdsToRefresh = syncBatch.threadIdsToRefresh
-
-    try {
-      if (shouldRefreshThreads) {
-        await loadThreads()
-      }
-
-      const activeThreadId = selectedThreadId.value
-      if (!activeThreadId) return
-
-      const isActiveDirty = threadIdsToRefresh.has(activeThreadId)
-      const isInProgress = inProgressById.value[activeThreadId] === true
-      const currentVersion = currentThreadVersion(activeThreadId)
-      const loadedVersion = loadedVersionByThreadId.value[activeThreadId] ?? ''
-      const hasVersionChange = currentVersion.length > 0 && currentVersion !== loadedVersion
-
-      if (isActiveDirty || isInProgress || hasVersionChange || shouldRefreshThreads) {
-        await loadMessages(activeThreadId, { silent: true })
-      }
-    } catch {
-      // Keep UI stable on transient event sync failures.
-    } finally {
-      isPolling.value = false
-
-      if (
-        hasPendingDesktopRealtimeSync(realtimeSyncQueue) &&
-        typeof window !== 'undefined' &&
-        eventSyncTimer === null
-      ) {
-        eventSyncTimer = window.setTimeout(() => {
-          eventSyncTimer = null
-          void syncFromNotifications()
-        }, EVENT_SYNC_DEBOUNCE_MS)
-      }
-    }
-  }
-
   async function respondToPendingServerRequest(reply: UiServerRequestReply): Promise<void> {
     await serverRequestState.respond(reply)
   }
 
   function resetRealtimeDomainState(): void {
-    clearDesktopRealtimeSyncQueue(realtimeSyncQueue)
     latestMessageLoadRequestIdByThreadId.clear()
     if (eventSyncTimer !== null && typeof window !== 'undefined') {
       window.clearTimeout(eventSyncTimer)
@@ -1626,16 +1088,9 @@ export function useDesktopState() {
     }
     shouldAutoScrollOnNextAgentEvent = false
     loadingMessagesByThreadId.value = {}
-    persistedMessagesByThreadId.value = {}
-    turnActivityByThreadId.value = {}
-    turnErrorByThreadId.value = {}
     messageLoadErrorByThreadId.value = {}
-    conversationStateByThreadId.value = {}
-    for (const timerId of outboxRetryTimersByThreadId.values()) {
-      if (typeof window !== 'undefined') window.clearTimeout(timerId)
-    }
-    outboxRetryTimersByThreadId.clear()
-    drainingOutboxThreadIds.clear()
+    stopCoreEventSubscription()
+    coreConversations.dispose()
   }
 
   const realtimeState = useDesktopRealtimeState({
@@ -1644,50 +1099,9 @@ export function useDesktopState() {
     refreshRateLimits,
     applyNotification: applyRealtimeUpdates,
     queueNotificationSync: queueEventDrivenSync,
-    syncThreadStatus,
     resetDomainState: resetRealtimeDomainState,
   })
-  const { isAutoRefreshEnabled, autoRefreshSecondsLeft, toggleAutoRefreshTimer, startRealtimeSync, stopRealtimeSync } = realtimeState
-
-  function applyCoreConversationEvents(events: readonly CodexEvent[]): void {
-    conversationStateByThreadId.value = reduceConversationRegistryEvents(
-      conversationStateByThreadId.value,
-      events,
-    )
-  }
-
-  function applyLocalConversationEvent(
-    type: CodexEvent['type'],
-    threadId: string,
-    turnId = '',
-    data: Record<string, unknown> = {},
-  ): void {
-    if (!threadId) return
-    localCoreEventSequence += 1
-    applyCoreConversationEvents([{
-      id: `codyweb:local:${String(localCoreEventSequence)}:${type}:${threadId}:${turnId}`,
-      type,
-      threadId,
-      ...(turnId ? { turnId } : {}),
-      atIso: new Date().toISOString(),
-      data,
-    }])
-  }
-
-  function activeTurnIdForThread(threadId: string): string {
-    return conversationStateFromRegistry(conversationStateByThreadId.value, threadId).activeTurnId
-  }
-
-  function completedTurnSummaryForThread(threadId: string): TurnSummaryState | null {
-    const feed = conversationFeedFromState(conversationStateFromRegistry(conversationStateByThreadId.value, threadId))
-    for (let index = feed.length - 1; index >= 0; index -= 1) {
-      const entry = feed[index]
-      if (entry?.kind === 'turn' && entry.status === 'completed' && entry.durationMs !== null) {
-        return { turnId: entry.turnId, durationMs: entry.durationMs }
-      }
-    }
-    return null
-  }
+  const { startRealtimeSync, stopRealtimeSync } = realtimeState
 
   return {
     projectGroups,
@@ -1719,8 +1133,6 @@ export function useDesktopState() {
     isSendingMessage,
     isInterruptingTurn,
     isLoadingRateLimits,
-    isAutoRefreshEnabled,
-    autoRefreshSecondsLeft,
     error,
     clearError,
     refreshAll,
@@ -1753,7 +1165,6 @@ export function useDesktopState() {
     hideProject,
     restoreProject,
     reorderProject,
-    toggleAutoRefreshTimer,
     startRealtimeSync,
     stopRealtimeSync,
   }

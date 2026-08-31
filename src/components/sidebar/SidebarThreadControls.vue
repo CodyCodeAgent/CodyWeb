@@ -14,10 +14,9 @@
     <button
       class="sidebar-thread-controls-button"
       type="button"
-      :aria-pressed="isAutoRefreshEnabled"
-      :aria-label="autoRefreshButtonLabel"
-      :title="autoRefreshButtonLabel"
-      @click="$emit('toggle-auto-refresh')"
+      :aria-label="refreshButtonLabel"
+      :title="refreshButtonLabel"
+      @click="$emit('refresh')"
     >
       <IconTablerRefresh class="sidebar-thread-controls-icon" />
     </button>
@@ -45,14 +44,13 @@ import IconTablerRefresh from '../icons/IconTablerRefresh.vue'
 
 defineProps<{
   isSidebarCollapsed: boolean
-  isAutoRefreshEnabled: boolean
-  autoRefreshButtonLabel: string
+  refreshButtonLabel: string
   showNewThreadButton?: boolean
 }>()
 
 defineEmits<{
   'toggle-sidebar': []
-  'toggle-auto-refresh': []
+  refresh: []
   'start-new-thread': []
 }>()
 </script>
@@ -66,14 +64,6 @@ defineEmits<{
 
 .sidebar-thread-controls-button {
   @apply h-6.75 w-6.75 rounded-md border border-transparent bg-transparent theme-muted flex items-center justify-center transition hover:theme-border hover:theme-bg-subtle;
-}
-
-.sidebar-thread-controls-button[aria-pressed='true'] {
-  @apply theme-border-success theme-bg-success-soft theme-text-success;
-}
-
-.sidebar-thread-controls-button[aria-pressed='false'] {
-  @apply theme-muted;
 }
 
 .sidebar-thread-controls-icon {

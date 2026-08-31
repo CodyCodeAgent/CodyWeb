@@ -13,11 +13,10 @@
           v-if="!isEffectiveSidebarCollapsed"
           class="sidebar-thread-controls-host"
           :is-sidebar-collapsed="isEffectiveSidebarCollapsed"
-          :is-auto-refresh-enabled="isAutoRefreshEnabled"
-          :auto-refresh-button-label="autoRefreshButtonLabel"
+          :refresh-button-label="t('app.refresh')"
           :show-new-thread-button="true"
           @toggle-sidebar="setSidebarCollapsed(!isSidebarCollapsed)"
-          @toggle-auto-refresh="onToggleAutoRefreshTimer"
+          @refresh="onRefreshShell"
           @start-new-thread="onStartNewThreadFromToolbar"
         >
           <button
@@ -121,11 +120,10 @@
               v-if="isEffectiveSidebarCollapsed"
               class="sidebar-thread-controls-header-host"
               :is-sidebar-collapsed="isEffectiveSidebarCollapsed"
-              :is-auto-refresh-enabled="isAutoRefreshEnabled"
-              :auto-refresh-button-label="autoRefreshButtonLabel"
+              :refresh-button-label="t('app.refresh')"
               :show-new-thread-button="true"
               @toggle-sidebar="setSidebarCollapsed(!isSidebarCollapsed)"
-              @toggle-auto-refresh="onToggleAutoRefreshTimer"
+              @refresh="onRefreshShell"
               @start-new-thread="onStartNewThreadFromToolbar"
             >
               <button
@@ -259,8 +257,8 @@
             <strong>{{ backendConnectionTitle }}</strong>
             <span>{{ backendConnectionMessage }}</span>
           </div>
-          <button type="button" :disabled="backendHealthCheckInFlight" @click="checkBackendHealthNow">
-            {{ backendHealthCheckInFlight ? t('app.backend.checking') : t('app.backend.retry') }}
+          <button type="button" @click="reconnectBackendNow">
+            {{ t('app.backend.retry') }}
           </button>
         </div>
 
@@ -374,7 +372,11 @@ import IconTablerSun from './components/icons/IconTablerSun.vue'
 import IconTablerX from './components/icons/IconTablerX.vue'
 import { fetchDefaultWorkspace } from './api/codexWorkspaceResourcesClient'
 import {
-  autoRefreshLabel,
+  reconnectCodexRealtime,
+  subscribeRealtimeConnection,
+  type RealtimeConnectionSnapshot,
+} from './api/codexRealtimeClient'
+import {
   buildNewThreadFolderOptions,
   composerThreadContextId as buildComposerThreadContextId,
   directoryPickerInitialPath as buildDirectoryPickerInitialPath,
@@ -415,6 +417,8 @@ import type {
 import type { PromptInsertion } from './composables/promptLibraryRules'
 
 const MOBILE_SIDEBAR_BREAKPOINT = 700
+const BACKEND_DISCONNECT_GRACE_MS = 2_500
+const BACKEND_RESTORED_BANNER_MS = 4_000
 const {
   projectGroups,
   projectDisplayNameById,
@@ -424,6 +428,7 @@ const {
   selectedThreadContextUsage,
   allPendingServerRequests,
   selectedLiveOverlay,
+  selectedCoreConversation,
   selectedStructuredPlan,
   selectedMessageLoadError,
   selectedQueuedMessages,
@@ -444,8 +449,6 @@ const {
   isSendingMessage,
   isInterruptingTurn,
   isLoadingRateLimits,
-  isAutoRefreshEnabled,
-  autoRefreshSecondsLeft,
   error: desktopError,
   clearError,
   refreshAll,
@@ -475,7 +478,6 @@ const {
   hideProject,
   restoreProject,
   reorderProject,
-  toggleAutoRefreshTimer,
   startRealtimeSync,
   stopRealtimeSync,
   recordRollbackAudit,
@@ -597,17 +599,13 @@ function onAskCode(attachment: WorkspaceComposerContext): void {
 
 const isEffectiveSidebarCollapsed = computed(() => isSidebarCollapsed.value || isMobileViewport.value)
 const isCodeView = computed(() => route.name === 'thread' && route.query.view === 'code')
-const autoRefreshButtonLabel = computed(() => autoRefreshLabel({
-  isEnabled: isAutoRefreshEnabled.value,
-  secondsLeft: autoRefreshSecondsLeft.value,
-}))
 const filteredMessages = computed(() => filterAppConversationMessages(messages.value))
 const liveOverlay = computed(() => selectedLiveOverlay.value)
 const composerThreadContextId = computed(() => buildComposerThreadContextId({
   isHomeRoute: isHomeRoute.value,
   selectedThreadId: selectedThreadId.value,
 }))
-const isSelectedThreadInProgress = computed(() => !isHomeRoute.value && selectedThread.value?.inProgress === true)
+const isSelectedThreadInProgress = computed(() => !isHomeRoute.value && Boolean(selectedCoreConversation.value.activeTurnId))
 const homeComposerBusyLabel = computed(() => buildHomeComposerBusyLabel(isSendingMessage.value))
 const threadComposerBusyLabel = computed(() => buildThreadComposerBusyLabel({
   isSendingMessage: isSendingMessage.value,
@@ -650,7 +648,6 @@ const activeWorkspaceSkillCount = computed(() => {
   return typeof count === 'number' ? count : null
 })
 const backendConnectionState = ref<'online' | 'offline' | 'restored'>('online')
-const backendHealthCheckInFlight = ref(false)
 const backendLastError = ref('')
 const backendConnectionBannerVisible = computed(() => backendConnectionState.value !== 'online')
 const backendConnectionBannerTone = computed(() => backendConnectionState.value === 'offline' ? 'warning' : 'success')
@@ -666,8 +663,11 @@ const backendConnectionMessage = computed(() => {
   return t('app.backend.restoredBody')
 })
 let hasHydratedDefaultNewThreadCwd = false
-let backendHealthInterval: number | null = null
-let backendHealthRestoreTimer: number | null = null
+let backendDisconnectGraceTimer: number | null = null
+let backendRestoreTimer: number | null = null
+let stopBackendConnectionMonitor: (() => void) | null = null
+let lastRealtimePhase: RealtimeConnectionSnapshot['phase'] = 'idle'
+let hasObservedRealtimeConnection = false
 
 onMounted(() => {
   applyCurrentTheme()
@@ -675,7 +675,7 @@ onMounted(() => {
   window.addEventListener('keydown', onWindowKeyDown)
   window.addEventListener('resize', updateMobileViewport)
   browserNotifications.start()
-  startBackendHealthMonitor()
+  startBackendConnectionMonitor()
   void initialize()
 })
 
@@ -683,78 +683,79 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onWindowKeyDown)
   window.removeEventListener('resize', updateMobileViewport)
   browserNotifications.stop()
-  stopBackendHealthMonitor()
+  stopBackendConnectionMonitor?.()
+  stopBackendConnectionMonitor = null
+  clearBackendConnectionTimers()
   stopRealtimeSync()
 })
 
-function startBackendHealthMonitor(): void {
-  void checkBackendHealth()
-  backendHealthInterval = window.setInterval(() => {
-    void checkBackendHealth()
-  }, 5_000)
-}
-
-function stopBackendHealthMonitor(): void {
-  if (backendHealthInterval !== null) {
-    window.clearInterval(backendHealthInterval)
-    backendHealthInterval = null
+function clearBackendConnectionTimers(): void {
+  if (backendDisconnectGraceTimer !== null) {
+    window.clearTimeout(backendDisconnectGraceTimer)
+    backendDisconnectGraceTimer = null
   }
-  if (backendHealthRestoreTimer !== null) {
-    window.clearTimeout(backendHealthRestoreTimer)
-    backendHealthRestoreTimer = null
+  if (backendRestoreTimer !== null) {
+    window.clearTimeout(backendRestoreTimer)
+    backendRestoreTimer = null
   }
 }
 
-function checkBackendHealthNow(): void {
-  void checkBackendHealth()
+function startBackendConnectionMonitor(): void {
+  stopBackendConnectionMonitor?.()
+  stopBackendConnectionMonitor = subscribeRealtimeConnection(handleRealtimeConnection)
 }
 
-async function checkBackendHealth(): Promise<void> {
-  if (backendHealthCheckInFlight.value) return
-  backendHealthCheckInFlight.value = true
-  const controller = new AbortController()
-  const timeoutId = window.setTimeout(() => controller.abort(), 3_000)
-  try {
-    const response = await fetch('/codex-api/meta/version', {
-      cache: 'no-store',
-      signal: controller.signal,
-    })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    markBackendOnline()
-  } catch (error) {
-    markBackendOffline(error)
-  } finally {
-    window.clearTimeout(timeoutId)
-    backendHealthCheckInFlight.value = false
-  }
+function reconnectBackendNow(): void {
+  reconnectCodexRealtime()
 }
 
-function markBackendOnline(): void {
-  backendLastError.value = ''
-  if (backendConnectionState.value === 'offline') {
-    backendConnectionState.value = 'restored'
-    if (backendHealthRestoreTimer !== null) window.clearTimeout(backendHealthRestoreTimer)
-    backendHealthRestoreTimer = window.setTimeout(() => {
+function realtimeDisconnectDetail(snapshot: RealtimeConnectionSnapshot): string {
+  const details: string[] = []
+  if (snapshot.closeCode !== null) details.push(`WebSocket ${String(snapshot.closeCode)}`)
+  if (snapshot.closeReason) details.push(snapshot.closeReason)
+  if (snapshot.reconnectAttempt > 0) details.push(`retry ${String(snapshot.reconnectAttempt)}`)
+  return details.join(' · ')
+}
+
+function handleRealtimeConnection(snapshot: RealtimeConnectionSnapshot): void {
+  const previousPhase = lastRealtimePhase
+  lastRealtimePhase = snapshot.phase
+
+  if (snapshot.phase === 'connected') {
+    if (backendDisconnectGraceTimer !== null) {
+      window.clearTimeout(backendDisconnectGraceTimer)
+      backendDisconnectGraceTimer = null
+    }
+    backendLastError.value = ''
+    const isRecovery = hasObservedRealtimeConnection && previousPhase !== 'connected'
+    hasObservedRealtimeConnection = true
+    if (backendConnectionState.value === 'offline') {
+      backendConnectionState.value = 'restored'
+      if (backendRestoreTimer !== null) window.clearTimeout(backendRestoreTimer)
+      backendRestoreTimer = window.setTimeout(() => {
+        backendConnectionState.value = 'online'
+        backendRestoreTimer = null
+      }, BACKEND_RESTORED_BANNER_MS)
+    } else if (backendConnectionState.value !== 'restored') {
       backendConnectionState.value = 'online'
-      backendHealthRestoreTimer = null
-    }, 4_000)
-    void refreshAll({ loadSelectedMessages: false }).catch(() => undefined)
+    }
+    if (isRecovery) void refreshAll({ loadSelectedMessages: false }).catch(() => undefined)
     return
   }
-  if (backendConnectionState.value !== 'restored') {
-    backendConnectionState.value = 'online'
-  }
-}
 
-function markBackendOffline(error: unknown): void {
-  if (backendHealthRestoreTimer !== null) {
-    window.clearTimeout(backendHealthRestoreTimer)
-    backendHealthRestoreTimer = null
+  if (snapshot.phase === 'idle') return
+  backendLastError.value = realtimeDisconnectDetail(snapshot)
+  if (backendConnectionState.value === 'offline' || backendDisconnectGraceTimer !== null) return
+  if (backendRestoreTimer !== null) {
+    window.clearTimeout(backendRestoreTimer)
+    backendRestoreTimer = null
   }
-  backendConnectionState.value = 'offline'
-  backendLastError.value = error instanceof Error && error.name !== 'AbortError'
-    ? error.message
-    : ''
+  backendDisconnectGraceTimer = window.setTimeout(() => {
+    backendDisconnectGraceTimer = null
+    if (lastRealtimePhase !== 'connected' && lastRealtimePhase !== 'idle') {
+      backendConnectionState.value = 'offline'
+    }
+  }, BACKEND_DISCONNECT_GRACE_MS)
 }
 
 function updateMobileViewport(): void {
@@ -939,8 +940,8 @@ function onRollbackCompleted(result: UiToolingRollbackFileResult): void {
   recordRollbackAudit(result)
 }
 
-function onToggleAutoRefreshTimer(): void {
-  toggleAutoRefreshTimer()
+function onRefreshShell(): void {
+  void refreshAll()
 }
 
 function setSidebarCollapsed(nextValue: boolean): void {
