@@ -463,12 +463,12 @@ describe('desktopMessageState', () => {
   })
 
   it('does not append a refreshed copy of the current user message below a streaming answer', () => {
-    const user = message({ id: 'user-live', role: 'user', text: 'Explain the account flow', messageType: 'userMessage' })
-    const assistant = message({ id: 'agent-live', role: 'assistant', text: 'I am checking it.', messageType: 'agentMessage.live' })
-    const refreshedUser = message({ id: 'user-server', role: 'user', text: 'Explain the account flow', messageType: 'userMessage' })
+    const user = message({ id: 'user-live', turnId: 'turn-current', role: 'user', text: 'Explain the account flow', messageType: 'userMessage' })
+    const assistant = message({ id: 'agent-live', turnId: 'turn-current', role: 'assistant', text: 'I am checking it.', messageType: 'agentMessage.live' })
+    const refreshedUser = message({ id: 'user-server', turnId: 'turn-current', role: 'user', text: 'Explain the account flow', messageType: 'userMessage' })
 
     expect(mergeMessages([user, assistant], [refreshedUser], { preserveMissing: true }).map((row) => row.id))
-      .toEqual(['user-live', 'agent-live'])
+      .toEqual(['user-server', 'agent-live'])
   })
 
   it('keeps an intentionally repeated prompt after a completed turn boundary', () => {

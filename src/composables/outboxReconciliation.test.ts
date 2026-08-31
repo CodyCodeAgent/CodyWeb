@@ -36,9 +36,11 @@ describe('selectReconciledOutboxItems', () => {
     expect(selectReconciledOutboxItems([item('command-1')], [optimistic])).toEqual([])
   })
 
-  it('consumes identical queued prompts one occurrence at a time', () => {
+  it('does not reconcile an unbound command by text alone', () => {
     const native: UiMessage = { id: 'user:native-1', role: 'user', text: 'same prompt', turnId: 'turn-1' }
-    expect(selectReconciledOutboxItems([item('command-1'), item('command-2')], [native]).map(row => row.id)).toEqual(['command-1'])
+    const first = { ...item('command-1'), turnId: undefined }
+    const second = { ...item('command-2'), turnId: undefined }
+    expect(selectReconciledOutboxItems([first, second], [native])).toEqual([])
   })
 
   it('uses the client command identity before text or shared steer Turn identity', () => {

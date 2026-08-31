@@ -164,6 +164,7 @@ describe('codex realtime client', () => {
       getWindow: () => fakeWindow(),
       getWebSocket: () => FakeWebSocket,
       nowIso: () => `2026-07-07T03:00:0${String(now++)}.000Z`,
+      random: () => 0.5,
     })
 
     const unsubscribe = client.subscribeConnection((state) => states.push(state))

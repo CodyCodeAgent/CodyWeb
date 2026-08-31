@@ -58,10 +58,9 @@ export function selectReconciledOutboxItems(
       && item.turnId === message.turnId
       && isEquivalent(item, message)
     ))
-    const occurrence = sameTurn ?? items.find((item) => remainingItemIds.has(item.id) && isEquivalent(item, message))
-    if (!occurrence) continue
-    remainingItemIds.delete(occurrence.id)
-    reconciled.push(occurrence)
+    if (!sameTurn) continue
+    remainingItemIds.delete(sameTurn.id)
+    reconciled.push(sameTurn)
   }
   return reconciled
 }

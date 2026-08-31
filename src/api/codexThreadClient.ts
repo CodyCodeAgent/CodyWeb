@@ -6,6 +6,7 @@ import { buildTurnUserInput, CodexSessionCatalog, CodexThreadCommands } from '@c
 import type { ExecutionContext, TurnInput } from '@codycodeagent/cody-web-core/session'
 import { fetchCodexJson, jsonPostInit, readRpcResult } from './codexHttpClient'
 import type { CodexEvent } from '@codycodeagent/cody-web-core/conversation'
+import type { ConversationAttachment } from '@codycodeagent/cody-web-core/client'
 import type { ComposerImage, ComposerSkill } from '@codycodeagent/cody-web-core/composer'
 
 async function callRpc<T>(method: string, params?: unknown): Promise<T> {
@@ -101,9 +102,9 @@ export async function submitThreadCommand(input: {
   return readRpcResult(payload, status, 'conversation/submit', 'Conversation submit returned malformed envelope')
 }
 
-export async function attachThreadConversation(threadId: string): Promise<void> {
+export async function attachThreadConversation(threadId: string): Promise<ConversationAttachment> {
   const normalizedThreadId = threadId.trim()
-  if (!normalizedThreadId) return
+  if (!normalizedThreadId) return { events: [] }
   const { payload, status } = await fetchCodexJson('/codex-api/conversations/attach', {
     init: jsonPostInit({ threadId: normalizedThreadId, context: { thread: {} } }),
     method: 'conversation/attach',
@@ -111,7 +112,11 @@ export async function attachThreadConversation(threadId: string): Promise<void> 
     httpErrorMessage: 'Conversation owner attach failed',
     timeoutMs: 25_000,
   })
-  readRpcResult(payload, status, 'conversation/attach', 'Conversation attach returned malformed envelope')
+  const result = readRpcResult(payload, status, 'conversation/attach', 'Conversation attach returned malformed envelope') as { events?: unknown }
+  const events = Array.isArray(result.events)
+    ? result.events.filter((event: unknown): event is CodexEvent => Boolean(event && typeof event === 'object'))
+    : []
+  return { events }
 }
 
 export function buildTurnInput(

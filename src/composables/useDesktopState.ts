@@ -137,6 +137,13 @@ export function useDesktopState() {
   const directThreadRecoveryById = new Map<string, Promise<void>>()
   const stopCoreEventSubscription = coreConversations.subscribeEvents((event) => {
     const commandId = typeof event.data.clientCommandId === 'string' ? event.data.clientCommandId : event.itemId
+    if (event.type === 'command.queued' && commandId) {
+      const item = (outboxItemsByThreadId.value[event.threadId] ?? []).find((row) => row.id === commandId)
+      // SessionManager admission is the ownership handoff. IndexedDB only
+      // protects the pre-admission HTTP window and must not become a second
+      // queue after the process owner confirms the command.
+      if (item) void deleteOutboxItem(item)
+    }
     if (event.type === 'command.bound' && commandId && event.turnId) {
       const item = (outboxItemsByThreadId.value[event.threadId] ?? []).find((row) => row.id === commandId)
       if (item) void persistOutboxItem({ ...item, turnId: event.turnId, status: 'sending', updatedAtIso: event.atIso })
@@ -152,6 +159,9 @@ export function useDesktopState() {
     if (event.type === 'user.completed') void reconcileOutboxForThread(event.threadId)
     const conversation = coreConversations.stateFor(event.threadId)
     if (event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.interrupted') {
+      for (const item of (outboxItemsByThreadId.value[event.threadId] ?? []).filter((row) => row.turnId === event.turnId)) {
+        void deleteOutboxItem(item)
+      }
       markThreadUnreadByEvent(event.threadId)
       if (event.threadId === selectedThreadId.value) shouldAutoScrollOnNextAgentEvent = false
     }
@@ -434,16 +444,22 @@ export function useDesktopState() {
   }
 
   function queuedMessagesForThread(threadId: string): UiQueuedMessage[] {
-    return (outboxItemsByThreadId.value[threadId] ?? [])
-      .filter((item) => item.status === 'queued' || item.status === 'sending' || item.status === 'failed')
-      .map((item) => ({
-        id: item.id,
-        threadId: item.threadId,
-        text: item.text,
-        status: item.status,
-        createdAtIso: item.createdAtIso,
-        lastError: item.lastError,
-      }))
+    const localItems = outboxItemsByThreadId.value[threadId] ?? []
+    return coreConversations.stateFor(threadId).messages
+      .filter((message) => message.role === 'user' && Boolean(message.outbox))
+      .map((message) => {
+        const id = message.id.startsWith('user:') ? message.id.slice('user:'.length) : message.id
+        const local = localItems.find((item) => item.id === id)
+        return {
+          id,
+          threadId,
+          text: message.text,
+          status: message.outbox!.status,
+          createdAtIso: local?.createdAtIso ?? '',
+          lastError: message.outbox?.lastError,
+          canManage: message.outbox?.status === 'failed' || Boolean(local && local.status !== 'sending'),
+        }
+      })
   }
 
   async function reconcileOutboxForThread(threadId: string): Promise<void> {
@@ -858,14 +874,13 @@ export function useDesktopState() {
   }
 
   async function submitOutboxItem(item: LocalMessageOutboxItem, mode: 'queue' | 'steer'): Promise<void> {
-    const sendingItem: LocalMessageOutboxItem = {
+    const attemptItem: LocalMessageOutboxItem = {
       ...item,
-      status: 'sending',
       attempts: item.attempts + 1,
       updatedAtIso: new Date().toISOString(),
       lastError: undefined,
     }
-    await persistOutboxItem(sendingItem)
+    await persistOutboxItem(attemptItem)
     isSendingMessage.value = true
     error.value = ''
     const modelId = selectedModelId.value.trim()
@@ -889,9 +904,14 @@ export function useDesktopState() {
           ...(permissionOverride?.sandboxPolicy ? { sandboxPolicy: permissionOverride.sandboxPolicy } : {}),
         },
       })
+      const current = (outboxItemsByThreadId.value[item.threadId] ?? []).find((row) => row.id === item.id)
+      if (current && current.status !== 'failed') await deleteOutboxItem(current)
     } catch (unknownError) {
       const message = unknownError instanceof Error ? unknownError.message : 'Conversation command was not accepted.'
-      await persistOutboxItem({ ...sendingItem, status: 'failed', lastError: message, updatedAtIso: new Date().toISOString() })
+      const current = (outboxItemsByThreadId.value[item.threadId] ?? []).find((row) => row.id === item.id)
+      if (!current?.turnId) {
+        await persistOutboxItem({ ...(current ?? attemptItem), status: 'failed', lastError: message, updatedAtIso: new Date().toISOString() })
+      }
       error.value = message
       throw unknownError
     } finally {
@@ -943,7 +963,28 @@ export function useDesktopState() {
     const normalizedItemId = itemId.trim()
     if (!normalizedThreadId || !normalizedItemId) return
 
-    const item = (outboxItemsByThreadId.value[normalizedThreadId] ?? []).find((row) => row.id === normalizedItemId)
+    let item = (outboxItemsByThreadId.value[normalizedThreadId] ?? []).find((row) => row.id === normalizedItemId)
+    if (!item) {
+      const failed = coreConversations.stateFor(normalizedThreadId).messages.find((message) => (
+        message.id === `user:${normalizedItemId}` && message.role === 'user' && message.outbox?.status === 'failed'
+      ))
+      if (!failed) return
+      const replacement = await enqueueMessageForThread(normalizedThreadId, {
+        text: failed.text,
+        images: (failed.images ?? []).map((url, index) => {
+          const encodedPath = url.startsWith('local-image://') ? url.slice('local-image://'.length) : ''
+          let path = url
+          if (encodedPath) {
+            try { path = decodeURIComponent(encodedPath) } catch { path = encodedPath }
+          }
+          return { id: `retry-image-${String(index)}`, name: `image-${String(index + 1)}`, path, url, mimeType: 'application/octet-stream' }
+        }),
+        skills: (failed.skills ?? []).map((skill) => ({ ...skill, description: '', displayName: skill.displayName ?? skill.name })),
+      })
+      if (!replacement) return
+      item = replacement
+      coreConversations.discard(normalizedThreadId, normalizedItemId)
+    }
     if (!item || item.status === 'sending') return
 
     await submitOutboxItem(item, coreConversations.stateFor(normalizedThreadId).activeTurnId ? 'steer' : 'queue')
@@ -954,9 +995,9 @@ export function useDesktopState() {
     const normalizedItemId = itemId.trim()
     if (!normalizedThreadId || !normalizedItemId) return
     const item = (outboxItemsByThreadId.value[normalizedThreadId] ?? []).find((row) => row.id === normalizedItemId)
-    if (!item || item.status === 'sending') return
-    removeOptimisticUserMessage(normalizedThreadId, item.id)
-    await deleteOutboxItem(item)
+    if (item?.status === 'sending') return
+    removeOptimisticUserMessage(normalizedThreadId, normalizedItemId)
+    if (item) await deleteOutboxItem(item)
   }
 
   async function sendMessageToNewThread(payload: ComposerSubmission<UiComposerContextKind>, cwd: string): Promise<string> {

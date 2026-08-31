@@ -166,10 +166,12 @@ describe('codex thread client', () => {
 
   it('attaches and submits only through the process-wide conversation owner', async () => {
     httpMock.fetchCodexJson
-      .mockResolvedValueOnce({ payload: { result: { attached: true } }, status: 200 })
+      .mockResolvedValueOnce({ payload: { result: { attached: true, events: [{ id: 'active', type: 'turn.started', threadId: 'thread-1', turnId: 'turn-1', atIso: '2026-09-01T00:00:00.000Z', data: {} }] } }, status: 200 })
       .mockResolvedValueOnce({ payload: { result: { clientCommandId: 'command-1' } }, status: 202 })
 
-    await expect(attachThreadConversation(' thread-1 ')).resolves.toBeUndefined()
+    await expect(attachThreadConversation(' thread-1 ')).resolves.toEqual({
+      events: [expect.objectContaining({ type: 'turn.started', turnId: 'turn-1' })],
+    })
     await expect(submitThreadCommand({
       threadId: 'thread-1', clientCommandId: 'command-1', mode: 'queue',
       turnInput: { input: [{ type: 'text', text: 'hello', text_elements: [] }] },

@@ -98,6 +98,7 @@ export type UiQueuedMessage = {
   status: 'queued' | 'sending' | 'failed'
   createdAtIso: string
   lastError?: string
+  canManage?: boolean
 }
 
 export type UiConversationShareMessage = {

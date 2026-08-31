@@ -20,7 +20,7 @@
           <span class="thread-composer-outbox-status">{{ queuedStatusLabel(message) }}</span>
           <p class="thread-composer-outbox-text">{{ message.text }}</p>
           <p v-if="message.lastError" class="thread-composer-outbox-error">{{ message.lastError }}</p>
-          <div class="thread-composer-outbox-actions">
+          <div v-if="message.canManage !== false" class="thread-composer-outbox-actions">
             <button
               class="thread-composer-outbox-send"
               type="button"

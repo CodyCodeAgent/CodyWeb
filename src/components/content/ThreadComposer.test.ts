@@ -111,6 +111,19 @@ describe('ThreadComposer', () => {
     expect(wrapper.emitted('deleteQueuedMessage')).toEqual([[{ threadId: 'thread-1', messageId: 'queued-1' }]])
   })
 
+  it('hides queue actions after the process owner accepts a command', () => {
+    const wrapper = mountComposer({
+      queuedMessages: [{
+        id: 'accepted-1', threadId: 'thread-1', text: 'owned by runtime', status: 'queued', canManage: false,
+        createdAtIso: '2026-08-20T00:00:00.000Z',
+      }],
+    })
+
+    const item = wrapper.get('[data-testid="thread-composer-outbox-item"]')
+    expect(item.text()).toContain('Queued locally')
+    expect(item.find('.thread-composer-outbox-actions').exists()).toBe(false)
+  })
+
   it('places prompt library content into the draft without sending it', async () => {
     const wrapper = mountComposer()
     const input = wrapper.get('[data-testid="thread-composer-input"]')

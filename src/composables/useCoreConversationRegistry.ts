@@ -56,7 +56,16 @@ export function useCoreConversationRegistry() {
 
   function transportForThread(threadId: string): ConversationTransport {
     return {
-      attach: attachThreadConversation,
+      async attach(attachedThreadId) {
+        const attachment = await attachThreadConversation(attachedThreadId)
+        // Attachment events are owner state, not native history. Forward them
+        // through the same product event channel so pre-admission persistence
+        // can complete its ownership handoff after refresh or in another tab.
+        for (const event of attachment.events) {
+          for (const listener of eventListeners) listener(event)
+        }
+        return attachment
+      },
       read: getThreadEvents,
       submit(command) {
         return submitThreadCommand({

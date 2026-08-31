@@ -1362,11 +1362,12 @@ class CodyWebConversationService {
     return () => this.listeners.delete(listener)
   }
 
-  async attach(threadId: string, context: ExecutionContext): Promise<void> {
+  async attach(threadId: string, context: ExecutionContext): Promise<{ events: CodexEvent[] }> {
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) throw new Error('threadId is required')
     await this.ensureAttached(normalizedThreadId, context)
     this.manager.setContext(normalizedThreadId, context)
+    return { events: this.manager.listAttachmentEvents(normalizedThreadId) }
   }
 
   async submit(request: ConversationSubmitRequest): Promise<{ clientCommandId: string }> {

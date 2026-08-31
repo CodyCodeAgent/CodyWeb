@@ -99,7 +99,7 @@ describe('useCoreConversationRegistry', () => {
     })
 
     expect(registry.stateFor('thread-a').messages).toEqual([
-      expect.objectContaining({ id: 'user:command-a', text: '立即显示', outbox: { status: 'sending' } }),
+      expect.objectContaining({ id: 'user:command-a', text: '立即显示', outbox: { status: 'queued' } }),
     ])
     accept({ clientCommandId: 'command-a' })
     await submitting

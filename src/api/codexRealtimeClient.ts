@@ -93,6 +93,7 @@ type CodexRealtimeClientOptions = {
   getWindow?: () => Window | undefined
   getWebSocket?: () => RealtimeSocketConstructor | undefined
   nowIso?: () => string
+  random?: () => number
 }
 
 function initialConnectionSnapshot(): RealtimeConnectionSnapshot {
@@ -293,6 +294,7 @@ export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = 
           closeReason: event.closeReason ?? event.error ?? '',
         })
       },
+      ...(options.random ? { random: options.random } : {}),
     })
   }
 
