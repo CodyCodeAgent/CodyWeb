@@ -30,12 +30,9 @@
         <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages" :cwd="selectedThread?.cwd ?? ''"
           :thread-title="selectedThread?.title ?? ''" :load-error="selectedMessageLoadError" :active-thread-id="composerThreadContextId"
           :scroll-state="selectedThreadScrollState" :live-overlay="liveOverlay" :pending-requests="selectedThreadServerRequests"
-          :is-loading-earlier-messages="isLoadingEarlierMessages" :has-more-messages-before="selectedThreadHasMoreMessagesBefore"
-          :earlier-message-count="selectedThreadEarlierMessageCount"
           :share-selection-active="conversationShareSelecting"
           :initial-share-selected-message-ids="conversationShareSelectedMessageIds"
           @update-scroll-state="emit('updateScrollState', $event)" @respond-server-request="emit('respondServerRequest', $event)"
-          @load-earlier-messages="emit('loadEarlierMessages', $event)"
           @retry-load="emit('retryLoad')" @open-code="emit('openCode', $event)"
           @confirm-share-selection="emit('confirmShareSelection', $event)" @cancel-share-selection="emit('cancelShareSelection')" />
       </template>
@@ -52,11 +49,8 @@
         :thread-title="selectedThread?.title ?? ''"
         :load-error="selectedMessageLoadError" :active-thread-id="composerThreadContextId" :scroll-state="selectedThreadScrollState"
         :live-overlay="liveOverlay" :pending-requests="selectedThreadServerRequests" :share-selection-active="conversationShareSelecting"
-        :is-loading-earlier-messages="isLoadingEarlierMessages" :has-more-messages-before="selectedThreadHasMoreMessagesBefore"
-        :earlier-message-count="selectedThreadEarlierMessageCount"
         :initial-share-selected-message-ids="conversationShareSelectedMessageIds"
         @update-scroll-state="emit('updateScrollState', $event)" @respond-server-request="emit('respondServerRequest', $event)"
-        @load-earlier-messages="emit('loadEarlierMessages', $event)"
         @retry-load="emit('retryLoad')" @open-code="emit('openCode', $event)"
         @confirm-share-selection="emit('confirmShareSelection', $event)" @cancel-share-selection="emit('cancelShareSelection')" />
     </div></div>
@@ -109,7 +103,6 @@ defineProps<{
   selectedCollaborationModeName: string; selectedPermissionMode: UiComposerPermissionMode; selectedSubmitMode: ComposerSubmitMode
   homeComposerBusyLabel: string
   filteredMessages: UiMessage[]; isLoadingMessages: boolean; selectedThread: UiThread | null; selectedMessageLoadError: string
-  isLoadingEarlierMessages: boolean; selectedThreadHasMoreMessagesBefore: boolean; selectedThreadEarlierMessageCount: number
   selectedThreadScrollState: ConversationScrollState | null; liveOverlay: UiLiveOverlay | null; selectedThreadServerRequests: UiServerRequest[]
   selectedQueuedMessages: UiQueuedMessage[]
   threadComposerBusyLabel: string; isSelectedThreadInProgress: boolean; isInterruptingTurn: boolean
@@ -122,7 +115,6 @@ const emit = defineEmits<{
   selectCollaborationMode: [string]; selectPermissionMode: [UiComposerPermissionMode]
   selectSubmitMode: [ComposerSubmitMode]
   updateScrollState: [{ threadId: string; state: ConversationScrollState }]; retryLoad: []; interrupt: []
-  loadEarlierMessages: [threadId: string]
   sendQueuedMessageNow: [payload: { threadId: string; messageId: string }]
   deleteQueuedMessage: [payload: { threadId: string; messageId: string }]
   openCode: [location: { path?: string; line?: number; mode?: 'file' | 'diff' }]

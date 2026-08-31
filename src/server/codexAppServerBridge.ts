@@ -33,11 +33,9 @@ import { createCatalogRoutes } from './routes/catalogRoutes.js'
 import { createContentRoutes } from './routes/contentRoutes.js'
 import { createGatewayRoutes } from './routes/gatewayRoutes.js'
 import { createFeishuRoutes } from './routes/feishuRoutes.js'
-import { createThreadCacheRoutes } from './routes/threadCacheRoutes.js'
 import { createWorkspaceToolingRoutes } from './routes/workspaceToolingRoutes.js'
 import { createSmokeRoutes } from './routes/smokeRoutes.js'
 import { createFeishuIntegration, type FeishuIntegration } from './feishuIntegration.js'
-import { ThreadMessageCache } from './threadMessageCache.js'
 import {
   createWorkspaceWorkflowRun,
   createToolingCheckpoint,
@@ -1318,7 +1316,6 @@ type CodexBridgeMiddleware = ((req: IncomingMessage, res: ServerResponse, next: 
 type SharedBridgeState = {
   appServer: AppServerProcess
   catalogSync: CatalogSyncService
-  threadMessageCache: ThreadMessageCache
   tokenUsageReconciliation?: TokenUsageReconciliationService
   agentTasks?: AgentTaskService
   methodCatalog: MethodCatalog
@@ -1486,21 +1483,11 @@ function getSharedBridgeState(): SharedBridgeState {
         catalogSync: existing.catalogSync,
       })
     }
-    if (!existing.threadMessageCache) {
-      existing.threadMessageCache = new ThreadMessageCache({
-        rpc: (method, params) => existing.appServer.rpc(method, params),
-      })
-      existing.threadMessageCache.start()
-    }
     return existing
   }
 
   const appServer = new AppServerProcess()
   const catalogSync = new CatalogSyncService((method, params) => appServer.rpc(method, params))
-  const threadMessageCache = new ThreadMessageCache({
-    rpc: (method, params) => appServer.rpc(method, params),
-  })
-  threadMessageCache.start()
   const tokenUsageReconciliation = new TokenUsageReconciliationService()
   const productEventHub = new ProductEventHub()
   const agentTasks = new AgentTaskService((method, params) => appServer.rpc(method, params), {
@@ -1530,17 +1517,7 @@ function getSharedBridgeState(): SharedBridgeState {
   const stopNotificationDispatch = appServer.onNotification((notification) => {
     catalogSync.onNotification(notification.method)
     const normalizedEvents = normalizeCodexNotification(notification)
-    const cachedThreadId = normalizedEvents[0]?.threadId || readThreadId(notification.params)
-    if (
-      cachedThreadId &&
-      (
-        latestTerminalTurnEvent(normalizedEvents) !== null ||
-        normalizedEvents.some((event) => event.type === 'thread.compacted') ||
-        notification.method === 'thread/rollback'
-      )
-    ) {
-      threadMessageCache.markDirty(cachedThreadId)
-    }
+    const notificationThreadId = normalizedEvents[0]?.threadId || readThreadId(notification.params)
     const isAgentTaskNotification = agentTasks.ownsNotification(notification)
     agentTasks.onNotification(notification)
     const payload = {
@@ -1549,7 +1526,7 @@ function getSharedBridgeState(): SharedBridgeState {
       metadata: {} as Record<string, unknown>,
     }
     if (!isAgentTaskNotification) void notificationDispatcher.handleCodexNotification(payload)
-    const queueKey = cachedThreadId || 'global'
+    const queueKey = notificationThreadId || 'global'
     enqueueNotificationPersistence(queueKey, async () => {
       const workspaceCwd = await resolveNotificationWorkspaceCwd(notification.params)
       try {
@@ -1571,7 +1548,6 @@ function getSharedBridgeState(): SharedBridgeState {
   const created: SharedBridgeState = {
     appServer,
     catalogSync,
-    threadMessageCache,
     tokenUsageReconciliation,
     agentTasks,
     methodCatalog: new MethodCatalog(),
@@ -1644,19 +1620,8 @@ async function handleCheckpointHealthRoute(url: URL, res: ServerResponse): Promi
 }
 
 export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
-  const { appServer, catalogSync, threadMessageCache, tokenUsageReconciliation, agentTasks, methodCatalog, stopNotificationDispatch, productEventHub, feishuIntegration } = getSharedBridgeState()
-  const rpc = async (method: string, params: unknown): Promise<unknown> => {
-    const result = await appServer.rpc(method, params)
-    // `thread/resume` is a request/response operation: an existing thread can
-    // become available without emitting a terminal notification.  If this
-    // process previously cached an empty transcript for a deep link, retain no
-    // authority for that snapshot after the resume succeeds.
-    if (method === 'thread/resume') {
-      const threadId = readThreadId(params)
-      if (threadId) threadMessageCache.markDirty(threadId)
-    }
-    return result
-  }
+  const { appServer, catalogSync, tokenUsageReconciliation, agentTasks, methodCatalog, stopNotificationDispatch, productEventHub, feishuIntegration } = getSharedBridgeState()
+  const rpc = (method: string, params: unknown): Promise<unknown> => appServer.rpc(method, params)
   const domainRoutes = [
     createGatewayRoutes({
       rpc,
@@ -1670,7 +1635,6 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     createBackgroundTaskRoutes({ catalogSync, tokenUsageReconciliation }),
     createAgentTaskRoutes(agentTasks),
     createCatalogRoutes(catalogSync),
-    createThreadCacheRoutes(threadMessageCache),
     createFeishuRoutes(feishuIntegration.routes),
     createContentRoutes({ draftScenarioPackage: feishuIntegration.draftScenarioPackage }),
     createWorkspaceToolingRoutes({
@@ -1705,7 +1669,6 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
 
   middleware.dispose = () => {
     catalogSync.stop()
-    threadMessageCache.stop()
     tokenUsageReconciliation?.stop()
     agentTasks?.stop()
     stopNotificationDispatch()

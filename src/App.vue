@@ -296,7 +296,6 @@
             isLoadingMessages, selectedThread, selectedMessageLoadError, selectedThreadScrollState, liveOverlay,
             selectedThreadServerRequests, selectedQueuedMessages, threadComposerBusyLabel,
             isSelectedThreadInProgress, isInterruptingTurn, isCodeView, contextInsertion,
-            isLoadingEarlierMessages, selectedThreadHasMoreMessagesBefore, selectedThreadEarlierMessageCount,
             conversationShareSelecting: isConversationShareSelecting, conversationShareSelectedMessageIds }"
           @select-thread="onSelectThread" @respond-server-request="onRespondServerRequest"
           @select-new-thread-folder="onSelectNewThreadFolder" @submit-message="onSubmitThreadMessage"
@@ -304,7 +303,6 @@
           @select-collaboration-mode="onSelectCollaborationMode" @select-permission-mode="onSelectPermissionMode"
           @select-submit-mode="onSelectSubmitMode"
           @update-scroll-state="onUpdateThreadScrollState" @retry-load="onRetryLoadMessages" @interrupt="onInterruptTurn"
-          @load-earlier-messages="onLoadEarlierMessages"
           @send-queued-message-now="onSendQueuedMessageNow" @delete-queued-message="onDeleteQueuedMessage"
           @open-code="openCodeView" @ask-code="onAskCode" @confirm-share-selection="onConfirmConversationShareSelection"
           @cancel-share-selection="cancelConversationShareSelection"
@@ -442,9 +440,6 @@ const {
   messages,
   isLoadingThreads,
   isLoadingMessages,
-  isLoadingEarlierMessages,
-  selectedThreadHasMoreMessagesBefore,
-  selectedThreadEarlierMessageCount,
   hasLoadedSelectedMessages,
   isSendingMessage,
   isInterruptingTurn,
@@ -458,7 +453,6 @@ const {
   recoverDirectThread,
   selectThread,
   loadMessages,
-  loadEarlierMessages,
   setThreadScrollState,
   hideThreadById,
   restoreThreadById,
@@ -854,11 +848,6 @@ function onRetryLoadMessages(): void {
   void loadMessages(threadId)
 }
 
-function onLoadEarlierMessages(threadId: string): void {
-  if (!threadId) return
-  void loadEarlierMessages(threadId)
-}
-
 function onSendQueuedMessageNow(payload: { threadId: string; messageId: string }): void {
   void sendQueuedMessageNow(payload.threadId, payload.messageId)
 }
@@ -1112,7 +1101,7 @@ async function syncThreadSelectionWithRoute(): Promise<void> {
     // A deep link must not require the user to send a first message first.
     void selectThread(threadId)
     void recoverDirectThread(threadId).then(() => selectThread(threadId)).catch(() => {
-      // The normal thread-cache load keeps the route usable and surfaces its
+      // The direct native thread/read keeps the route usable and surfaces its
       // own actionable error if this native thread can no longer be resumed.
     })
   }

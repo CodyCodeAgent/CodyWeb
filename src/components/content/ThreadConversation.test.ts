@@ -42,9 +42,6 @@ function mountConversation(input: {
   } | null
   shareSelectionActive?: boolean
   initialShareSelectedMessageIds?: string[]
-  hasMoreMessagesBefore?: boolean
-  isLoadingEarlierMessages?: boolean
-  earlierMessageCount?: number
 } = {}) {
   return mount(ThreadConversation, {
     props: {
@@ -56,9 +53,6 @@ function mountConversation(input: {
       activeThreadId: 'thread-1',
       threadTitle: 'Loading state test',
       scrollState: input.scrollState ?? null,
-      hasMoreMessagesBefore: input.hasMoreMessagesBefore ?? false,
-      isLoadingEarlierMessages: input.isLoadingEarlierMessages ?? false,
-      earlierMessageCount: input.earlierMessageCount ?? 0,
       shareSelectionActive: input.shareSelectionActive ?? false,
       initialShareSelectedMessageIds: input.initialShareSelectedMessageIds ?? [],
     },
@@ -235,22 +229,22 @@ describe('ThreadConversation', () => {
     expect(receipt.find('summary').exists()).toBe(false)
   })
 
-  it('renders the server-provided page and emits when earlier rows are requested', async () => {
-    const messages = Array.from({ length: 10 }, (_, index) => message(index + 111))
-    const wrapper = mountConversation({
-      messages,
-      hasMoreMessagesBefore: true,
-      earlierMessageCount: 110,
-    })
+  it('keeps the full native transcript locally and reveals history in Core-sized windows', async () => {
+    const messages = Array.from({ length: 200 }, (_, index) => message(index + 1))
+    const wrapper = mountConversation({ messages })
 
     const renderedMessages = () => wrapper.findAll('[data-testid="conversation-message"]')
-    expect(renderedMessages()).toHaveLength(10)
-    expect(renderedMessages()[0].attributes('data-message-id')).toBe('message-111')
-    expect(wrapper.get('[data-testid="conversation-history-button"]').text()).toContain('Show 10 earlier messages')
+    expect(renderedMessages()).toHaveLength(80)
+    expect(renderedMessages()[0].attributes('data-message-id')).toBe('message-121')
+    expect(wrapper.get('[data-testid="conversation-history-button"]').text()).toContain('Show 80 earlier messages')
+    expect(wrapper.get('[data-testid="conversation-history-button"]').text()).toContain('120 hidden')
 
     await wrapper.get('[data-testid="conversation-history-button"]').trigger('click')
+    await nextTick()
 
-    expect(wrapper.emitted('loadEarlierMessages')).toEqual([['thread-1']])
+    expect(renderedMessages()).toHaveLength(160)
+    expect(renderedMessages()[0].attributes('data-message-id')).toBe('message-41')
+    expect(wrapper.get('[data-testid="conversation-history-button"]').text()).toContain('40 hidden')
   })
 
   it('keeps copy affordance on the last assistant response in the loaded page', () => {
@@ -347,113 +341,48 @@ describe('ThreadConversation', () => {
     expect(list.scrollTop).toBe(300)
   })
 
-  it('auto-loads earlier messages when scrolling near the top of a cached page', async () => {
-    const messages = Array.from({ length: 10 }, (_, index) => message(index + 191))
-    const earlierMessages = Array.from({ length: 10 }, (_, index) => message(index + 181))
+
+  it('reveals another local history window when scrolling near the top', async () => {
     const wrapper = mountConversation({
-      messages,
-      hasMoreMessagesBefore: true,
-      earlierMessageCount: 190,
+      messages: Array.from({ length: 200 }, (_, index) => message(index + 1)),
     })
     const list = wrapper.get('[data-testid="conversation-list"]').element as HTMLElement
-
-    Object.defineProperty(list, 'scrollHeight', {
-      configurable: true,
-      value: 2000,
-    })
-    Object.defineProperty(list, 'clientHeight', {
-      configurable: true,
-      value: 600,
-    })
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 2000 })
+    Object.defineProperty(list, 'clientHeight', { configurable: true, value: 600 })
     list.scrollTop = 0
 
-    expect(wrapper.findAll('[data-testid="conversation-message"]')).toHaveLength(10)
-    expect(wrapper.find('[data-message-id="message-191"]').exists()).toBe(true)
-
+    expect(wrapper.findAll('[data-testid="conversation-message"]')).toHaveLength(80)
     await wrapper.get('[data-testid="conversation-list"]').trigger('scroll')
-    expect(wrapper.emitted('loadEarlierMessages')).toEqual([['thread-1']])
-    await wrapper.setProps({ isLoadingEarlierMessages: true })
-    Object.defineProperty(list, 'scrollHeight', {
-      configurable: true,
-      value: 3200,
-    })
-    await wrapper.setProps({
-      messages: [...earlierMessages, ...messages],
-      earlierMessageCount: 180,
-      isLoadingEarlierMessages: false,
-    })
-    await nextTick()
     await nextTick()
 
-    const renderedMessages = wrapper.findAll('[data-testid="conversation-message"]')
-    expect(renderedMessages).toHaveLength(20)
-    expect(renderedMessages[0].attributes('data-message-id')).toBe('message-181')
-    expect(wrapper.get('[data-testid="conversation-history-button"]').text()).toContain('180 hidden')
-    expect(list.scrollTop).toBe(1200)
+    expect(wrapper.findAll('[data-testid="conversation-message"]')).toHaveLength(160)
+    expect(wrapper.find('[data-message-id="message-41"]').exists()).toBe(true)
   })
 
-  it('restores the same visible message anchor after prepending history', async () => {
-    const messages = Array.from({ length: 10 }, (_, index) => message(index + 191))
-    const earlierMessages = Array.from({ length: 10 }, (_, index) => message(index + 181))
-    const wrapper = mountConversation({
-      messages,
-      hasMoreMessagesBefore: true,
-      earlierMessageCount: 190,
-    })
-    const list = wrapper.get('[data-testid="conversation-list"]').element as HTMLElement
-    const anchor = wrapper.get('[data-message-id="message-191"]').element as HTMLElement
-    let anchorTop = 100
-    vi.spyOn(list, 'getBoundingClientRect').mockReturnValue({
-      top: 0, bottom: 600, left: 0, right: 800, width: 800, height: 600, x: 0, y: 0, toJSON: () => ({}),
-    })
-    vi.spyOn(anchor, 'getBoundingClientRect').mockImplementation(() => ({
-      top: anchorTop, bottom: anchorTop + 80, left: 0, right: 800, width: 800, height: 80, x: 0, y: anchorTop, toJSON: () => ({}),
-    }))
-    list.scrollTop = 40
-
-    await wrapper.get('[data-testid="conversation-history-button"]').trigger('click')
-    await wrapper.setProps({ isLoadingEarlierMessages: true })
-    anchorTop = 460
-    await wrapper.setProps({
-      messages: [...earlierMessages, ...messages],
-      earlierMessageCount: 180,
-      isLoadingEarlierMessages: false,
-    })
-    await nextTick()
-    await nextTick()
-
-    expect(list.scrollTop).toBe(400)
-  })
-
-  it('resets pending earlier-load scroll restoration when switching threads', async () => {
-    const firstThreadMessages = Array.from({ length: 10 }, (_, index) => message(index + 111, {
+  it('resets the local history window when switching threads', async () => {
+    const firstThreadMessages = Array.from({ length: 200 }, (_, index) => message(index + 1, {
       id: `first-${String(index + 1)}`,
     }))
-    const secondThreadMessages = Array.from({ length: 10 }, (_, index) => message(index + 151, {
+    const secondThreadMessages = Array.from({ length: 200 }, (_, index) => message(index + 1, {
       id: `second-${String(index + 1)}`,
     }))
-    const wrapper = mountConversation({
-      messages: firstThreadMessages,
-      hasMoreMessagesBefore: true,
-      earlierMessageCount: 110,
-    })
+    const wrapper = mountConversation({ messages: firstThreadMessages })
 
     await wrapper.get('[data-testid="conversation-history-button"]').trigger('click')
-    expect(wrapper.emitted('loadEarlierMessages')).toEqual([['thread-1']])
+    await nextTick()
+    expect(wrapper.findAll('[data-testid="conversation-message"]')).toHaveLength(160)
 
     await wrapper.setProps({
       activeThreadId: 'thread-2',
       messages: secondThreadMessages,
       scrollState: null,
-      hasMoreMessagesBefore: true,
-      earlierMessageCount: 150,
     })
     await nextTick()
 
     const renderedMessages = wrapper.findAll('[data-testid="conversation-message"]')
-    expect(renderedMessages).toHaveLength(10)
-    expect(renderedMessages[0].attributes('data-message-id')).toBe('second-1')
-    expect(wrapper.get('[data-testid="conversation-history-button"]').text()).toContain('Show 10 earlier messages')
+    expect(renderedMessages).toHaveLength(80)
+    expect(renderedMessages[0].attributes('data-message-id')).toBe('second-121')
+    expect(wrapper.get('[data-testid="conversation-history-button"]').text()).toContain('Show 80 earlier messages')
   })
 
   it('shows initial live reasoning details without waiting for another realtime update', () => {

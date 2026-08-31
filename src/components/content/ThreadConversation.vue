@@ -188,10 +188,9 @@
           data-testid="conversation-history-button"
           class="conversation-history-button"
           type="button"
-          :disabled="isLoadingEarlierMessages"
           @click="onLoadEarlierMessages"
         >
-          {{ isLoadingEarlierMessages ? 'Loading earlier messages...' : historyButtonLabel }}
+          {{ historyButtonLabel }}
           <span>{{ hiddenMessagesCount }} hidden</span>
         </button>
         <p class="conversation-history-window">{{ visibleMessageWindowLabel }}</p>
@@ -486,13 +485,19 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
+  DEFAULT_VISIBLE_MESSAGE_COUNT,
+  MESSAGE_HISTORY_PAGE_SIZE,
   buildConversationScrollMetrics,
   buildConversationScrollState,
+  hiddenMessageCount as coreHiddenMessageCount,
+  nextVisibleMessageCount,
   normalizedConversationBottomLockFrames,
+  normalizedVisibleMessageCount,
   preservedConversationScrollTop,
   restoredConversationScrollTop,
   shouldPreserveConversationViewport,
   shouldRestoreConversationToBottom,
+  visibleMessageStartIndex,
   type ConversationScrollState,
 } from '@codycodeagent/cody-web-core/conversation'
 import type { UiLiveOverlay, UiMessage, UiServerRequest, UiServerRequestReply } from '../../types/codex'
@@ -566,9 +571,6 @@ const props = defineProps<{
   loadError: string
   activeThreadId: string
   scrollState: ConversationScrollState | null
-  isLoadingEarlierMessages?: boolean
-  hasMoreMessagesBefore?: boolean
-  earlierMessageCount?: number
   shareSelectionActive?: boolean
   initialShareSelectedMessageIds?: string[]
 }>()
@@ -577,7 +579,6 @@ const emit = defineEmits<{
   updateScrollState: [payload: { threadId: string; state: ConversationScrollState }]
   respondServerRequest: [payload: UiServerRequestReply]
   retryLoad: []
-  loadEarlierMessages: [threadId: string]
   openCode: [location: { path?: string; line?: number; mode?: 'file' | 'diff' }]
   confirmShareSelection: [messageIds: string[]]
   cancelShareSelection: []
@@ -618,23 +619,30 @@ let pendingEarlierScrollAnchor: {
   messageId: string
   viewportOffset: number
   scrollHeight: number
-  earlierMessageCount: number
+  hiddenMessageCount: number
 } | null = null
 let isRestoringEarlierMessages = false
 const trackedPendingImages = new WeakSet<HTMLImageElement>()
-const CACHED_MESSAGE_PAGE_SIZE = 10
+const requestedVisibleMessageCount = ref(DEFAULT_VISIBLE_MESSAGE_COUNT)
 
 const hasLiveOverlayDetails = computed(() => {
   return hasThreadLiveOverlayDetails(props.liveOverlay)
 })
 const liveOverlayDetailsLabel = computed(() => liveOverlayDetailsToggleLabel(isLiveOverlayExpanded.value))
 const conversationRequestCards = computed(() => buildServerRequestCards(props.pendingRequests))
-const normalizedVisibleMessagesCount = computed(() => props.messages.length)
-const visibleMessagesStartIndex = computed(() => 0)
-const hiddenMessagesCount = computed(() => props.hasMoreMessagesBefore === true
-  ? Math.max(Math.trunc(props.earlierMessageCount ?? CACHED_MESSAGE_PAGE_SIZE), 1)
-  : 0)
-const visibleMessages = computed(() => props.messages)
+const normalizedVisibleMessagesCount = computed(() => normalizedVisibleMessageCount(
+  props.messages.length,
+  requestedVisibleMessageCount.value,
+))
+const visibleMessagesStartIndex = computed(() => visibleMessageStartIndex(
+  props.messages.length,
+  normalizedVisibleMessagesCount.value,
+))
+const hiddenMessagesCount = computed(() => coreHiddenMessageCount(
+  props.messages.length,
+  normalizedVisibleMessagesCount.value,
+))
+const visibleMessages = computed(() => props.messages.slice(visibleMessagesStartIndex.value))
 const visibleFileChangeGroups = computed(() => buildFileChangeMessageGroups(visibleMessages.value))
 const fileChangeGroupsByHeadId = computed<Record<string, FileChangeMessageGroup<UiMessage>>>(() => Object.fromEntries(
   visibleFileChangeGroups.value.map((group) => [group.headId, group]),
@@ -721,9 +729,9 @@ function outboxStatusLabel(message: UiMessage): string {
   if (message.outbox?.status === 'failed') return t('conversation.outbox.failed')
   return t('conversation.outbox.queued')
 }
-const historyButtonLabel = computed(() => historyPageButtonLabel(hiddenMessagesCount.value, CACHED_MESSAGE_PAGE_SIZE))
+const historyButtonLabel = computed(() => historyPageButtonLabel(hiddenMessagesCount.value, MESSAGE_HISTORY_PAGE_SIZE))
 const visibleMessageWindowLabel = computed(() => visibleMessageWindowSummary(
-  props.messages.length + hiddenMessagesCount.value,
+  props.messages.length,
   normalizedVisibleMessagesCount.value,
 ))
 const showBlockingLoading = computed(() => shouldShowBlockingConversationLoading({
@@ -962,7 +970,7 @@ function onScrollToBottomClick(): void {
 }
 
 async function revealEarlierMessages(): Promise<void> {
-  if (!props.activeThreadId || hiddenMessagesCount.value <= 0 || props.isLoadingEarlierMessages === true) return
+  if (!props.activeThreadId || hiddenMessagesCount.value <= 0 || isRestoringEarlierMessages) return
   const container = conversationListRef.value
   if (!container) return
   const containerRect = container.getBoundingClientRect()
@@ -977,11 +985,15 @@ async function revealEarlierMessages(): Promise<void> {
       ? visibleAnchor.getBoundingClientRect().top - containerRect.top
       : 0,
     scrollHeight: container.scrollHeight,
-    earlierMessageCount: hiddenMessagesCount.value,
+    hiddenMessageCount: hiddenMessagesCount.value,
   }
   isRestoringEarlierMessages = true
   isFollowingBottom.value = false
-  emit('loadEarlierMessages', props.activeThreadId)
+  requestedVisibleMessageCount.value = nextVisibleMessageCount(
+    props.messages.length,
+    normalizedVisibleMessagesCount.value,
+    MESSAGE_HISTORY_PAGE_SIZE,
+  )
 }
 
 function onLoadEarlierMessages(): void {
@@ -1111,10 +1123,10 @@ watch(
 )
 
 watch(
-  () => props.earlierMessageCount,
+  hiddenMessagesCount,
   async (nextCount) => {
     const pending = pendingEarlierScrollAnchor
-    if (!pending || Math.max(Math.trunc(nextCount ?? 0), 0) >= pending.earlierMessageCount) return
+    if (!pending || nextCount >= pending.hiddenMessageCount) return
     pendingEarlierScrollAnchor = null
     await nextTick()
     const container = conversationListRef.value
@@ -1180,6 +1192,7 @@ watch(
     expandedToolOutputIds.value = {}
     pendingEarlierScrollAnchor = null
     isRestoringEarlierMessages = false
+    requestedVisibleMessageCount.value = DEFAULT_VISIBLE_MESSAGE_COUNT
     hasAppliedInitialScroll = false
     isFollowingBottom.value = props.scrollState?.isAtBottom !== false
     if (bottomLockFrame) {
@@ -1196,7 +1209,7 @@ function onConversationScroll(): void {
   if (
     container.scrollTop <= HISTORY_TOP_THRESHOLD_PX &&
     hiddenMessagesCount.value > 0 &&
-    props.isLoadingEarlierMessages !== true
+    !isRestoringEarlierMessages
   ) {
     void revealEarlierMessages()
   }

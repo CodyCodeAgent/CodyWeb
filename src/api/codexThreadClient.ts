@@ -1,11 +1,17 @@
 import type { ReasoningEffort } from '@codycodeagent/cody-web-core/protocol'
 import { normalizeCodexApiError } from './codexErrors'
-import { fetchCodexJson, queryPath, readRpcResult } from './codexHttpClient'
 import { rpcCall } from './codexRpcClient'
 import { normalizeCatalogThreadGroups } from './normalizers/v2'
-import type { UiMessage, UiProjectGroup, UiThreadMessagePage } from '../types/codex'
+import { toLocalImagePreviewUrl } from './normalizers/userMessageContent'
+import type { UiMessage, UiProjectGroup } from '../types/codex'
 import type { TurnPermissionOverride } from '../composables/desktopTurnPermissions'
 import { buildTurnUserInput, CodexSessionCatalog, CodexThreadCommands } from '@codycodeagent/cody-web-core/session'
+import {
+  conversationTranscriptFromState,
+  createConversationState,
+  reduceConversationEvents,
+  type CodexEvent,
+} from '@codycodeagent/cody-web-core/conversation'
 import type {
   ComposerCollaborationModeOption,
   ComposerImage,
@@ -37,7 +43,27 @@ async function getThreadGroupsV2(archived = false): Promise<UiProjectGroup[]> {
 }
 
 async function getThreadMessagesV2(threadId: string): Promise<UiMessage[]> {
-  return (await getThreadMessagesPage(threadId)).messages
+  const normalizedThreadId = threadId.trim()
+  if (!normalizedThreadId) return []
+  const snapshot = await sessionCatalog.readThreadSnapshot(normalizedThreadId)
+  return normalizeThreadMessages(normalizedThreadId, snapshot.events)
+}
+
+function normalizeThreadMessages(threadId: string, events: CodexEvent[]): UiMessage[] {
+  const state = reduceConversationEvents(createConversationState(threadId), events)
+  return conversationTranscriptFromState(state).map((message): UiMessage => ({
+    ...message,
+    ...(message.images?.length ? {
+      images: message.images.map((image) => image.startsWith('/') ? toLocalImagePreviewUrl(image) : image),
+    } : {}),
+    ...(message.skills?.length ? {
+      skills: message.skills.map((skill) => ({
+        ...skill,
+        displayName: skill.displayName ?? skill.name,
+        description: '',
+      })),
+    } : {}),
+  }))
 }
 
 export async function getThreadGroups(archived = false): Promise<UiProjectGroup[]> {
@@ -68,33 +94,6 @@ export async function getThreadRuntimeStatus(threadId: string): Promise<'notLoad
     return (await sessionCatalog.readThreadSnapshot(normalizedThreadId, false)).summary.status
   } catch (error) {
     throw normalizeCodexApiError(error, `Failed to read runtime status for thread ${normalizedThreadId}`, 'thread/read')
-  }
-}
-
-export async function getThreadMessagesPage(
-  threadId: string,
-  options: { limit?: number; offset?: number; beforeMessageId?: string } = {},
-): Promise<UiThreadMessagePage> {
-  const normalizedThreadId = threadId.trim()
-  try {
-    const { payload, status } = await fetchCodexJson(queryPath('/codex-api/thread-cache/messages', {
-      threadId: normalizedThreadId,
-      limit: options.limit ?? 10,
-      offset: options.offset ?? 0,
-      beforeMessageId: options.beforeMessageId,
-    }), {
-      method: 'thread-cache/messages',
-      networkErrorMessage: `Thread cache failed before request was sent`,
-      httpErrorMessage: `Thread cache failed`,
-    })
-    return readRpcResult<UiThreadMessagePage>(
-      payload,
-      status,
-      'thread-cache/messages',
-      'Thread cache returned malformed envelope',
-    )
-  } catch (error) {
-    throw normalizeCodexApiError(error, `Failed to load thread ${normalizedThreadId}`, 'thread-cache/messages')
   }
 }
 

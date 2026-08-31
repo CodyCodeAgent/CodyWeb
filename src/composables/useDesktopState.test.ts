@@ -8,38 +8,13 @@ import {
   resetLocalMessageOutboxForTests,
   saveLocalMessageOutboxItem,
 } from './localMessageOutbox'
-import type { UiMessage, UiProjectGroup, UiRateLimitSnapshot, UiThreadMessagePage, UiToolingRollbackFileResult } from '../types/codex'
+import type { UiMessage, UiProjectGroup, UiRateLimitSnapshot, UiToolingRollbackFileResult } from '../types/codex'
 import type { RpcNotification } from '../api/codexRealtimeClient'
 
 const codexApiMock = vi.hoisted(() => {
   let notificationListener: ((value: RpcNotification) => void) | null = null
   const getThreadGroups = vi.fn(async (): Promise<UiProjectGroup[]> => [])
   const getThreadMessages = vi.fn(async (_threadId?: string): Promise<UiMessage[]> => [])
-  const getThreadMessagesPage = vi.fn(async (
-    threadId?: string,
-    options: { limit?: number; offset?: number; beforeMessageId?: string } = {},
-  ): Promise<UiThreadMessagePage> => {
-    const messages = await getThreadMessages(threadId)
-    const limit = options.limit ?? 10
-    const offset = options.offset ?? 0
-    return {
-      threadId: threadId ?? '',
-      messages,
-      total: messages.length,
-      limit,
-      offset,
-      nextOffset: offset + messages.length,
-      nextBeforeMessageId: messages[0]?.id ?? null,
-      remainingBefore: 0,
-      hasMoreBefore: false,
-      cache: {
-        status: 'ready',
-        hydratedAtIso: '2026-07-07T00:00:00.000Z',
-        refreshedAtIso: '2026-07-07T00:00:00.000Z',
-        checkedAtIso: '2026-07-07T00:00:00.000Z',
-      },
-    }
-  })
   const startThreadTurn = vi.fn()
   const startThreadTurnWithResumeRecovery = vi.fn((...args: unknown[]) => startThreadTurn(...args))
 
@@ -76,7 +51,6 @@ const codexApiMock = vi.hoisted(() => {
     setProjectHidden: vi.fn(),
     setThreadHidden: vi.fn(),
     getThreadMessages,
-    getThreadMessagesPage,
     getThreadRuntimeStatus: vi.fn(async () => 'idle'),
     interruptThreadTurn: vi.fn(),
     normalizeRateLimitSnapshot: vi.fn(() => null),
@@ -127,7 +101,6 @@ vi.mock('../api/codexThreadClient', () => ({
   compactThread: codexApiMock.compactThread,
   forkThread: codexApiMock.forkThread,
   getThreadMessages: codexApiMock.getThreadMessages,
-  getThreadMessagesPage: codexApiMock.getThreadMessagesPage,
   getThreadRuntimeStatus: codexApiMock.getThreadRuntimeStatus,
   interruptThreadTurn: codexApiMock.interruptThreadTurn,
   renameThread: codexApiMock.renameThread,
@@ -201,34 +174,6 @@ function buildRollbackResult(overrides: Partial<UiToolingRollbackFileResult> = {
       hasPatch: true,
     },
     ...overrides,
-  }
-}
-
-function buildMessagePage(
-  threadId: string,
-  messages: UiMessage[],
-  overrides: Partial<Omit<UiThreadMessagePage, 'threadId' | 'messages' | 'cache'>> = {},
-): UiThreadMessagePage {
-  const offset = overrides.offset ?? 0
-  const limit = overrides.limit ?? 10
-  const total = overrides.total ?? messages.length
-  const nextOffset = overrides.nextOffset ?? offset + messages.length
-  return {
-    threadId,
-    messages,
-    total,
-    limit,
-    offset,
-    nextOffset,
-    nextBeforeMessageId: overrides.nextBeforeMessageId ?? messages[0]?.id ?? null,
-    remainingBefore: overrides.remainingBefore ?? Math.max(total - nextOffset, 0),
-    hasMoreBefore: overrides.hasMoreBefore ?? false,
-    cache: {
-      status: 'ready',
-      hydratedAtIso: '2026-07-07T00:00:00.000Z',
-      refreshedAtIso: '2026-07-07T00:00:00.000Z',
-      checkedAtIso: '2026-07-07T00:00:00.000Z',
-    },
   }
 }
 
@@ -821,172 +766,6 @@ describe('useDesktopState realtime messages', () => {
     firstLoad.resolve([{ id: 'old', role: 'assistant', text: 'old response' }])
     await firstPromise
     expect(state.messages.value.map((message) => message.text)).toEqual(['new response'])
-  })
-
-  it('prepends earlier cached pages without reloading the whole thread', async () => {
-    installBrowserGlobals('thread-a')
-    const latestMessages = Array.from({ length: 10 }, (_, index) => ({
-      id: `latest-${String(index + 1)}`,
-      role: 'assistant' as const,
-      text: `Latest ${String(index + 1)}`,
-    }))
-    const earlierMessages = Array.from({ length: 10 }, (_, index) => ({
-      id: `earlier-${String(index + 1)}`,
-      role: 'assistant' as const,
-      text: `Earlier ${String(index + 1)}`,
-    }))
-    codexApiMock.getThreadMessagesPage
-      .mockResolvedValueOnce(buildMessagePage('thread-a', latestMessages, {
-        total: 25,
-        offset: 0,
-        nextOffset: 10,
-        hasMoreBefore: true,
-      }))
-      .mockResolvedValueOnce(buildMessagePage('thread-a', earlierMessages, {
-        total: 25,
-        offset: 10,
-        nextOffset: 20,
-        hasMoreBefore: true,
-      }))
-
-    const state = useDesktopState()
-
-    await state.selectThread('thread-a')
-    expect(state.messages.value.map((message) => message.id)).toEqual(latestMessages.map((message) => message.id))
-    expect(state.selectedThreadHasMoreMessagesBefore.value).toBe(true)
-    expect(state.selectedThreadEarlierMessageCount.value).toBe(15)
-
-    await state.loadEarlierMessages('thread-a')
-
-    expect(codexApiMock.getThreadMessagesPage).toHaveBeenNthCalledWith(2, 'thread-a', {
-      limit: 10,
-      offset: 10,
-      beforeMessageId: 'latest-1',
-    })
-    expect(state.messages.value.map((message) => message.id)).toEqual([
-      ...earlierMessages.map((message) => message.id),
-      ...latestMessages.map((message) => message.id),
-    ])
-    expect(state.selectedThreadEarlierMessageCount.value).toBe(5)
-  })
-
-  it('keeps the earlier-page offset after a silent first-page refresh', async () => {
-    installBrowserGlobals('thread-a')
-    const latestMessages = Array.from({ length: 10 }, (_, index) => ({
-      id: `latest-${String(index + 1)}`,
-      role: 'assistant' as const,
-      text: `Latest ${String(index + 1)}`,
-    }))
-    const firstEarlierMessages = Array.from({ length: 10 }, (_, index) => ({
-      id: `earlier-a-${String(index + 1)}`,
-      role: 'assistant' as const,
-      text: `Earlier A ${String(index + 1)}`,
-    }))
-    const secondEarlierMessages = Array.from({ length: 10 }, (_, index) => ({
-      id: `earlier-b-${String(index + 1)}`,
-      role: 'assistant' as const,
-      text: `Earlier B ${String(index + 1)}`,
-    }))
-    codexApiMock.getThreadMessagesPage
-      .mockResolvedValueOnce(buildMessagePage('thread-a', latestMessages, {
-        total: 35,
-        offset: 0,
-        nextOffset: 10,
-        hasMoreBefore: true,
-      }))
-      .mockResolvedValueOnce(buildMessagePage('thread-a', firstEarlierMessages, {
-        total: 35,
-        offset: 10,
-        nextOffset: 20,
-        hasMoreBefore: true,
-      }))
-      .mockResolvedValueOnce(buildMessagePage('thread-a', latestMessages, {
-        total: 35,
-        offset: 0,
-        nextOffset: 10,
-        hasMoreBefore: true,
-      }))
-      .mockResolvedValueOnce(buildMessagePage('thread-a', secondEarlierMessages, {
-        total: 35,
-        offset: 20,
-        nextOffset: 30,
-        hasMoreBefore: true,
-      }))
-
-    const state = useDesktopState()
-
-    await state.selectThread('thread-a')
-    await state.loadEarlierMessages('thread-a')
-    await state.loadMessages('thread-a', { silent: true })
-    await state.loadEarlierMessages('thread-a')
-
-    expect(codexApiMock.getThreadMessagesPage).toHaveBeenNthCalledWith(4, 'thread-a', {
-      limit: 10,
-      offset: 20,
-      beforeMessageId: 'earlier-a-1',
-    })
-    expect(state.messages.value.map((message) => message.id)).toEqual([
-      ...secondEarlierMessages.map((message) => message.id),
-      ...firstEarlierMessages.map((message) => message.id),
-      ...latestMessages.map((message) => message.id),
-    ])
-    expect(state.selectedThreadEarlierMessageCount.value).toBe(5)
-  })
-
-  it('keeps a stable history boundary while silent refreshes append newer messages', async () => {
-    installBrowserGlobals('thread-a')
-    const latestMessages = Array.from({ length: 10 }, (_, index) => ({
-      id: `message-${String(index + 91)}`,
-      role: 'assistant' as const,
-      text: `Message ${String(index + 91)}`,
-    }))
-    const refreshedLatestMessages = Array.from({ length: 10 }, (_, index) => ({
-      id: `message-${String(index + 96)}`,
-      role: 'assistant' as const,
-      text: `Message ${String(index + 96)}`,
-    }))
-    const earlierMessages = Array.from({ length: 10 }, (_, index) => ({
-      id: `message-${String(index + 81)}`,
-      role: 'assistant' as const,
-      text: `Message ${String(index + 81)}`,
-    }))
-    codexApiMock.getThreadMessagesPage
-      .mockResolvedValueOnce(buildMessagePage('thread-a', latestMessages, {
-        total: 100,
-        nextOffset: 10,
-        nextBeforeMessageId: 'message-91',
-        remainingBefore: 90,
-        hasMoreBefore: true,
-      }))
-      .mockResolvedValueOnce(buildMessagePage('thread-a', refreshedLatestMessages, {
-        total: 105,
-        nextOffset: 10,
-        nextBeforeMessageId: 'message-96',
-        remainingBefore: 95,
-        hasMoreBefore: true,
-      }))
-      .mockResolvedValueOnce(buildMessagePage('thread-a', earlierMessages, {
-        total: 105,
-        nextOffset: 25,
-        nextBeforeMessageId: 'message-81',
-        remainingBefore: 80,
-        hasMoreBefore: true,
-      }))
-
-    const state = useDesktopState()
-    await state.selectThread('thread-a')
-    await state.loadMessages('thread-a', { silent: true })
-
-    expect(state.selectedThreadEarlierMessageCount.value).toBe(90)
-    await state.loadEarlierMessages('thread-a')
-
-    expect(codexApiMock.getThreadMessagesPage).toHaveBeenNthCalledWith(3, 'thread-a', {
-      limit: 10,
-      offset: 10,
-      beforeMessageId: 'message-91',
-    })
-    expect(state.selectedThreadEarlierMessageCount.value).toBe(80)
-    expect(state.messages.value.map((message) => message.id)).toContain('message-81')
   })
 
   it('clears visible message loading when a silent refresh supersedes it', async () => {

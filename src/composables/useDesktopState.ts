@@ -20,8 +20,8 @@ import {
 import {
   compactThread,
   forkThread,
+  getThreadMessages,
   getThreadRuntimeStatus,
-  getThreadMessagesPage,
   interruptThreadTurn,
   renameThread,
   resumeThread,
@@ -160,15 +160,7 @@ export function useDesktopState() {
 
   const isLoadingThreads = ref(false)
   const loadingMessagesByThreadId = ref<Record<string, boolean>>({})
-  const loadingEarlierMessagesByThreadId = ref<Record<string, boolean>>({})
   const messageLoadErrorByThreadId = ref<Record<string, string>>({})
-  const messagePageByThreadId = ref<Record<string, {
-    total: number
-    nextOffset: number
-    nextBeforeMessageId: string | null
-    remainingBefore: number
-    hasMoreBefore: boolean
-  }>>({})
   const isSendingMessage = ref(false)
   const isInterruptingTurn = ref(false)
   const error = ref('')
@@ -194,13 +186,6 @@ export function useDesktopState() {
     conversationStateFromRegistry(conversationStateByThreadId.value, selectedThreadId.value)
   ))
   const isLoadingMessages = computed(() => loadingMessagesByThreadId.value[selectedThreadId.value] === true)
-  const isLoadingEarlierMessages = computed(() => loadingEarlierMessagesByThreadId.value[selectedThreadId.value] === true)
-  const selectedThreadHasMoreMessagesBefore = computed(() => messagePageByThreadId.value[selectedThreadId.value]?.hasMoreBefore === true)
-  const selectedThreadEarlierMessageCount = computed(() => {
-    const page = messagePageByThreadId.value[selectedThreadId.value]
-    if (!page?.hasMoreBefore) return 0
-    return Math.max(page.remainingBefore, 1)
-  })
   const hasLoadedSelectedMessages = computed(
     () => loadedMessagesByThreadId.value[selectedThreadId.value] === true,
   )
@@ -279,18 +264,6 @@ export function useDesktopState() {
 
     loadingMessagesByThreadId.value = {
       ...loadingMessagesByThreadId.value,
-      [threadId]: true,
-    }
-  }
-
-  function setEarlierMessagesLoadingForThread(threadId: string, isLoading: boolean): void {
-    if (!threadId) return
-    if (!isLoading) {
-      loadingEarlierMessagesByThreadId.value = omitKey(loadingEarlierMessagesByThreadId.value, threadId)
-      return
-    }
-    loadingEarlierMessagesByThreadId.value = {
-      ...loadingEarlierMessagesByThreadId.value,
       [threadId]: true,
     }
   }
@@ -382,9 +355,6 @@ export function useDesktopState() {
     messageLoadErrorByThreadId.value = Object.fromEntries(
       Object.entries(messageLoadErrorByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
     )
-    messagePageByThreadId.value = Object.fromEntries(
-      Object.entries(messagePageByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
-    )
     eventUnreadByThreadId.value = pruned.eventUnreadByThreadId
     inProgressById.value = pruned.inProgressById
     pendingServerRequestsByThreadId.value = pruned.pendingServerRequestsByThreadId
@@ -394,9 +364,6 @@ export function useDesktopState() {
     )
     loadingMessagesByThreadId.value = Object.fromEntries(
       Object.entries(loadingMessagesByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
-    )
-    loadingEarlierMessagesByThreadId.value = Object.fromEntries(
-      Object.entries(loadingEarlierMessagesByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
     )
     for (const threadId of latestMessageLoadRequestIdByThreadId.keys()) {
       if (!activeThreadIds.has(threadId)) {
@@ -963,37 +930,22 @@ export function useDesktopState() {
     setMessageLoadErrorForThread(threadId, '')
 
     try {
-      const page = await getThreadMessagesPage(threadId, { limit: 10, offset: 0 })
+      const nextMessages = await getThreadMessages(threadId)
       if (latestMessageLoadRequestIdByThreadId.get(threadId) !== requestId) {
         return
       }
-      const nextMessages = page.messages
       const previousPersisted = persistedMessagesByThreadId.value[threadId] ?? []
-      const previousPage = messagePageByThreadId.value[threadId]
-      const preservePreviousWindow = options.silent === true
-        && previousPage !== undefined
-        && page.total >= previousPage.total
-      const preserveOptimisticMessages = previousPersisted.some((message) => message.messageType === 'userMessage.optimistic')
-      const mergedMessages = mergeMessages(previousPersisted, nextMessages, {
-        preserveMissing: preservePreviousWindow || preserveOptimisticMessages,
+      const localPendingMessages = previousPersisted.filter((message) => (
+        message.role === 'user'
+        && (
+          message.messageType === 'userMessage.optimistic'
+          || message.messageType?.startsWith('userMessage.outbox.') === true
+        )
+      ))
+      const mergedMessages = mergeMessages(localPendingMessages, nextMessages, {
+        preserveMissing: localPendingMessages.length > 0,
       })
       setPersistedMessagesForThread(threadId, mergedMessages)
-      messagePageByThreadId.value = {
-        ...messagePageByThreadId.value,
-        [threadId]: {
-          total: page.total,
-          nextOffset: preservePreviousWindow ? previousPage.nextOffset : page.nextOffset,
-          nextBeforeMessageId: preservePreviousWindow
-            ? previousPage.nextBeforeMessageId
-            : page.nextBeforeMessageId,
-          remainingBefore: preservePreviousWindow
-            ? previousPage.remainingBefore
-            : page.remainingBefore,
-          hasMoreBefore: preservePreviousWindow
-            ? previousPage.hasMoreBefore
-            : page.hasMoreBefore,
-        },
-      }
       void reconcileOutboxForThread(threadId)
 
       loadedMessagesByThreadId.value = markThreadMessagesLoaded(loadedMessagesByThreadId.value, threadId)
@@ -1017,47 +969,6 @@ export function useDesktopState() {
         latestMessageLoadRequestIdByThreadId.delete(threadId)
         setMessagesLoadingForThread(threadId, false)
       }
-    }
-  }
-
-  async function loadEarlierMessages(threadId: string): Promise<void> {
-    const normalizedThreadId = threadId.trim()
-    if (!normalizedThreadId) return
-    if (loadingEarlierMessagesByThreadId.value[normalizedThreadId] === true) return
-
-    const pageState = messagePageByThreadId.value[normalizedThreadId]
-    if (!pageState?.hasMoreBefore) return
-
-    setEarlierMessagesLoadingForThread(normalizedThreadId, true)
-    setMessageLoadErrorForThread(normalizedThreadId, '')
-
-    try {
-      const page = await getThreadMessagesPage(normalizedThreadId, {
-        limit: 10,
-        offset: pageState.nextOffset,
-        beforeMessageId: pageState.nextBeforeMessageId ?? undefined,
-      })
-      const previousMessages = persistedMessagesByThreadId.value[normalizedThreadId] ?? []
-      const previousIds = new Set(previousMessages.map((message) => message.id))
-      const earlierMessages = page.messages.filter((message) => !previousIds.has(message.id))
-      setPersistedMessagesForThread(normalizedThreadId, [...earlierMessages, ...previousMessages])
-      messagePageByThreadId.value = {
-        ...messagePageByThreadId.value,
-        [normalizedThreadId]: {
-          total: page.total,
-          nextOffset: page.nextOffset,
-          nextBeforeMessageId: page.nextBeforeMessageId,
-          remainingBefore: page.remainingBefore,
-          hasMoreBefore: page.hasMoreBefore,
-        },
-      }
-    } catch (unknownError) {
-      const message = unknownError instanceof Error && unknownError.message
-        ? unknownError.message
-        : 'Failed to load earlier messages.'
-      setMessageLoadErrorForThread(normalizedThreadId, message)
-    } finally {
-      setEarlierMessagesLoadingForThread(normalizedThreadId, false)
     }
   }
 
@@ -1715,12 +1626,10 @@ export function useDesktopState() {
     }
     shouldAutoScrollOnNextAgentEvent = false
     loadingMessagesByThreadId.value = {}
-    loadingEarlierMessagesByThreadId.value = {}
     persistedMessagesByThreadId.value = {}
     turnActivityByThreadId.value = {}
     turnErrorByThreadId.value = {}
     messageLoadErrorByThreadId.value = {}
-    messagePageByThreadId.value = {}
     conversationStateByThreadId.value = {}
     for (const timerId of outboxRetryTimersByThreadId.values()) {
       if (typeof window !== 'undefined') window.clearTimeout(timerId)
@@ -1806,9 +1715,6 @@ export function useDesktopState() {
     messages,
     isLoadingThreads,
     isLoadingMessages,
-    isLoadingEarlierMessages,
-    selectedThreadHasMoreMessagesBefore,
-    selectedThreadEarlierMessageCount,
     hasLoadedSelectedMessages,
     isSendingMessage,
     isInterruptingTurn,
@@ -1822,7 +1728,6 @@ export function useDesktopState() {
     recoverDirectThread,
     selectThread,
     loadMessages,
-    loadEarlierMessages,
     setThreadScrollState,
     hideThreadById,
     restoreThreadById,

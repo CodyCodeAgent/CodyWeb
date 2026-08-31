@@ -142,7 +142,6 @@ describe('bridge server request endpoints', () => {
   it('lists pending approvals and forwards replies through the HTTP bridge', async () => {
     const sharedBridgeKey = '__codexRemoteSharedBridge__'
     const replies: unknown[] = []
-    const invalidatedThreadIds: string[] = []
     const fakeAppServer = {
       listPendingServerRequests: () => [
         {
@@ -197,11 +196,6 @@ describe('bridge server request endpoints', () => {
         onNotification: () => {},
         getStatus: () => ({ successCount: 1 }),
       },
-      threadMessageCache: {
-        start: () => {},
-        stop: () => {},
-        markDirty: (threadId: string) => invalidatedThreadIds.push(threadId),
-      },
       methodCatalog: {
         listMethods: async () => [],
         listNotificationMethods: async () => [],
@@ -255,7 +249,6 @@ describe('bridge server request endpoints', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ method: 'thread/resume', params: { threadId: 'thread-restored' } }),
       })).resolves.toEqual({ result: {} })
-      expect(invalidatedThreadIds).toEqual(['thread-restored'])
     } finally {
       middleware.dispose()
       await closeServer(server)

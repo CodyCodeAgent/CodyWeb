@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildTurnInput,
   getThreadGroups,
-  getThreadMessagesPage,
+  getThreadMessages,
   startThread,
   startThreadTurn,
   startThreadTurnWithResumeRecovery,
@@ -12,18 +12,7 @@ import type { Thread } from '@codycodeagent/cody-web-core/protocol'
 const rpcMock = vi.hoisted(() => ({
   rpcCall: vi.fn(),
 }))
-const httpMock = vi.hoisted(() => ({
-  fetchCodexJson: vi.fn(),
-}))
-
 vi.mock('./codexRpcClient', () => rpcMock)
-vi.mock('./codexHttpClient', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./codexHttpClient')>()
-  return {
-    ...actual,
-    fetchCodexJson: httpMock.fetchCodexJson,
-  }
-})
 
 afterEach(() => {
   vi.clearAllMocks()
@@ -123,40 +112,41 @@ describe('codex thread client', () => {
     })
   })
 
-  it('loads thread messages from the paged server cache endpoint', async () => {
-    httpMock.fetchCodexJson.mockResolvedValue({
-      status: 200,
-      payload: {
-        result: {
-          threadId: 'thread-1',
-          messages: [{ id: 'message-1', role: 'assistant', text: 'cached' }],
-          total: 1,
-          limit: 10,
-          offset: 0,
-          nextOffset: 1,
-          nextBeforeMessageId: null,
-          remainingBefore: 0,
-          hasMoreBefore: false,
-          cache: {
-            status: 'ready',
-            hydratedAtIso: '2026-08-20T00:00:00.000Z',
-            refreshedAtIso: '2026-08-20T00:00:00.000Z',
-            checkedAtIso: '2026-08-20T00:00:00.000Z',
-          },
-        },
-      },
+  it('loads the authoritative native Thread transcript directly through RPC', async () => {
+    rpcMock.rpcCall.mockResolvedValue({
+      thread: thread({
+        turns: [{
+          id: 'turn-1',
+          status: 'completed',
+          error: null,
+          itemsView: 'full',
+          startedAt: null,
+          completedAt: null,
+          durationMs: null,
+          items: [
+            {
+              type: 'commandExecution', id: 'cmd-1', command: 'npm test', cwd: '/repo',
+              processId: 'pty-1', status: 'completed', commandActions: [], aggregatedOutput: '2 passed',
+              exitCode: 0, durationMs: 1_200,
+            },
+            { type: 'agentMessage', id: 'answer-1', text: 'Done.' },
+          ],
+        }] as never,
+      }),
     })
 
-    await expect(getThreadMessagesPage(' thread-1 ')).resolves.toMatchObject({
+    await expect(getThreadMessages(' thread-1 ')).resolves.toEqual([
+      expect.objectContaining({
+        id: 'tool:cmd-1', messageType: 'tool.command',
+        tool: expect.objectContaining({ summary: 'npm test', output: '2 passed', status: 'completed' }),
+      }),
+      expect.objectContaining({ id: 'agent:answer-1', role: 'assistant', text: 'Done.' }),
+    ])
+
+    expect(rpcMock.rpcCall).toHaveBeenCalledWith('thread/read', {
       threadId: 'thread-1',
-      messages: [{ id: 'message-1', role: 'assistant', text: 'cached' }],
-      total: 1,
+      includeTurns: true,
     })
-
-    expect(httpMock.fetchCodexJson).toHaveBeenCalledWith(
-      '/codex-api/thread-cache/messages?threadId=thread-1&limit=10&offset=0',
-      expect.objectContaining({ method: 'thread-cache/messages' }),
-    )
   })
 
   it('starts threads with normalized optional params', async () => {

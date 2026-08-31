@@ -100,25 +100,6 @@ export type UiQueuedMessage = {
   lastError?: string
 }
 
-export type UiThreadMessagePage = {
-  threadId: string
-  messages: UiMessage[]
-  total: number
-  limit: number
-  offset: number
-  nextOffset: number
-  nextBeforeMessageId: string | null
-  remainingBefore: number
-  hasMoreBefore: boolean
-  cache: {
-    status: 'loading' | 'ready' | 'refreshing' | 'failed'
-    hydratedAtIso: string | null
-    refreshedAtIso: string | null
-    checkedAtIso: string | null
-    lastError?: string
-  }
-}
-
 export type UiConversationShareMessage = {
   id: string
   turnId: string
