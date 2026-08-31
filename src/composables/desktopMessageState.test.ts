@@ -180,6 +180,13 @@ describe('desktopMessageState', () => {
     expect(replaceMessageById([optimistic, assistant], optimistic.id, persisted)).toEqual([persisted, assistant])
   })
 
+  it('updates turn metadata when the replacement keeps the optimistic message id', () => {
+    const optimistic = message({ id: 'optimistic-user:thread-1:1', role: 'user', text: '排队消息', messageType: 'userMessage.optimistic' })
+    const bound = { ...optimistic, turnId: 'turn-2' }
+
+    expect(replaceMessageById([optimistic], optimistic.id, bound)).toEqual([bound])
+  })
+
   it('replaces non-adjacent optimistic user messages without appending duplicates', () => {
     const longOptimistic = message({
       id: 'optimistic-user:thread-1:1',
@@ -413,6 +420,31 @@ describe('desktopMessageState', () => {
       text: 'streaming answer',
       messageType: 'agentMessage.live',
     })
+  })
+
+  it('renders the current Turn response before unstarted optimistic follow-ups', () => {
+    const currentUser = message({ id: 'user-a', turnId: 'turn-a', role: 'user', text: 'First question' })
+    const pendingB = message({
+      id: 'pending-b', role: 'user', text: 'Second question', messageType: 'userMessage.optimistic',
+    })
+    const pendingC = message({
+      id: 'pending-c', role: 'user', text: 'Third question', messageType: 'userMessage.optimistic',
+    })
+    const liveAnswer = message({
+      id: 'answer-a', turnId: 'turn-a', role: 'assistant', text: 'First answer', messageType: 'agentMessage.live',
+    })
+
+    expect(buildDisplayedMessages(
+      [currentUser, pendingB, pendingC],
+      [liveAnswer],
+      { turnId: 'turn-a', durationMs: 1_000 },
+    ).map((row) => row.id)).toEqual([
+      'user-a',
+      'answer-a',
+      'turn-summary:turn-a',
+      'pending-b',
+      'pending-c',
+    ])
   })
 
   it('formats turn summaries and inserts them after the last assistant response', () => {

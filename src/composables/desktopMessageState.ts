@@ -2,10 +2,10 @@ import type { UiLiveOverlay, UiMessage, UiToolingRollbackFileResult } from '../t
 import {
   areConversationMessageArraysStable,
   areConversationMessageFieldsEqual,
-  compactConversationMessages,
   formatTurnDuration as coreFormatTurnDuration,
   mergeMessages as coreMergeMessages,
   normalizeMessageText as coreNormalizeMessageText,
+  orderConversationMessagesByTurn,
   removeDuplicateAdjacentUserMessages as coreRemoveDuplicateAdjacentUserMessages,
   removeRedundantLiveAssistantMessages as coreRemoveRedundantLiveAssistantMessages,
 } from '@codycodeagent/cody-web-core/conversation'
@@ -43,7 +43,7 @@ export function removeMessageById(messages: UiMessage[], messageId: string): UiM
 export function replaceMessageById(messages: UiMessage[], messageId: string, replacement: UiMessage): UiMessage[] {
   const index = messages.findIndex((message) => message.id === messageId)
   if (index < 0) return messages
-  const next = messages.filter((message) => message.id !== replacement.id)
+  const next = messages.filter((message, messageIndex) => messageIndex === index || message.id !== replacement.id)
   const replacementIndex = next.findIndex((message) => message.id === messageId)
   if (replacementIndex < 0) return messages
   next.splice(replacementIndex, 1, replacement)
@@ -116,12 +116,12 @@ export function buildDisplayedMessages(
   liveAgentMessages: UiMessage[],
   turnSummary: TurnSummaryState | null | undefined,
 ): UiMessage[] {
-  const combined = persistedMessages === liveAgentMessages
-    ? persistedMessages
-    : [...persistedMessages, ...liveAgentMessages]
-  const compacted = compactConversationMessages(combined)
-
-  return turnSummary ? insertTurnSummaryMessage(compacted, turnSummary) : compacted
+  const terminalMessages = turnSummary ? [buildTurnSummaryMessage(turnSummary)] : []
+  return orderConversationMessagesByTurn(
+    persistedMessages,
+    persistedMessages === liveAgentMessages ? [] : liveAgentMessages,
+    terminalMessages,
+  ) as UiMessage[]
 }
 
 export function formatTurnDuration(durationMs: number): string {

@@ -645,6 +645,14 @@ export function useDesktopState() {
 
   function bindOptimisticUserMessageToTurn(threadId: string, turnId: string, messageId: string): void {
     if (!turnId || !(persistedMessagesByThreadId.value[threadId] ?? []).some((message) => message.id === messageId)) return
+    const previousMessages = persistedMessagesByThreadId.value[threadId] ?? []
+    const optimisticMessage = previousMessages.find((message) => message.id === messageId)
+    if (optimisticMessage && optimisticMessage.turnId !== turnId) {
+      setPersistedMessagesForThread(
+        threadId,
+        replaceMessageById(previousMessages, messageId, { ...optimisticMessage, turnId }),
+      )
+    }
     const pending = pendingOptimisticUserMessageIdsByThreadId.get(threadId) ?? []
     pendingOptimisticUserMessageIdsByThreadId.set(threadId, pending.filter((id) => id !== messageId))
     const turnMessageIds = optimisticUserMessageIdsByTurnId.get(turnId) ?? []

@@ -1358,6 +1358,21 @@ describe('useDesktopState realtime messages', () => {
     expect(state.messages.value.some((message) => (
       message.text === '下一条排队处理' && message.messageType === 'userMessage.optimistic'
     ))).toBe(true)
+    codexApiMock.getNotificationListener()?.({
+      method: 'item/agentMessage/delta',
+      atIso: '2026-07-07T00:00:02.000Z',
+      params: {
+        threadId: 'thread-a',
+        turnId: 'turn-active',
+        itemId: 'active-answer',
+        delta: '当前轮回复',
+      },
+    })
+    expect(state.messages.value.map((message) => message.text)).toEqual([
+      '当前这一轮',
+      '当前轮回复',
+      '下一条排队处理',
+    ])
     state.stopRealtimeSync()
   })
 
