@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-cli/
 .cody-runtime/
+.runtime/
 .cody-web-ui.log
 *.tsbuildinfo
 *.config.bundled_*.mjs
