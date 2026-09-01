@@ -1443,8 +1443,20 @@ async function currentGitBranch(cwd: string): Promise<string> {
  * pre-2.23 equivalent of `git restore --staged --worktree`.
  */
 async function restoreGitPaths(cwd: string, paths: string[]): Promise<void> {
+  // `git reset` turns an index-only addition into an untracked file. Capture
+  // those paths before resetting so the Git 2.20 sequence retains the exact
+  // `git restore --staged --worktree` behaviour (remove it from both index
+  // and working tree).
+  const stagedAdditions = (await runGitOptional([
+    'diff', '--cached', '--name-only', '--diff-filter=A', '-z', '--', ...paths,
+  ], cwd)).split('\0').filter(Boolean)
   await runGit(['reset', 'HEAD', '--', ...paths], cwd)
   await runGit(['checkout', '--', ...paths], cwd)
+  await Promise.all(stagedAdditions.map(async (relativePath) => {
+    const absolutePath = resolve(cwd, relativePath)
+    if (!isInside(cwd, absolutePath)) return
+    await rm(absolutePath, { recursive: true, force: true })
+  }))
 }
 
 function runCommandWithInput(
