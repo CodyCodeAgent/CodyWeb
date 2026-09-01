@@ -12,6 +12,7 @@ import {
 } from './feishuBotService.js'
 import { FeishuReliableTransport } from './feishuReliableTransport.js'
 import { FeishuCodexGateway, type ScenarioPackageDraft } from './feishuCodexGateway.js'
+import type { CodyWebConversationOwner } from './conversationOwner.js'
 import { findPromptTemplate, listPromptTemplates } from './promptLibraryStore.js'
 import { resolveFeishuOwnerOpenId } from './feishuOwnerResolver.js'
 import { FeishuQrSetupManager } from './feishuQrSetup.js'
@@ -83,7 +84,6 @@ import type {
   FeishuRoutesDependencies,
 } from './routes/feishuRoutes.js'
 
-type Rpc = (method: string, params: unknown) => Promise<unknown>
 type Respond = (payload: unknown) => Promise<void>
 type Subscribe = (listener: (notification: FeishuAppServerNotification) => void) => () => void
 
@@ -458,7 +458,7 @@ export type FeishuIntegration = {
 }
 
 export function createFeishuIntegration(input: {
-  rpc: Rpc
+  owner: CodyWebConversationOwner
   respondToServerRequest: Respond
   subscribe: Subscribe
   catalogSync: CatalogSyncService
@@ -466,9 +466,7 @@ export function createFeishuIntegration(input: {
 }): FeishuIntegration {
   let cleanupTimer: ReturnType<typeof setInterval> | null = null
   const gateway = new FeishuCodexGateway({
-    rpc: input.rpc,
-    respondToServerRequest: input.respondToServerRequest,
-    subscribe: input.subscribe,
+    owner: input.owner,
     refreshCatalog: () => input.catalogSync.refreshForRead().then(() => undefined),
     readCatalog: () => listCatalog('visible'),
   })

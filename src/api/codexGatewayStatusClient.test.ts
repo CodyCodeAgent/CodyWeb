@@ -89,17 +89,14 @@ describe('codex gateway status client', () => {
     })
   })
 
-  it('reloads MCP servers through the RPC bridge', async () => {
+  it('reloads MCP servers through the explicit runtime endpoint', async () => {
     const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ result: null }), { status: 200 }))
     vi.stubGlobal('fetch', fetchSpy)
 
     await expect(reloadMcpServers()).resolves.toBeUndefined()
-    expect(fetchSpy).toHaveBeenCalledWith('/codex-api/rpc', expect.objectContaining({
+    expect(fetchSpy).toHaveBeenCalledWith('/codex-api/runtime/mcp/reload', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({
-        method: 'config/mcpServer/reload',
-        params: null,
-      }),
+      body: JSON.stringify({}),
     }))
   })
 })

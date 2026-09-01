@@ -1,10 +1,13 @@
 import type { CatalogProject, CatalogSnapshot, CatalogThread } from './catalogStore.js'
-import { latestAssistantTextFromEvents, latestTerminalTurnEvent } from '@codycodeagent/cody-web-core/conversation'
-import { buildTurnUserInput, CodexSessionCatalog, CodexThreadCommands, normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
+import { randomUUID } from 'node:crypto'
+import { latestAssistantTextFromEvents, latestTerminalTurnEvent, type CodexEvent } from '@codycodeagent/cody-web-core/conversation'
+import { buildTurnUserInput, type ExecutionContext, type TurnInput } from '@codycodeagent/cody-web-core/session'
+import type { CodyWebConversationOwner } from './conversationOwner.js'
 
-type Rpc = (method: string, params: unknown) => Promise<unknown>
-type RespondToServerRequest = (payload: unknown) => Promise<void>
-type Subscribe = (listener: (notification: { method: string; params?: unknown }) => void) => () => void
+type ConversationOwner = Pick<CodyWebConversationOwner,
+  'start' | 'submitUntilStarted' | 'runEphemeral' | 'read' | 'interrupt' |
+  'listSkills' | 'listCollaborationModes' | 'readConfig' | 'renameThread' | 'archiveThread' |
+  'respondApproval' | 'respondQuestion' | 'subscribe'>
 
 export type FeishuProjectOption = {
   id: string
@@ -112,31 +115,25 @@ function mapThread(thread: CatalogThread): FeishuSessionOption {
 }
 
 export class FeishuCodexGateway {
-  private readonly freshThreadIds = new Set<string>()
-  private readonly commands: CodexThreadCommands
-  private readonly sessionCatalog: CodexSessionCatalog
+  private readonly requestThreadIds = new Map<string, string>()
+  private readonly stopOwnerEvents: () => void
 
   constructor(private readonly dependencies: {
-    rpc: Rpc
-    respondToServerRequest: RespondToServerRequest
-    subscribe?: Subscribe
+    owner: ConversationOwner
     readCatalog: () => Promise<CatalogSnapshot>
     refreshCatalog?: () => Promise<void>
   }) {
-    const caller = { call: <T>(method: string, params?: unknown): Promise<T> => dependencies.rpc(method, params ?? {}) as Promise<T> }
-    this.commands = new CodexThreadCommands(caller)
-    this.sessionCatalog = new CodexSessionCatalog(caller)
+    this.stopOwnerEvents = dependencies.owner.subscribe((event) => this.captureRequestBinding(event))
   }
 
   /** Drafts a reusable scenario package from a short operator brief and the live workspace skill catalog. */
   async draftScenarioPackage(input: { cwd: string; brief: string; timeoutMs?: number }): Promise<ScenarioPackageDraft> {
-    if (!this.dependencies.subscribe) throw new Error('Codex draft notifications are unavailable')
     const cwd = input.cwd.trim()
     const brief = input.brief.trim()
     if (!cwd) throw new Error('A workspace is required to draft a scenario package')
     if (!brief) throw new Error('Describe the scenario package you want Codex to draft')
 
-    const skills = (await this.sessionCatalog.listSkills([cwd]))
+    const skills = (await this.dependencies.owner.listSkills([cwd]))
       .filter((skill) => skill.enabled)
       .map((skill) => ({
         name: skill.name,
@@ -145,54 +142,7 @@ export class FeishuCodexGateway {
         description: skill.description.slice(0, 500),
       }))
     const uniqueSkills = Array.from(new Map(skills.map((skill) => [skill.path, skill])).values()).slice(0, 160)
-    const timeoutMs = Math.max(5_000, Math.min(input.timeoutMs ?? 60_000, 90_000))
-    let threadId = ''
-    let settled = false
-    let timeout: ReturnType<typeof setTimeout> | null = null
-    let unsubscribe: () => void = () => {}
-
-    const result = new Promise<ScenarioPackageDraft>((resolve, reject) => {
-      const finish = (value: ScenarioPackageDraft | Error) => {
-        if (settled) return
-        settled = true
-        if (timeout) clearTimeout(timeout)
-        unsubscribe()
-        if (value instanceof Error) reject(value); else resolve(value)
-      }
-      unsubscribe = this.dependencies.subscribe?.((notification) => {
-        const events = normalizeCodexNotification(notification, { fallbackThreadId: threadId })
-          .filter((event) => event.threadId === threadId)
-        const message = latestAssistantTextFromEvents(events)
-        const terminal = latestTerminalTurnEvent(events)
-        if (!terminal) {
-          if (message) try { finish(parseScenarioPackageDraft(message, uniqueSkills)) } catch { /* terminal event reports invalid output */ }
-          return
-        }
-        if (terminal.type !== 'turn.completed') {
-          finish(new Error(readString(terminal.data.error) || 'Codex scenario package draft failed')); return
-        }
-        try { finish(parseScenarioPackageDraft(message, uniqueSkills)) } catch (parseError) {
-          finish(parseError instanceof Error ? parseError : new Error(String(parseError)))
-        }
-      }) ?? (() => undefined)
-      timeout = setTimeout(() => finish(new Error('Codex scenario package draft timed out')), timeoutMs)
-      timeout.unref?.()
-    })
-
-    try {
-      threadId = await this.commands.startThread({
-        cwd,
-        ephemeral: true,
-        approvalPolicy: 'never',
-        sandbox: 'read-only',
-        baseInstructions: [
-          '你是 CodyWeb 的场景包设计器。',
-          '把用户描述整理成可复用、证据优先、边界明确的任务指令。',
-          '主要 Skill 是可选引导：只有目录中存在高度匹配的 Skill 时才选择，否则返回空字符串，让 Codex 自主发现能力。',
-          '不要执行任务，不要修改文件，只生成场景包草稿，并严格遵守输出 Schema。',
-        ].join('\n'),
-      })
-      await this.commands.startTurn(threadId, {
+    const outcome = await this.runEphemeral(cwd, {
         input: [{ type: 'text', text: [
           `用户描述：${brief.slice(0, 12_000)}`,
           '',
@@ -215,13 +165,13 @@ export class FeishuCodexGateway {
           },
           required: ['title', 'description', 'category', 'content', 'primary_skill_path', 'reason'],
         },
-      })
-      return await result
-    } catch (error) {
-      if (timeout) clearTimeout(timeout)
-      unsubscribe(); settled = true
-      throw error
-    }
+      }, [
+        '你是 CodyWeb 的场景包设计器。',
+        '把用户描述整理成可复用、证据优先、边界明确的任务指令。',
+        '主要 Skill 是可选引导：只有目录中存在高度匹配的 Skill 时才选择，否则返回空字符串，让 Codex 自主发现能力。',
+        '不要执行任务，不要修改文件，只生成场景包草稿，并严格遵守输出 Schema。',
+      ], input.timeoutMs)
+    return parseScenarioPackageDraft(outcome, uniqueSkills)
   }
 
   /** Runs a short-lived, read-only Codex thread with a strict output schema. */
@@ -233,57 +183,7 @@ export class FeishuCodexGateway {
     requestedInstruction: string
     timeoutMs?: number
   }): Promise<FeishuAutoRouteAnalysis> {
-    if (!this.dependencies.subscribe) throw new Error('Codex analysis notifications are unavailable')
-    const timeoutMs = Math.max(5_000, Math.min(input.timeoutMs ?? 45_000, 90_000))
-    let threadId = ''
-    let settled = false
-    let timeout: ReturnType<typeof setTimeout> | null = null
-    let unsubscribe: () => void = () => {}
-
-    const result = new Promise<FeishuAutoRouteAnalysis>((resolve, reject) => {
-      const finish = (value: FeishuAutoRouteAnalysis | Error) => {
-        if (settled) return
-        settled = true
-        if (timeout) clearTimeout(timeout)
-        unsubscribe()
-        if (value instanceof Error) reject(value)
-        else resolve(value)
-      }
-      unsubscribe = this.dependencies.subscribe?.((notification) => {
-        const events = normalizeCodexNotification(notification, { fallbackThreadId: threadId })
-          .filter((event) => event.threadId === threadId)
-        const message = latestAssistantTextFromEvents(events)
-        const terminal = latestTerminalTurnEvent(events)
-        if (!terminal) {
-          if (message) try { finish(parseAutoRouteAnalysis(message)) } catch { /* terminal event reports invalid output */ }
-          return
-        }
-        if (terminal.type !== 'turn.completed') {
-          finish(new Error(readString(terminal.data.error) || 'Codex card route analysis failed'))
-          return
-        }
-        try { finish(parseAutoRouteAnalysis(message)) } catch (parseError) {
-          finish(parseError instanceof Error ? parseError : new Error(String(parseError)))
-        }
-      }) ?? (() => undefined)
-      timeout = setTimeout(() => finish(new Error('Codex card route analysis timed out')), timeoutMs)
-      timeout.unref?.()
-    })
-
-    try {
-      threadId = await this.commands.startThread({
-        cwd: input.cwd.trim(),
-        ephemeral: true,
-        approvalPolicy: 'never',
-        sandbox: 'read-only',
-        baseInstructions: [
-          '你是 CodyWeb 的飞书卡片路由规则分析器。',
-          '分析卡片结构，选择能区分卡片类型、且不会随每次告警变化的字段标签。',
-          '只能从 candidate_keywords 中选择，不得创建正则、脚本或新字段。',
-          '严格按照输出 Schema 返回；不要添加解释文字。',
-        ].join('\n'),
-      })
-      await this.commands.startTurn(threadId, {
+    const outcome = await this.runEphemeral(input.cwd.trim(), {
         input: [{ type: 'text', text: [
           `卡片标题：${input.cardTitle}`,
           `候选稳定字段：${input.candidateKeywords.join('、') || '无'}`,
@@ -304,14 +204,13 @@ export class FeishuCodexGateway {
           },
           required: ['required_keywords', 'instruction', 'reason'],
         },
-      })
-      return await result
-    } catch (error) {
-      if (timeout) clearTimeout(timeout)
-      unsubscribe()
-      settled = true
-      throw error
-    }
+      }, [
+        '你是 CodyWeb 的飞书卡片路由规则分析器。',
+        '分析卡片结构，选择能区分卡片类型、且不会随每次告警变化的字段标签。',
+        '只能从 candidate_keywords 中选择，不得创建正则、脚本或新字段。',
+        '严格按照输出 Schema 返回；不要添加解释文字。',
+      ], input.timeoutMs)
+    return parseAutoRouteAnalysis(outcome)
   }
 
   async listProjects(): Promise<FeishuProjectOption[]> {
@@ -343,13 +242,8 @@ export class FeishuCodexGateway {
   async startSession(cwd: string): Promise<FeishuStartedSession> {
     const normalizedCwd = cwd.trim()
     if (!normalizedCwd) throw new Error('A project cwd is required to create a session')
-    const id = await this.commands.startThread({ cwd: normalizedCwd })
-    // A thread/start result exists only in the app-server process until its
-    // first user turn materializes the rollout. thread/read(includeTurns) and
-    // thread/resume reject that valid intermediate state, so remember it and
-    // send the first turn directly.
-    this.freshThreadIds.add(id)
-    return { id, title: 'New session', cwd: normalizedCwd }
+    const { threadId } = await this.dependencies.owner.start({ thread: { cwd: normalizedCwd } })
+    return { id: threadId, title: 'New session', cwd: normalizedCwd }
   }
 
   async startTurn(
@@ -365,63 +259,55 @@ export class FeishuCodexGateway {
     if (!normalizedThreadId) throw new Error('A thread id is required to start a turn')
     if (!normalizedText) throw new Error('A text message is required to start a turn')
 
-    const isFreshThread = this.freshThreadIds.has(normalizedThreadId)
-    if (!isFreshThread) await this.commands.resumeThread(normalizedThreadId)
     const input = buildTurnUserInput({ text: normalizedText, skills, localImages: localImagePaths.map(path => ({ path })) })
-    const turnStartParams = {
+    const turnInput: TurnInput = {
       input,
       ...(permissionMode === 'yolo' ? { approvalPolicy: 'never' as const, sandboxPolicy: { type: 'dangerFullAccess' as const } } : {}),
       ...(collaborationMode === 'plan' ? { collaborationMode: await this.planCollaborationMode() } : {}),
     }
-    const turnId = await this.commands.startTurn(normalizedThreadId, turnStartParams)
-    this.freshThreadIds.delete(normalizedThreadId)
-    return { threadId: normalizedThreadId, turnId }
+    const handle = await this.dependencies.owner.submitUntilStarted({
+      threadId: normalizedThreadId,
+      clientCommandId: `feishu:${randomUUID()}`,
+      mode: 'queue',
+      context: this.threadContext(),
+      input: turnInput,
+    })
+    return { threadId: handle.threadId, turnId: handle.turnId }
   }
 
   private async planCollaborationMode() {
-    const [modes, configPayload] = await Promise.all([
-      this.sessionCatalog.listCollaborationModes(),
-      this.dependencies.rpc('config/read', {}),
+    const [modes, config] = await Promise.all([
+      this.dependencies.owner.listCollaborationModes(),
+      this.dependencies.owner.readConfig(),
     ])
     const plan = modes.find(mode => mode.mode === 'plan')
-    const config = asRecord(asRecord(configPayload)?.config)
     return {
       mode: 'plan' as const,
       settings: {
-        model: plan?.model || readString(config?.model),
-        reasoning_effort: plan?.reasoningEffort || readString(config?.model_reasoning_effort) || null,
-        developer_instructions: null,
+        model: plan?.model || config.config.model || '',
+        reasoning_effort: plan?.reasoningEffort || config.config.model_reasoning_effort || null,
+        developer_instructions: config.config.developer_instructions || null,
       },
     }
   }
 
   async stopTurn(threadId: string, turnId: string): Promise<void> {
     const normalizedThreadId = threadId.trim()
-    const normalizedTurnId = turnId.trim()
-    if (!normalizedThreadId || !normalizedTurnId) throw new Error('threadId and turnId are required to stop a turn')
-    await this.commands.interruptTurn(normalizedThreadId, normalizedTurnId)
+    if (!normalizedThreadId || !turnId.trim()) throw new Error('threadId and turnId are required to stop a turn')
+    await this.dependencies.owner.interrupt(normalizedThreadId, this.threadContext())
   }
 
   async isThreadBusy(threadId: string): Promise<boolean> {
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) return false
-    if (this.freshThreadIds.has(normalizedThreadId)) return false
-    const snapshot = await this.sessionCatalog.readThreadSnapshot(normalizedThreadId)
-    return snapshot.turns.some((turn) => turn.status === 'inProgress')
+    return Boolean(await this.findActiveTurnId(normalizedThreadId))
   }
 
   async findActiveTurnId(threadId: string): Promise<string | null> {
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) return null
-    if (this.freshThreadIds.has(normalizedThreadId)) return null
-    const turns = (await this.sessionCatalog.readThreadSnapshot(normalizedThreadId)).turns
-    // thread/read keeps historical turns in chronological order. Interrupted
-    // clients can leave an older turn marked inProgress, while app-server only
-    // accepts interrupts for the newest active turn. Always prefer the last
-    // active record instead of the first stale one.
-    const active = turns.filter((turn) => turn.status === 'inProgress')
-      .at(-1)
-    return active?.turnId || null
+    const events = await this.dependencies.owner.read(normalizedThreadId, this.threadContext())
+    return activeTurnId(events)
   }
 
   async readTurnState(threadId: string, turnId: string): Promise<{
@@ -429,15 +315,14 @@ export class FeishuCodexGateway {
     responseText?: string
     error?: string
   }> {
-    const snapshot = await this.sessionCatalog.readThreadSnapshot(threadId.trim())
-    const turn = snapshot.turns.find((value) => value.turnId === turnId.trim())
-    if (!turn) return { status: 'missing' }
-    const rawStatus = turn.status
-    const error = turn.error
-    const responseText = turn.assistantText || undefined
-    if (rawStatus === 'inProgress') return { status: 'running', responseText }
-    if (rawStatus === 'failed' || error) return { status: 'failed', responseText, error }
-    if (rawStatus === 'interrupted' || rawStatus === 'cancelled') return { status: 'cancelled', responseText }
+    const events = (await this.dependencies.owner.read(threadId.trim(), this.threadContext()))
+      .filter((event) => event.turnId === turnId.trim())
+    if (!events.length) return { status: 'missing' }
+    const terminal = latestTerminalTurnEvent(events)
+    const responseText = latestAssistantTextFromEvents(events) || undefined
+    if (!terminal) return { status: 'running', responseText }
+    if (terminal.type === 'turn.failed') return { status: 'failed', responseText, error: readString(terminal.data.error) }
+    if (terminal.type === 'turn.interrupted') return { status: 'cancelled', responseText }
     return { status: 'completed', responseText }
   }
 
@@ -445,33 +330,59 @@ export class FeishuCodexGateway {
     const normalizedThreadId = threadId.trim()
     const normalizedTitle = title.trim()
     if (!normalizedThreadId || !normalizedTitle) throw new Error('threadId and title are required to rename a session')
-    await this.commands.renameThread(normalizedThreadId, normalizedTitle)
+    await this.dependencies.owner.renameThread(normalizedThreadId, normalizedTitle)
   }
 
   async archiveSession(threadId: string): Promise<void> {
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) throw new Error('A thread id is required to archive a session')
-    await this.commands.archiveThread(normalizedThreadId)
+    await this.dependencies.owner.archiveThread(normalizedThreadId)
   }
 
   async resolveApproval(requestId: number, decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel'): Promise<void> {
     if (!Number.isInteger(requestId)) throw new Error('A numeric request id is required')
-    await this.dependencies.respondToServerRequest({
-      id: requestId,
-      approvalScope: decision === 'acceptForSession' ? 'session' : 'single',
-      result: { decision },
-    })
+    const threadId = this.requestThreadIds.get(String(requestId))
+    if (!threadId) throw new Error('Codex approval is no longer pending')
+    await this.dependencies.owner.respondApproval(threadId, this.threadContext(), String(requestId), decision)
   }
 
   async resolveUserInput(requestId: number, answers: Record<string, string[]>): Promise<void> {
     if (!Number.isInteger(requestId)) throw new Error('A numeric request id is required')
-    await this.dependencies.respondToServerRequest({
-      id: requestId,
-      result: {
-        answers: Object.fromEntries(
-          Object.entries(answers).map(([questionId, values]) => [questionId, { answers: values }]),
-        ),
-      },
+    const threadId = this.requestThreadIds.get(String(requestId))
+    if (!threadId) throw new Error('Codex question is no longer pending')
+    await this.dependencies.owner.respondQuestion(threadId, this.threadContext(), String(requestId), {
+      answers: Object.fromEntries(Object.entries(answers).map(([questionId, values]) => [questionId, { answers: values }])),
     })
   }
+
+  dispose(): void { this.stopOwnerEvents(); this.requestThreadIds.clear() }
+
+  private threadContext(): ExecutionContext { return { thread: {} } }
+
+  private async runEphemeral(cwd: string, input: TurnInput, baseInstructions: string[], timeoutMs?: number): Promise<string> {
+    const outcome = await this.dependencies.owner.runEphemeral({
+      thread: { cwd, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: baseInstructions.join('\n') },
+    }, input, `feishu-analysis:${randomUUID()}`, timeoutMs)
+    if (outcome.terminalEvent.type !== 'turn.completed') {
+      throw new Error(readString(outcome.terminalEvent.data.error) || 'Codex analysis failed')
+    }
+    return outcome.assistantText
+  }
+
+  private captureRequestBinding(event: CodexEvent): void {
+    if (event.type !== 'approval.requested' && event.type !== 'question.requested') return
+    const requestId = readString(event.data.requestId || event.data.approvalId)
+    if (requestId && event.threadId) this.requestThreadIds.set(requestId, event.threadId)
+  }
+}
+
+function activeTurnId(events: readonly CodexEvent[]): string | null {
+  const state = new Map<string, 'active' | 'terminal'>()
+  for (const event of events) {
+    if (!event.turnId) continue
+    if (event.type === 'turn.started') state.set(event.turnId, 'active')
+    if (event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.interrupted') state.set(event.turnId, 'terminal')
+  }
+  for (const [turnId, status] of [...state.entries()].reverse()) if (status === 'active') return turnId
+  return null
 }

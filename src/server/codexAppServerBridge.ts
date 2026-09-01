@@ -22,13 +22,7 @@ import {
   readTurnId,
 } from '@codycodeagent/cody-web-core/protocol'
 import { latestTerminalTurnEvent } from '@codycodeagent/cody-web-core/conversation'
-import {
-  CodexSessionManager,
-  normalizeCodexNotification,
-  type ExecutionContext,
-  type ListCodexThreadsOptions,
-  type TurnInput,
-} from '@codycodeagent/cody-web-core/session'
+import { normalizeCodexNotification, type ExecutionContext } from '@codycodeagent/cody-web-core/session'
 import type { CodexEvent } from '@codycodeagent/cody-web-core/conversation'
 import { NotificationDispatcher, type NotificationDispatchEvent } from './notificationDispatchService.js'
 import { buildSecurityAccessSnapshot } from './securityAccess.js'
@@ -43,6 +37,7 @@ import { createFeishuRoutes } from './routes/feishuRoutes.js'
 import { createWorkspaceToolingRoutes } from './routes/workspaceToolingRoutes.js'
 import { createSmokeRoutes } from './routes/smokeRoutes.js'
 import { createFeishuIntegration, type FeishuIntegration } from './feishuIntegration.js'
+import { CodyWebConversationOwner, type ConversationSubmitIntent } from './conversationOwner.js'
 import {
   createWorkspaceWorkflowRun,
   createToolingCheckpoint,
@@ -1297,7 +1292,7 @@ type CodexBridgeMiddleware = ((req: IncomingMessage, res: ServerResponse, next: 
 
 type SharedBridgeState = {
   appServer: AppServerProcess
-  conversations: CodyWebConversationService
+  conversations: CodyWebConversationOwner
   catalogSync: CatalogSyncService
   tokenUsageReconciliation?: TokenUsageReconciliationService
   agentTasks?: AgentTaskService
@@ -1347,138 +1342,6 @@ export function normalizeConversationThreadSubscriptions(value: unknown): string
     if (threadIds.length >= 32) break
   }
   return threadIds
-}
-
-type ConversationSubmitRequest = {
-  threadId: string
-  clientCommandId: string
-  mode: 'queue' | 'steer'
-  context: ExecutionContext
-  input: TurnInput
-}
-
-/** One process-wide owner for native thread attachment, queueing and Turn ids. */
-class CodyWebConversationService {
-  private readonly manager: CodexSessionManager
-  private readonly attachedThreadIds = new Set<string>()
-  private readonly attachmentByThreadId = new Map<string, Promise<void>>()
-  private readonly listeners = new Set<(event: CodexEvent) => void>()
-  private readonly stopManagerEvents: () => void
-
-  constructor(host: CoreAppServerHost) {
-    this.manager = new CodexSessionManager({ host })
-    this.stopManagerEvents = this.manager.subscribe((event) => {
-      for (const listener of this.listeners) listener(event)
-    })
-  }
-
-  subscribe(listener: (event: CodexEvent) => void): () => void {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
-  }
-
-  async attach(threadId: string, context: ExecutionContext): Promise<{ events: CodexEvent[] }> {
-    const normalizedThreadId = threadId.trim()
-    if (!normalizedThreadId) throw new Error('threadId is required')
-    await this.ensureAttached(normalizedThreadId, context)
-    this.manager.setContext(normalizedThreadId, context)
-    return { events: this.manager.listAttachmentEvents(normalizedThreadId) }
-  }
-
-  async snapshot(threadId: string, context: ExecutionContext): Promise<{ events: CodexEvent[]; watermark: number }> {
-    const normalizedThreadId = threadId.trim()
-    if (!normalizedThreadId) throw new Error('threadId is required')
-    await this.ensureAttached(normalizedThreadId, context)
-    this.manager.setContext(normalizedThreadId, context)
-    return this.manager.readSnapshot(normalizedThreadId)
-  }
-
-  async start(context: ExecutionContext): Promise<{ threadId: string }> {
-    const binding = await this.manager.startThread(context)
-    this.attachedThreadIds.add(binding.threadId)
-    return { threadId: binding.threadId }
-  }
-
-  async listThreads(options: ListCodexThreadsOptions = {}): Promise<Awaited<ReturnType<CodexSessionManager['listThreads']>>>
-  {
-    return this.manager.listThreads(options)
-  }
-
-  async listModels(): Promise<Awaited<ReturnType<CodexSessionManager['listModels']>>> {
-    return this.manager.listModels()
-  }
-
-  async listCollaborationModes(): Promise<Awaited<ReturnType<CodexSessionManager['listCollaborationModes']>>> {
-    return this.manager.listCollaborationModes()
-  }
-
-  async listSkills(cwds: string[]): Promise<Awaited<ReturnType<CodexSessionManager['listSkills']>>> {
-    return this.manager.listSkills(cwds)
-  }
-
-  async listSkillCatalog(cwds: string[]): Promise<Awaited<ReturnType<CodexSessionManager['listSkillCatalog']>>> {
-    return this.manager.listSkillCatalog(cwds)
-  }
-
-  async setSkillEnabled(path: string, enabled: boolean): Promise<void> {
-    await this.manager.setSkillEnabled(path, enabled)
-  }
-
-  async renameThread(threadId: string, name: string): Promise<void> {
-    await this.manager.renameThread(threadId, name)
-  }
-
-  async forkThread(threadId: string): Promise<{ threadId: string }> {
-    return { threadId: await this.manager.forkThread(threadId) }
-  }
-
-  async compactThread(threadId: string): Promise<void> {
-    await this.manager.compactThread(threadId)
-  }
-
-  async archiveThread(threadId: string): Promise<void> {
-    await this.manager.archiveThread(threadId)
-  }
-
-  async submit(request: ConversationSubmitRequest): Promise<{ clientCommandId: string }> {
-    const threadId = request.threadId.trim()
-    const clientCommandId = request.clientCommandId.trim()
-    if (!threadId || !clientCommandId) throw new Error('threadId and clientCommandId are required')
-    await this.ensureAttached(threadId, request.context)
-    this.manager.setContext(threadId, request.context)
-    const submission = this.manager.submit(threadId, request.input, request.mode, clientCommandId)
-    // Submission acceptance is synchronous. Native acknowledgement and any
-    // failure are delivered as command.bound/command.failed events so an HTTP
-    // request never stays open behind a queued Turn.
-    return { clientCommandId: submission.clientCommandId }
-  }
-
-  async interrupt(threadId: string, context: ExecutionContext): Promise<boolean> {
-    const normalizedThreadId = threadId.trim()
-    if (!normalizedThreadId) return false
-    await this.ensureAttached(normalizedThreadId, context)
-    this.manager.setContext(normalizedThreadId, context)
-    return this.manager.interrupt(normalizedThreadId)
-  }
-
-  async dispose(): Promise<void> {
-    this.stopManagerEvents()
-    this.listeners.clear()
-    this.attachmentByThreadId.clear()
-    this.attachedThreadIds.clear()
-    await this.manager.dispose()
-  }
-
-  private async ensureAttached(threadId: string, context: ExecutionContext): Promise<void> {
-    if (this.attachedThreadIds.has(threadId)) return
-    const pending = this.attachmentByThreadId.get(threadId)
-    if (pending) return pending
-    const attaching = this.manager.resume({ id: threadId, threadId }, context)
-      .then(() => { this.attachedThreadIds.add(threadId) })
-      .finally(() => { this.attachmentByThreadId.delete(threadId) })
-    this.attachmentByThreadId.set(threadId, attaching)
-    return attaching
-  }
 }
 
 type ProductEventListener = (event: NotificationDispatchEvent) => void
@@ -1623,27 +1486,27 @@ function getSharedBridgeState(): SharedBridgeState {
     // Older tests and hot-reloaded processes may have created the shared bridge
     // before the Feishu integration existed. Hydrate it in place so the shared
     // app-server remains reusable instead of forcing a second process.
+    if (!existing.conversations) {
+      existing.conversations = new CodyWebConversationOwner(existing.appServer.sessionHost())
+    }
     if (!existing.feishuIntegration) {
       existing.feishuIntegration = createFeishuIntegration({
-        rpc: (method, params) => existing.appServer.rpc(method, params),
+        owner: existing.conversations,
         respondToServerRequest: (payload) => existing.appServer.respondToServerRequest(payload),
         isServerRequestPending: (id) => existing.appServer.isServerRequestPending(id),
         subscribe: (listener) => existing.appServer.onNotification(listener),
         catalogSync: existing.catalogSync,
       })
     }
-    if (!existing.conversations) {
-      existing.conversations = new CodyWebConversationService(existing.appServer.sessionHost())
-    }
     return existing
   }
 
   const appServer = new AppServerProcess()
-  const conversations = new CodyWebConversationService(appServer.sessionHost())
+  const conversations = new CodyWebConversationOwner(appServer.sessionHost())
   const catalogSync = new CatalogSyncService((method, params) => appServer.rpc(method, params))
   const tokenUsageReconciliation = new TokenUsageReconciliationService()
   const productEventHub = new ProductEventHub()
-  const agentTasks = new AgentTaskService((method, params) => appServer.rpc(method, params), {
+  const agentTasks = new AgentTaskService(conversations, {
     onEvent: async ({ task, run, title, summary, severity }) => {
       await dispatchWorkflowProductNotification(task.cwd, {
         id: `agent-task:${task.id}:${run.id}:${title}`,
@@ -1661,18 +1524,18 @@ function getSharedBridgeState(): SharedBridgeState {
     workspaceCwd: getProcessCwd(),
   })
   const feishuIntegration = createFeishuIntegration({
-    rpc: (method, params) => appServer.rpc(method, params),
+    owner: conversations,
     respondToServerRequest: (payload) => appServer.respondToServerRequest(payload),
     isServerRequestPending: (id) => appServer.isServerRequestPending(id),
     subscribe: (listener) => appServer.onNotification(listener),
     catalogSync,
   })
-  const stopNotificationDispatch = appServer.onNotification((notification) => {
+  const stopAgentTaskEvents = conversations.subscribe((event) => agentTasks.onEvent(event))
+  const stopRawNotificationDispatch = appServer.onNotification((notification) => {
     catalogSync.onNotification(notification.method)
     const normalizedEvents = normalizeCodexNotification(notification)
     const notificationThreadId = normalizedEvents[0]?.threadId || readThreadId(notification.params)
-    const isAgentTaskNotification = agentTasks.ownsNotification(notification)
-    agentTasks.onNotification(notification)
+    const isAgentTaskNotification = normalizedEvents.some((event) => agentTasks.ownsEvent(event))
     const payload = {
       ...notification,
       atIso: new Date().toISOString(),
@@ -1697,6 +1560,10 @@ function getSharedBridgeState(): SharedBridgeState {
       }
     })
   })
+  const stopNotificationDispatch = () => {
+    stopAgentTaskEvents()
+    stopRawNotificationDispatch()
+  }
 
   const created: SharedBridgeState = {
     appServer,
@@ -1807,13 +1674,14 @@ async function handleCheckpointHealthRoute(url: URL, res: ServerResponse): Promi
 export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
   const retained = retainSharedBridgeState()
   const { appServer, conversations, catalogSync, tokenUsageReconciliation, agentTasks, methodCatalog, productEventHub, feishuIntegration } = retained.state
-  const rpc = (method: string, params: unknown): Promise<unknown> => appServer.rpc(method, params)
   const domainRoutes = [
     createGatewayRoutes({
-      rpc,
       listConversationThreads: (options) => conversations.listThreads(options),
       listConversationModels: () => conversations.listModels(),
       listConversationCollaborationModes: () => conversations.listCollaborationModes(),
+      readRuntimeConfig: () => conversations.readConfig(),
+      reloadMcpServers: () => conversations.reloadMcpServers(),
+      readAccountRateLimits: () => conversations.readAccountRateLimits(),
       listConversationSkills: (cwds) => conversations.listSkills(cwds),
       listConversationSkillCatalog: (cwds) => conversations.listSkillCatalog(cwds),
       setConversationSkillEnabled: (path, enabled) => conversations.setSkillEnabled(path, enabled),
@@ -1824,7 +1692,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       archiveConversationThread: (threadId) => conversations.archiveThread(threadId),
       attachConversation: (threadId, context) => conversations.attach(threadId, context as ExecutionContext),
       snapshotConversation: (threadId, context) => conversations.snapshot(threadId, context as ExecutionContext),
-      submitConversation: (payload) => conversations.submit(payload as ConversationSubmitRequest),
+      submitConversation: (payload) => conversations.submit(payload as ConversationSubmitIntent),
       interruptConversation: (threadId, context) => conversations.interrupt(threadId, context as ExecutionContext),
       respond: (payload) => appServer.respondToServerRequest(payload),
       listPending: () => appServer.listPendingServerRequests(),

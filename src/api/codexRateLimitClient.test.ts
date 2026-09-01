@@ -4,11 +4,12 @@ import {
   normalizeRateLimitSnapshot,
 } from './codexRateLimitClient'
 
-const rpcMock = vi.hoisted(() => ({
-  rpcCall: vi.fn(),
+const httpMock = vi.hoisted(() => ({
+  fetchCodexJson: vi.fn(),
+  readRpcResult: vi.fn((payload: unknown) => (payload as { result: unknown }).result),
 }))
 
-vi.mock('./codexRpcClient', () => rpcMock)
+vi.mock('./codexHttpClient', () => httpMock)
 
 afterEach(() => {
   vi.clearAllMocks()
@@ -59,7 +60,7 @@ describe('codex rate limit client', () => {
   })
 
   it('loads codex account rate limits and reset credits', async () => {
-    rpcMock.rpcCall.mockResolvedValue({
+    httpMock.fetchCodexJson.mockResolvedValue({ payload: { result: {
       rateLimits: {
         limitId: 'fallback',
         limitName: 'Fallback',
@@ -85,7 +86,7 @@ describe('codex rate limit client', () => {
       rateLimitResetCredits: {
         availableCount: 3,
       },
-    })
+    } }, status: 200 })
 
     await expect(getAccountRateLimits()).resolves.toEqual({
       limitId: 'codex',
@@ -100,6 +101,6 @@ describe('codex rate limit client', () => {
       credits: null,
       availableResetCredits: 3,
     })
-    expect(rpcMock.rpcCall).toHaveBeenCalledWith('account/rateLimits/read', undefined)
+    expect(httpMock.fetchCodexJson).toHaveBeenCalledWith('/codex-api/account/rate-limits', expect.objectContaining({ method: 'account/rateLimits/read' }))
   })
 })

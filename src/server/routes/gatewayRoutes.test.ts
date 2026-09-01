@@ -26,10 +26,12 @@ function response(): { res: ServerResponse; read: () => { statusCode: number; bo
 
 function gateway() {
   return {
-    rpc: vi.fn(async () => ({ ok: true })),
     listConversationThreads: vi.fn(async () => [{ threadId: 'thread-1' }]),
     listConversationModels: vi.fn(async () => [{ id: 'gpt-5' }]),
     listConversationCollaborationModes: vi.fn(async () => [{ mode: 'default' }]),
+    readRuntimeConfig: vi.fn(async () => ({ config: {} })),
+    reloadMcpServers: vi.fn(async () => ({ reloaded: true })),
+    readAccountRateLimits: vi.fn(async () => ({ rateLimits: null })),
     listConversationSkills: vi.fn(async () => [{ name: 'docs' }]),
     listConversationSkillCatalog: vi.fn(async () => [{ cwd: '/repo', skills: [] }]),
     setConversationSkillEnabled: vi.fn(async () => undefined),
@@ -58,11 +60,18 @@ async function invoke(route: ReturnType<typeof createGatewayRoutes>, method: str
 }
 
 describe('createGatewayRoutes conversation owner boundary', () => {
-  it('rejects raw native thread and turn calls', async () => {
+  it('does not expose a generic native RPC tunnel', async () => {
     const deps = gateway()
     const result = await invoke(createGatewayRoutes(deps), 'POST', '/codex-api/rpc', { method: 'turn/start', params: {} })
-    expect(result).toMatchObject({ handled: true, statusCode: 403 })
-    expect(deps.rpc).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ handled: true, statusCode: 410 })
+  })
+
+  it('serves runtime maintenance through explicit owner operations', async () => {
+    const deps = gateway()
+    const route = createGatewayRoutes(deps)
+    await expect(invoke(route, 'GET', '/codex-api/runtime/config')).resolves.toMatchObject({ statusCode: 200, body: { result: { config: {} } } })
+    await expect(invoke(route, 'POST', '/codex-api/runtime/mcp/reload', {})).resolves.toMatchObject({ statusCode: 200, body: { result: { reloaded: true } } })
+    await expect(invoke(route, 'GET', '/codex-api/account/rate-limits')).resolves.toMatchObject({ statusCode: 200, body: { result: { rateLimits: null } } })
   })
 
   it('serves catalog and thread creation from the Core owner', async () => {

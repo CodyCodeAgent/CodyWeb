@@ -177,16 +177,16 @@ export async function revokeCurrentDeviceTrust(): Promise<UiTrustedDeviceActionR
 }
 
 export async function reloadMcpServers(): Promise<void> {
-  const { payload, status } = await fetchCodexJson('/codex-api/rpc', {
-    init: jsonPostInit({ method: 'config/mcpServer/reload', params: null }),
+  const { payload, status } = await fetchCodexJson('/codex-api/runtime/mcp/reload', {
+    init: jsonPostInit({}),
     method: 'config/mcpServer/reload',
-    networkErrorMessage: 'RPC config/mcpServer/reload failed before request was sent',
-    httpErrorMessage: 'RPC config/mcpServer/reload failed',
+    networkErrorMessage: 'MCP reload failed before request was sent',
+    httpErrorMessage: 'MCP reload failed',
   })
   readRpcResult<unknown>(
     payload,
     status,
     'config/mcpServer/reload',
-    'RPC config/mcpServer/reload returned malformed envelope',
+    'MCP reload returned malformed envelope',
   )
 }

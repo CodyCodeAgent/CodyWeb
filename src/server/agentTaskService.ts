@@ -44,10 +44,10 @@ import {
 import { parseAgentTaskInstruction, type AgentTaskDraft } from './agentTaskNaturalLanguage.js'
 import { listCatalog } from './catalogStore.js'
 import { latestAssistantTextFromEvents, latestTerminalTurnEvent, type CodexEvent } from '@codycodeagent/cody-web-core/conversation'
-import { CodexSessionCatalog, CodexThreadCommands, normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
+import { type ExecutionContext, type TurnInput } from '@codycodeagent/cody-web-core/session'
+import type { CodyWebConversationOwner } from './conversationOwner.js'
 
-type Rpc = (method: string, params: unknown) => Promise<unknown>
-type CodexNotification = { method: string; params: unknown }
+type AgentTaskOwner = Pick<CodyWebConversationOwner, 'start' | 'submitUntilStarted' | 'read' | 'interrupt'>
 
 type AgentTaskServiceOptions = {
   pollIntervalMs?: number
@@ -65,13 +65,6 @@ function readString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function nestedId(params: unknown, name: 'thread' | 'turn'): string {
-  const row = record(params)
-  const inner = record(row?.params)
-  return readString(row?.[`${name}Id`]) || readString(record(row?.[name])?.id)
-    || readString(inner?.[`${name}Id`]) || readString(record(inner?.[name])?.id)
-}
-
 function usageFromEvents(events: readonly CodexEvent[]): { inputTokens: number; outputTokens: number; totalTokens: number } | null {
   let event: CodexEvent | undefined
   for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -85,14 +78,12 @@ function usageFromEvents(events: readonly CodexEvent[]): { inputTokens: number; 
 }
 
 export class AgentTaskService {
-  private readonly rpc: Rpc
-  private readonly commands: CodexThreadCommands
-  private readonly catalog: CodexSessionCatalog
+  private readonly owner: AgentTaskOwner
   private readonly pollIntervalMs: number
   private readonly now: () => Date
   private readonly setTimer: typeof setTimeout
   private readonly clearTimer: typeof clearTimeout
-  private readonly onEvent?: AgentTaskServiceOptions['onEvent']
+  private readonly eventSink?: AgentTaskServiceOptions['onEvent']
   private timer: ReturnType<typeof setTimeout> | null = null
   private ticking = false
   private stopped = true
@@ -105,16 +96,13 @@ export class AgentTaskService {
   private schedulerOwned = false
   private recovered = false
 
-  constructor(rpc: Rpc, options: AgentTaskServiceOptions = {}) {
-    this.rpc = rpc
-    const caller = { call: <T>(method: string, params?: unknown): Promise<T> => rpc(method, params ?? {}) as Promise<T> }
-    this.commands = new CodexThreadCommands(caller)
-    this.catalog = new CodexSessionCatalog(caller)
+  constructor(owner: AgentTaskOwner, options: AgentTaskServiceOptions = {}) {
+    this.owner = owner
     this.pollIntervalMs = Math.max(1_000, options.pollIntervalMs ?? 10_000)
     this.now = options.now ?? (() => new Date())
     this.setTimer = options.setTimer ?? setTimeout
     this.clearTimer = options.clearTimer ?? clearTimeout
-    this.onEvent = options.onEvent
+    this.eventSink = options.onEvent
   }
 
   async start(): Promise<void> {
@@ -266,15 +254,14 @@ export class AgentTaskService {
     const active = await getActiveAgentTaskRun(taskId)
     if (!active || (runId && active.id !== runId)) throw new Error('No active run found for this task')
     if (active.threadId && active.turnId) {
-      await this.commands.interruptTurn(active.threadId, active.turnId).catch(() => undefined)
+      await this.owner.interrupt(active.threadId, this.threadContext()).catch(() => undefined)
     }
     await this.finish(active, { status: 'cancelled', error: reason })
     return { ...active, status: 'cancelled', error: reason, completedAtIso: this.now().toISOString() }
   }
 
-  onNotification(notification: CodexNotification): void {
-    const turnId = nestedId(notification.params, 'turn')
-    const threadId = nestedId(notification.params, 'thread')
+  onEvent(event: CodexEvent): void {
+    const { turnId, threadId } = event
     const run = (turnId && this.activeRunsByTurn.get(turnId)) || (threadId && this.activeRunsByThread.get(threadId))
     if (!run) return
     if (threadId && !run.threadId) run.threadId = threadId
@@ -282,34 +269,29 @@ export class AgentTaskService {
       run.turnId = turnId
       this.activeRunsByTurn.set(turnId, run)
     }
-    const events = normalizeCodexNotification(notification, {
-      fallbackThreadId: threadId || run.threadId,
-      fallbackTurnId: turnId || run.turnId,
-    })
-
-    if (notification.method === 'server/request') {
+    if (event.type === 'approval.requested' || event.type === 'question.requested') {
       this.waitingApprovalRunIds.add(run.id)
       void updateAgentTaskRunState(run.id, 'waiting_approval')
       void this.emitForRun(run, 'Approval required', 'This Agent task is waiting for approval.', 'warning')
       return
     }
-    if (notification.method === 'server/request/resolved') {
+    if (event.type === 'approval.resolved' || event.type === 'question.resolved') {
       this.waitingApprovalRunIds.delete(run.id)
       void updateAgentTaskRunState(run.id, 'running')
       return
     }
-    const summary = latestAssistantTextFromEvents(events)
+    const summary = latestAssistantTextFromEvents([event])
     if (summary) {
       run.summary = summary
       void updateAgentTaskRunState(run.id, 'running', summary)
     }
-    const usage = usageFromEvents(events)
+    const usage = usageFromEvents([event])
     if (usage?.totalTokens) {
       Object.assign(run, usage)
       void updateAgentTaskRunUsage(run.id, usage)
       void this.enforceTokenLimit(run, usage.totalTokens)
     }
-    const terminal = latestTerminalTurnEvent(events)
+    const terminal = latestTerminalTurnEvent([event])
     if (!terminal) return
     const error = terminal.type === 'turn.failed' ? readString(terminal.data.error) || 'Codex turn failed' : ''
     void this.finish(run, {
@@ -322,9 +304,8 @@ export class AgentTaskService {
     })
   }
 
-  ownsNotification(notification: CodexNotification): boolean {
-    const turnId = nestedId(notification.params, 'turn')
-    const threadId = nestedId(notification.params, 'thread')
+  ownsEvent(event: CodexEvent): boolean {
+    const { turnId, threadId } = event
     return Boolean((turnId && this.activeRunsByTurn.has(turnId)) || (threadId && this.activeRunsByThread.has(threadId)))
   }
 
@@ -398,7 +379,12 @@ export class AgentTaskService {
       const threadId = await this.prepareThread(task, run)
       run.threadId = threadId
       this.activeRunsByThread.set(threadId, run)
-      const turnId = await this.commands.startTurn(threadId, {
+      const handle = await this.owner.submitUntilStarted({
+        threadId,
+        clientCommandId: `agent-task:${run.id}`,
+        mode: 'queue',
+        context: this.threadContext(task),
+        input: {
         input: [{ type: 'text', text: task.prompt, text_elements: [] }],
         approvalPolicy: 'on-request',
         sandboxPolicy: task.permission === 'workspace-write'
@@ -406,7 +392,9 @@ export class AgentTaskService {
           : { type: 'readOnly', networkAccess: false },
         ...(task.model ? { model: task.model } : {}),
         ...(task.effort ? { effort: task.effort } : {}),
+        },
       })
+      const turnId = handle.turnId
       if (task.conversationMode === 'reuse' && task.fixedThreadId !== threadId) {
         try {
           await setAgentTaskFixedThreadId(task.id, threadId)
@@ -417,7 +405,7 @@ export class AgentTaskService {
       if (this.finishedRunIds.has(run.id)) return
       if (!await markAgentTaskRunStarted(run.id, threadId, turnId, this.now())) {
         this.activeRunsByThread.delete(threadId)
-        await this.commands.interruptTurn(threadId, turnId).catch(() => undefined)
+        await this.owner.interrupt(threadId, this.threadContext(task)).catch(() => undefined)
         return
       }
       run.status = 'running'
@@ -436,22 +424,19 @@ export class AgentTaskService {
   private async prepareThread(task: AgentTask, run: AgentTaskRun): Promise<string> {
     if (task.conversationMode === 'reuse' && task.fixedThreadId) {
       try {
-        await this.commands.resumeThread(task.fixedThreadId)
+        await this.owner.read(task.fixedThreadId, this.threadContext(task))
         return task.fixedThreadId
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         await appendAgentTaskRunEvent(run.id, 'progress', `Fixed conversation could not be resumed; creating a replacement. ${message}`)
       }
     }
-    return this.commands.startThread({
-      cwd: task.cwd,
-      ...(task.model ? { model: task.model } : {}),
-    })
+    return (await this.owner.start({ thread: { cwd: task.cwd, ...(task.model ? { model: task.model } : {}) } })).threadId
   }
 
   private async recoverRun(task: AgentTask, run: AgentTaskRun): Promise<void> {
     try {
-      const events = (await this.catalog.readThread(run.threadId)).filter((event) => event.turnId === run.turnId)
+      const events = (await this.owner.read(run.threadId, this.threadContext(task))).filter((event) => event.turnId === run.turnId)
       const terminal = latestTerminalTurnEvent(events)
       if (terminal) {
         const error = terminal.type === 'turn.failed' ? readString(terminal.data.error) || 'Codex turn failed' : ''
@@ -473,7 +458,7 @@ export class AgentTaskService {
     const remainingMs = Math.max(1_000, startedAtMs + task.timeoutMinutes * 60_000 - this.now().getTime())
     const timer = this.setTimer(() => {
       this.timeoutByRun.delete(run.id)
-      void this.commands.interruptTurn(run.threadId, run.turnId).catch(() => undefined)
+      void this.owner.interrupt(run.threadId, this.threadContext(task)).catch(() => undefined)
       void this.finish(run, { status: 'timed_out', error: `Agent task exceeded ${String(task.timeoutMinutes)} minutes.` })
     }, remainingMs)
     timer.unref?.()
@@ -519,8 +504,14 @@ export class AgentTaskService {
     if (this.finishedRunIds.has(run.id)) return
     const task = await getAgentTask(run.taskId)
     if (!task?.maxTokens || totalTokens < task.maxTokens) return
-    if (run.threadId && run.turnId) await this.commands.interruptTurn(run.threadId, run.turnId).catch(() => undefined)
+    if (run.threadId && run.turnId) await this.owner.interrupt(run.threadId, this.threadContext()).catch(() => undefined)
     await this.finish(run, { status: 'failed', error: `Token limit reached (${String(task.maxTokens)}).`, totalTokens })
+  }
+
+  /** All background actions join the same Core owner as browser and Feishu
+   * turns.  The task still owns its workspace policy, never a second queue. */
+  private threadContext(task?: AgentTask): ExecutionContext {
+    return { thread: task ? { cwd: task.cwd, ...(task.model ? { model: task.model } : {}) } : {} }
   }
 
   private async deliver(task: AgentTask, run: AgentTaskRun, summary: string): Promise<void> {
@@ -555,9 +546,9 @@ export class AgentTaskService {
   }
 
   private async emit(task: AgentTask, run: AgentTaskRun, title: string, summary: string, severity: 'info' | 'success' | 'warning' | 'danger', enabled: boolean): Promise<void> {
-    if (!enabled || !this.onEvent) return
+    if (!enabled || !this.eventSink) return
     try {
-      await this.onEvent({ task, run, title, summary, severity })
+      await this.eventSink({ task, run, title, summary, severity })
     } catch (error) {
       console.warn(`Agent task notification failed: ${error instanceof Error ? error.message : String(error)}`)
     }

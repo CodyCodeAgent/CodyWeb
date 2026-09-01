@@ -6,8 +6,6 @@ import {
   type ComposerCollaborationModeOption,
   type KnownReasoningEffort,
 } from '@codycodeagent/cody-web-core/composer'
-import { normalizeCodexApiError } from './codexErrors'
-import { rpcCall } from './codexRpcClient'
 import { fetchCodexJson, readRpcResult } from './codexHttpClient'
 import type { CodexCollaborationModeOption, CodexModelOption } from '@codycodeagent/cody-web-core/session'
 
@@ -24,14 +22,6 @@ type CollaborationModeRow = {
   model?: string | null
   reasoning_effort?: unknown
   developer_instructions?: string | null
-}
-
-async function callRpc<T>(method: string, params?: unknown): Promise<T> {
-  try {
-    return await rpcCall<T>(method, params)
-  } catch (error) {
-    throw normalizeCodexApiError(error, `RPC ${method} failed`, method)
-  }
 }
 
 async function getOwnerResult<T>(path: string, method: string): Promise<T> {
@@ -111,10 +101,6 @@ export async function getCollaborationModes(): Promise<ComposerCollaborationMode
   return options
 }
 
-export async function setDefaultModel(model: string): Promise<void> {
-  await callRpc('setDefaultModel', { model })
-}
-
 export async function getAvailableModelIds(): Promise<string[]> {
   const ids: string[] = []
   for (const row of await getOwnerResult<CodexModelOption[]>('/codex-api/conversations/models', 'conversation/models/list')) {
@@ -126,7 +112,7 @@ export async function getAvailableModelIds(): Promise<string[]> {
 }
 
 export async function getCurrentModelConfig(): Promise<CurrentModelConfig> {
-  const payload = await callRpc<ConfigReadResponse>('config/read', {})
+  const payload = await getOwnerResult<ConfigReadResponse>('/codex-api/runtime/config', 'runtime/config/read')
   const model = payload.config.model ?? ''
   const reasoningEffort = normalizeReasoningEffort(payload.config.model_reasoning_effort)
   return {

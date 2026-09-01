@@ -305,10 +305,7 @@ describe('bridge server request endpoints', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ method: 'thread/resume', params: { threadId: 'thread-restored' } }),
       })).resolves.toMatchObject({
-        status: 403,
-        body: {
-          error: expect.stringContaining('Core conversation owner API'),
-        },
+        status: 410,
       })
     } finally {
       middleware.dispose()

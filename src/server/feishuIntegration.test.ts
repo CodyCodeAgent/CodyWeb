@@ -25,7 +25,14 @@ afterEach(async () => {
 
 function integration() {
   return createFeishuIntegration({
-    rpc: vi.fn(async () => ({})),
+    owner: {
+      start: vi.fn(async () => ({ threadId: 'thread-test' })),
+      submitUntilStarted: vi.fn(async () => ({ threadId: 'thread-test', turnId: 'turn-test' })),
+      runEphemeral: vi.fn(async () => ({ assistantText: '', terminalEvent: { type: 'turn.completed', data: {} } })),
+      read: vi.fn(async () => []), interrupt: vi.fn(async () => true), listSkills: vi.fn(async () => []),
+      listCollaborationModes: vi.fn(async () => []), readConfig: vi.fn(async () => ({ config: { model: null, model_reasoning_effort: null, developer_instructions: null } })), renameThread: vi.fn(async () => undefined), archiveThread: vi.fn(async () => undefined),
+      respondApproval: vi.fn(async () => undefined), respondQuestion: vi.fn(async () => undefined), subscribe: vi.fn(() => () => undefined),
+    } as never,
     respondToServerRequest: vi.fn(async () => undefined),
     subscribe: vi.fn(() => () => undefined),
     catalogSync: { refreshForRead: vi.fn(async () => undefined) } as never,

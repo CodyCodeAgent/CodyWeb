@@ -6,18 +6,12 @@ import {
   normalizeCollaborationModeOption,
   normalizeReasoningEffort,
   normalizeTokenLimit,
-  setDefaultModel,
 } from './codexModelClient'
-
-const rpcMock = vi.hoisted(() => ({
-  rpcCall: vi.fn(),
-}))
 const httpMock = vi.hoisted(() => ({
   fetchCodexJson: vi.fn(),
   readRpcResult: vi.fn((payload: unknown) => (payload as { result: unknown }).result),
 }))
 
-vi.mock('./codexRpcClient', () => rpcMock)
 vi.mock('./codexHttpClient', () => httpMock)
 
 afterEach(() => {
@@ -129,14 +123,14 @@ describe('codex model client', () => {
   })
 
   it('loads current model config with normalized reasoning effort', async () => {
-    rpcMock.rpcCall.mockResolvedValue({
+    httpMock.fetchCodexJson.mockResolvedValue({ payload: { result: {
       config: {
         model: 'gpt-5',
         model_reasoning_effort: 'xhigh',
         model_context_window: '200000',
         model_auto_compact_token_limit: 180000,
       },
-    })
+    } }, status: 200 })
 
     await expect(getCurrentModelConfig()).resolves.toEqual({
       model: 'gpt-5',
@@ -146,11 +140,4 @@ describe('codex model client', () => {
     })
   })
 
-  it('updates the default model', async () => {
-    rpcMock.rpcCall.mockResolvedValue({})
-
-    await expect(setDefaultModel('gpt-5')).resolves.toBeUndefined()
-
-    expect(rpcMock.rpcCall).toHaveBeenCalledWith('setDefaultModel', { model: 'gpt-5' })
-  })
 })

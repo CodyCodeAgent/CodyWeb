@@ -1,10 +1,12 @@
 import { asRecord, readJsonBody, setJson, type DomainRoute } from './httpRoute.js'
 
 type PendingRequestGateway = {
-  rpc: (method: string, params: unknown) => Promise<unknown>
   listConversationThreads: (options?: { archived?: boolean }) => Promise<unknown>
   listConversationModels: () => Promise<unknown>
   listConversationCollaborationModes: () => Promise<unknown>
+  readRuntimeConfig: () => Promise<unknown>
+  reloadMcpServers: () => Promise<unknown>
+  readAccountRateLimits: () => Promise<unknown>
   listConversationSkills: (cwds: string[]) => Promise<unknown>
   listConversationSkillCatalog: (cwds: string[]) => Promise<unknown>
   setConversationSkillEnabled: (path: string, enabled: boolean) => Promise<void>
@@ -25,13 +27,6 @@ type PendingRequestGateway = {
   accessSecurity: (context: Parameters<DomainRoute>[0]) => unknown
 }
 
-/** Native thread/turn ownership is intentionally unavailable through the
- * generic RPC tunnel.  Those calls must go via the conversation owner routes
- * below so a browser cannot bypass queueing, bindings, or terminal handling. */
-function isConversationOwnerMethod(method: string): boolean {
-  return /^(?:thread\/(?:start|resume|read|list|name\/set|fork|compact\/start|archive)|turn\/(?:start|steer|interrupt)|model\/list|collaborationMode\/list|skills\/(?:list|config\/write))$/u.test(method)
-}
-
 function queryCwds(url: URL): string[] {
   return Array.from(new Set(url.searchParams.getAll('cwd').map(value => value.trim()).filter(Boolean)))
 }
@@ -40,10 +35,7 @@ export function createGatewayRoutes(gateway: PendingRequestGateway): DomainRoute
   return async ({ req, res, url }) => {
     const key = `${req.method ?? ''} ${url.pathname}`
     if (key === 'POST /codex-api/rpc') {
-      const body = asRecord(await readJsonBody(req))
-      if (!body || typeof body.method !== 'string' || body.method.length === 0) setJson(res, 400, { error: 'Invalid body: expected { method, params? }' })
-      else if (isConversationOwnerMethod(body.method)) setJson(res, 403, { error: `Native conversation method ${body.method} must use the Core conversation owner API` })
-      else setJson(res, 200, { result: await gateway.rpc(body.method, body.params ?? null) })
+      setJson(res, 410, { error: 'The generic App Server RPC tunnel was removed; use an explicit Core owner endpoint.' })
     } else if (key === 'GET /codex-api/conversations/threads') {
       const archived = url.searchParams.get('archived') === 'true'
       setJson(res, 200, { result: await gateway.listConversationThreads({ archived }) })
@@ -51,6 +43,12 @@ export function createGatewayRoutes(gateway: PendingRequestGateway): DomainRoute
       setJson(res, 200, { result: await gateway.listConversationModels() })
     } else if (key === 'GET /codex-api/conversations/collaboration-modes') {
       setJson(res, 200, { result: await gateway.listConversationCollaborationModes() })
+    } else if (key === 'GET /codex-api/runtime/config') {
+      setJson(res, 200, { result: await gateway.readRuntimeConfig() })
+    } else if (key === 'POST /codex-api/runtime/mcp/reload') {
+      setJson(res, 200, { result: await gateway.reloadMcpServers() })
+    } else if (key === 'GET /codex-api/account/rate-limits') {
+      setJson(res, 200, { result: await gateway.readAccountRateLimits() })
     } else if (key === 'GET /codex-api/conversations/skills') {
       setJson(res, 200, { result: await gateway.listConversationSkills(queryCwds(url)) })
     } else if (key === 'GET /codex-api/conversations/skill-catalog') {

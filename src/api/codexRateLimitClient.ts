@@ -3,8 +3,7 @@ import type {
   RateLimitSnapshot,
   RateLimitWindow,
 } from './appServerDtos'
-import { normalizeCodexApiError } from './codexErrors'
-import { rpcCall } from './codexRpcClient'
+import { fetchCodexJson, readRpcResult } from './codexHttpClient'
 import type {
   UiRateLimitSnapshot,
   UiRateLimitWindow,
@@ -14,14 +13,6 @@ type AccountRateLimitsPayload = GetAccountRateLimitsResponse & {
   rateLimitResetCredits?: {
     availableCount?: number | null
   } | null
-}
-
-async function callRpc<T>(method: string, params?: unknown): Promise<T> {
-  try {
-    return await rpcCall<T>(method, params)
-  } catch (error) {
-    throw normalizeCodexApiError(error, `RPC ${method} failed`, method)
-  }
 }
 
 function normalizeRateLimitWindow(window: RateLimitWindow | null | undefined): UiRateLimitWindow | null {
@@ -64,7 +55,12 @@ function pickPrimaryAccountLimit(payload: AccountRateLimitsPayload): RateLimitSn
 }
 
 export async function getAccountRateLimits(): Promise<UiRateLimitSnapshot | null> {
-  const payload = await callRpc<AccountRateLimitsPayload>('account/rateLimits/read')
+  const { payload: envelope, status } = await fetchCodexJson('/codex-api/account/rate-limits', {
+    init: { method: 'GET' }, method: 'account/rateLimits/read',
+    networkErrorMessage: 'Account rate limits failed before request was sent',
+    httpErrorMessage: 'Account rate limits failed', timeoutMs: 25_000,
+  })
+  const payload = readRpcResult<AccountRateLimitsPayload>(envelope, status, 'account/rateLimits/read', 'Account rate limits returned malformed envelope')
   const resetCredits =
     typeof payload.rateLimitResetCredits?.availableCount === 'number'
       ? payload.rateLimitResetCredits.availableCount
