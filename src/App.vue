@@ -191,7 +191,6 @@
               :cwd="selectedThread?.cwd ?? ''"
               :thread-id="selectedThreadId"
               @respond-server-request="onRespondServerRequest"
-              @rollback-completed="onRollbackCompleted"
             />
             <div class="content-notifications-host">
               <BrowserNotificationsPanel
@@ -411,7 +410,6 @@ import type {
   UiComposerPermissionMode,
   UiComposerSubmitAck,
   UiServerRequestReply,
-  UiToolingRollbackFileResult,
   WorkspaceComposerContext,
 } from './types/codex'
 import type { PromptInsertion } from './composables/promptLibraryRules'
@@ -480,7 +478,6 @@ const {
   reorderProject,
   startRealtimeSync,
   stopRealtimeSync,
-  recordRollbackAudit,
 } = useDesktopState()
 const browserNotifications = useBrowserNotifications()
 const {
@@ -669,7 +666,6 @@ let backendDisconnectGraceTimer: number | null = null
 let backendRestoreTimer: number | null = null
 let stopBackendConnectionMonitor: (() => void) | null = null
 let lastRealtimePhase: RealtimeConnectionSnapshot['phase'] = 'idle'
-let hasObservedRealtimeConnection = false
 
 onMounted(() => {
   applyCurrentTheme()
@@ -720,7 +716,6 @@ function realtimeDisconnectDetail(snapshot: RealtimeConnectionSnapshot): string 
 }
 
 function handleRealtimeConnection(snapshot: RealtimeConnectionSnapshot): void {
-  const previousPhase = lastRealtimePhase
   lastRealtimePhase = snapshot.phase
 
   if (snapshot.phase === 'connected') {
@@ -729,8 +724,6 @@ function handleRealtimeConnection(snapshot: RealtimeConnectionSnapshot): void {
       backendDisconnectGraceTimer = null
     }
     backendLastError.value = ''
-    const isRecovery = hasObservedRealtimeConnection && previousPhase !== 'connected'
-    hasObservedRealtimeConnection = true
     if (backendConnectionState.value === 'offline') {
       backendConnectionState.value = 'restored'
       if (backendRestoreTimer !== null) window.clearTimeout(backendRestoreTimer)
@@ -741,7 +734,11 @@ function handleRealtimeConnection(snapshot: RealtimeConnectionSnapshot): void {
     } else if (backendConnectionState.value !== 'restored') {
       backendConnectionState.value = 'online'
     }
-    if (isRecovery) void refreshAll({ loadSelectedMessages: false }).catch(() => undefined)
+    // The Core conversation controller already atomically replaces native
+    // history and replays only the realtime suffix on this transition. Calling
+    // refreshAll here would create a second reconciliation path and can move
+    // old responses behind newer user messages. Product catalog refreshes stay
+    // user-triggered or use their own explicit invalidation paths.
     return
   }
 
@@ -936,10 +933,6 @@ function onUpdateThreadScrollState(payload: { threadId: string; state: Conversat
 
 function onRespondServerRequest(payload: UiServerRequestReply): void {
   void respondToPendingServerRequest(payload)
-}
-
-function onRollbackCompleted(result: UiToolingRollbackFileResult): void {
-  recordRollbackAudit(result)
 }
 
 function onRefreshShell(): void {

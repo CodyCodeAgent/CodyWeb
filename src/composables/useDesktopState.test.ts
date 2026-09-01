@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildRollbackAuditMessage } from './useDesktopState'
+import { buildRollbackAuditMessage } from './desktopMessageState'
 import { buildThreadActivityEntries } from './useThreadActivity'
 import type { UiToolingRollbackFileResult } from '../types/codex'
 

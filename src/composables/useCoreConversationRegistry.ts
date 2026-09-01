@@ -10,7 +10,7 @@ import {
   type ConversationState,
 } from '@codycodeagent/cody-web-core/conversation'
 import type { ComposerSkill } from '@codycodeagent/cody-web-core/composer'
-import { attachThreadConversation, getThreadEvents, submitThreadCommand } from '../api/codexThreadClient'
+import { attachThreadConversation, getThreadEvents, interruptThreadTurn, submitThreadCommand } from '../api/codexThreadClient'
 import {
   subscribeConversationEvents,
   subscribeRealtimeConnection,
@@ -81,6 +81,9 @@ export function useCoreConversationRegistry() {
           context: command.context as Parameters<typeof submitThreadCommand>[0]['context'],
         })
       },
+      interrupt(attachedThreadId) {
+        return interruptThreadTurn(attachedThreadId)
+      },
       subscribe(_threadId, listener) {
         const listeners = transportListenersByThreadId.get(threadId) ?? new Set()
         listeners.add(listener)
@@ -139,7 +142,6 @@ export function useCoreConversationRegistry() {
 
   function submit(input: {
     threadId: string
-    commandId: string
     text: string
     images?: string[]
     skills?: ComposerSkill[]
@@ -148,7 +150,6 @@ export function useCoreConversationRegistry() {
     context?: Parameters<typeof submitThreadCommand>[0]['context']
   }): Promise<{ clientCommandId: string }> {
     return controllerFor(input.threadId).submitUserMessage({
-      id: input.commandId,
       text: input.text,
       ...(input.images?.length ? { images: input.images } : {}),
       ...(input.skills?.length ? { skills: input.skills } : {}),
@@ -159,8 +160,26 @@ export function useCoreConversationRegistry() {
     })
   }
 
-  function discard(threadId: string, commandId: string): void {
-    controllerFor(threadId).discardQueuedUserMessage(commandId)
+  function retry(input: {
+    threadId: string
+    messageId: string
+    mode: 'queue' | 'steer'
+    turnInput: Parameters<typeof submitThreadCommand>[0]['turnInput']
+    context?: Parameters<typeof submitThreadCommand>[0]['context']
+  }): Promise<{ clientCommandId: string }> {
+    return controllerFor(input.threadId).retryFailedUserMessage(input.messageId, {
+      mode: input.mode,
+      input: input.turnInput,
+      ...(input.context ? { context: input.context } : {}),
+    })
+  }
+
+  function discardFailed(threadId: string, messageId: string): void {
+    controllerFor(threadId).discardFailedUserMessage(messageId)
+  }
+
+  function interrupt(threadId: string): Promise<void> {
+    return controllerFor(threadId).interrupt()
   }
 
   function ingest(threadId: string, event: Parameters<ConversationController['ingestEvent']>[0]): void {
@@ -198,5 +217,5 @@ export function useCoreConversationRegistry() {
     stateByThreadId.value = {}
   }
 
-  return { stateByThreadId, stateFor, focus, connect, refresh, submit, discard, ingest, subscribeEvents, prune, dispose }
+  return { stateByThreadId, stateFor, focus, connect, refresh, submit, retry, discardFailed, interrupt, ingest, subscribeEvents, prune, dispose }
 }

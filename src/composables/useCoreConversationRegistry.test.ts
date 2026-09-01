@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
     attach: vi.fn(async () => ({ events: [] as CodexEvent[] })),
     read: vi.fn(async () => [] as CodexEvent[]),
     submit: vi.fn(async (input: { clientCommandId: string }) => ({ clientCommandId: input.clientCommandId })),
+    interrupt: vi.fn(async () => undefined),
     setThreadSubscriptions: vi.fn(),
     subscribeEvents: vi.fn((listener: (event: CodexEvent) => void) => {
       eventListener = listener
@@ -44,6 +45,7 @@ const mocks = vi.hoisted(() => {
 vi.mock('../api/codexThreadClient', () => ({
   attachThreadConversation: mocks.attach,
   getThreadEvents: mocks.read,
+  interruptThreadTurn: mocks.interrupt,
   submitThreadCommand: mocks.submit,
 }))
 
@@ -98,18 +100,19 @@ describe('useCoreConversationRegistry', () => {
     }))
     const registry = useCoreConversationRegistry()
     const submitting = registry.submit({
-      threadId: 'thread-a', commandId: 'command-a', text: '立即显示', mode: 'queue',
+      threadId: 'thread-a', text: '立即显示', mode: 'queue',
       turnInput: { input: [{ type: 'text', text: '立即显示', text_elements: [] }] },
     })
 
-    expect(registry.stateFor('thread-a').messages).toEqual([
-      expect.objectContaining({ id: 'user:command-a', text: '立即显示', outbox: { status: 'queued' } }),
-    ])
-    accept({ clientCommandId: 'command-a' })
-    await submitting
+    const optimistic = registry.stateFor('thread-a').messages[0]
+    expect(optimistic).toEqual(expect.objectContaining({ text: '立即显示', outbox: { status: 'queued' } }))
+    const acceptedCommandId = optimistic?.id.slice('user:'.length) ?? ''
+    expect(acceptedCommandId).toMatch(/^command:thread-a:/)
+    accept({ clientCommandId: acceptedCommandId })
+    await expect(submitting).resolves.toEqual({ clientCommandId: acceptedCommandId })
     mocks.emit(event({
       id: 'bound-a', type: 'command.bound', threadId: 'thread-a', turnId: 'turn-a',
-      itemId: 'command-a', data: { clientCommandId: 'command-a' },
+      itemId: acceptedCommandId, data: { clientCommandId: acceptedCommandId },
     }))
     mocks.emit(event({
       id: 'native-a', type: 'user.completed', threadId: 'thread-a', turnId: 'turn-a',

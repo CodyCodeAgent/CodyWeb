@@ -16,7 +16,6 @@ import {
   compactThread,
   buildTurnInput,
   forkThread,
-  interruptThreadTurn,
   renameThread,
   startThread,
 } from '../api/codexThreadClient'
@@ -35,9 +34,6 @@ import type { DesktopPlanState } from './desktopPlanState'
 import { useCoreConversationRegistry } from './useCoreConversationRegistry'
 import { useRateLimitState } from './useRateLimitState'
 import {
-  buildRollbackAuditMessage,
-} from './desktopMessageState'
-import {
   markThreadMessagesLoaded,
   setThreadLoadedVersion,
   shouldShowMessagesLoading,
@@ -48,7 +44,6 @@ import {
   normalizeNewThreadTurnInput,
   normalizeThreadTextTurnInput,
 } from './desktopTurnState'
-import { buildPendingConversationCommand, type PendingConversationCommand } from './conversationCommand'
 import { normalizeThreadScrollState, saveProjectDisplayNames, saveProjectOrder, saveReadStateMap, saveThreadScrollStateMap } from './desktopStateStorage'
 import {
   areStringArraysEqual,
@@ -74,10 +69,7 @@ import type {
   UiServerRequestReply,
   UiThread,
   UiThreadContextUsage,
-  UiToolingRollbackFileResult,
 } from '../types/codex'
-
-export { buildRollbackAuditMessage } from './desktopMessageState'
 
 
 export function useDesktopState() {
@@ -374,9 +366,8 @@ export function useDesktopState() {
       // still need an explicit retry or discard decision.
       .filter((message) => message.role === 'user' && message.outbox?.status === 'failed')
       .map((message) => {
-        const id = message.id.startsWith('user:') ? message.id.slice('user:'.length) : message.id
         return {
-          id,
+          id: message.id,
           threadId,
           text: message.text,
           status: message.outbox!.status,
@@ -385,20 +376,6 @@ export function useDesktopState() {
           canManage: true,
         }
       })
-  }
-
-  function recordRollbackAudit(result: UiToolingRollbackFileResult): void {
-    const threadId = selectedThreadId.value
-    if (!threadId) return
-    const message = buildRollbackAuditMessage(result)
-    coreConversations.ingest(threadId, {
-      id: message.id,
-      type: 'tool.completed',
-      threadId,
-      itemId: message.id,
-      atIso: new Date().toISOString(),
-      data: { tool: message.tool },
-    })
   }
 
   async function loadThreads() {
@@ -660,29 +637,16 @@ export function useDesktopState() {
     }
   }
 
-  async function enqueueMessageForThread(
+  function commandPayloadForThread(
     threadId: string,
     payload: ComposerSubmission<UiComposerContextKind>,
-  ): Promise<PendingConversationCommand | null> {
+  ): { threadId: string; text: string; images: ComposerSubmission<UiComposerContextKind>['images']; skills: ComposerSubmission<UiComposerContextKind>['skills']; contexts?: ComposerSubmission<UiComposerContextKind>['contexts'] } | null {
     const turnInput = normalizeComposerTurnInput(payload)
     if (!threadId || !turnInput.hasContent) return null
-
-    const item = buildPendingConversationCommand({
-      threadId,
-      payload: {
-        text: turnInput.text,
-        images: turnInput.images,
-        skills: turnInput.skills,
-        contexts: payload.contexts,
-      },
-    })
-    // This is only a command payload. Core.submit is the sole operation that
-    // admits it and synchronously inserts the optimistic row; product state
-    // must never maintain a parallel transcript/outbox before admission.
-    return item
+    return { threadId, text: turnInput.text, images: turnInput.images, skills: turnInput.skills, contexts: payload.contexts }
   }
 
-  async function submitOutboxItem(item: PendingConversationCommand, mode: 'queue' | 'steer'): Promise<void> {
+  async function submitConversationCommand(item: NonNullable<ReturnType<typeof commandPayloadForThread>>, mode: 'queue' | 'steer'): Promise<void> {
     isSendingMessage.value = true
     error.value = ''
     const modelId = selectedModelId.value.trim()
@@ -692,7 +656,6 @@ export function useDesktopState() {
     try {
       await coreConversations.submit({
         threadId: item.threadId,
-        commandId: item.id,
         text: item.text,
         images: item.images.map((image) => image.url).filter(Boolean),
         skills: item.skills,
@@ -724,17 +687,17 @@ export function useDesktopState() {
     if (!threadId || !turnInput.hasContent) return
 
     if (resolveComposerSubmitMode(Boolean(coreConversations.stateFor(threadId).activeTurnId), selectedSubmitMode.value) === 'steer') {
-      const item = await enqueueMessageForThread(threadId, payload)
+      const item = commandPayloadForThread(threadId, payload)
       if (!item) return
       options.onAccepted?.()
-      await submitOutboxItem(item, 'steer')
+      await submitConversationCommand(item, 'steer')
       return
     }
 
-    const item = await enqueueMessageForThread(threadId, payload)
+    const item = commandPayloadForThread(threadId, payload)
     if (!item) return
     options.onAccepted?.()
-    await submitOutboxItem(item, 'queue')
+    await submitConversationCommand(item, 'queue')
   }
 
   async function sendTextToThreadById(threadId: string, text: string): Promise<void> {
@@ -745,49 +708,47 @@ export function useDesktopState() {
       throw new Error('Thread was not found')
     }
 
-    const item = await enqueueMessageForThread(turnInput.threadId, {
+    const item = commandPayloadForThread(turnInput.threadId, {
       text: turnInput.text,
       images: turnInput.images,
       skills: turnInput.skills,
     })
     if (!item) return
-    await submitOutboxItem(item, 'queue')
+    await submitConversationCommand(item, 'queue')
   }
 
   async function sendQueuedMessageNow(threadId: string, itemId: string): Promise<void> {
     const normalizedThreadId = threadId.trim()
-    const normalizedItemId = itemId.trim()
-    if (!normalizedThreadId || !normalizedItemId) return
-
-    const failed = coreConversations.stateFor(normalizedThreadId).messages.find((message) => (
-      message.id === `user:${normalizedItemId}` && message.role === 'user' && message.outbox?.status === 'failed'
-    ))
+    const messageId = itemId.trim()
+    if (!normalizedThreadId || !messageId) return
+    const failed = coreConversations.stateFor(normalizedThreadId).messages.find((message) => message.id === messageId && message.role === 'user' && message.outbox?.status === 'failed')
     if (!failed) return
-    const replacement = await enqueueMessageForThread(normalizedThreadId, {
-      text: failed.text,
-      images: (failed.images ?? []).map((url, index) => {
-        const encodedPath = url.startsWith('local-image://') ? url.slice('local-image://'.length) : ''
-        let path = url
-        if (encodedPath) {
-          try { path = decodeURIComponent(encodedPath) } catch { path = encodedPath }
-        }
-        return { id: `retry-image-${String(index)}`, name: `image-${String(index + 1)}`, path, url, mimeType: 'application/octet-stream' }
-      }),
-      skills: (failed.skills ?? []).map((skill) => ({ ...skill, description: '', displayName: skill.displayName ?? skill.name })),
+    const modelId = selectedModelId.value.trim()
+    const reasoningEffort = selectedReasoningEffort.value
+    await coreConversations.retry({
+      threadId: normalizedThreadId,
+      messageId,
+      mode: coreConversations.stateFor(normalizedThreadId).activeTurnId ? 'steer' : 'queue',
+      turnInput: {
+        input: buildTurnInput(failed.text, [], (failed.skills ?? []).map((skill) => ({
+          name: skill.name,
+          path: skill.path,
+          displayName: skill.displayName ?? skill.name,
+          description: '',
+        }))),
+        ...(modelId ? { model: modelId } : {}),
+        ...(reasoningEffort ? { effort: reasoningEffort } : {}),
+      },
     })
-    if (!replacement) return
-    // Keep the failed attempt in the transcript. A retry is a new command and
-    // must remain distinguishable even when its text is identical.
-    await submitOutboxItem(replacement, coreConversations.stateFor(normalizedThreadId).activeTurnId ? 'steer' : 'queue')
   }
 
   async function deleteQueuedMessage(threadId: string, itemId: string): Promise<void> {
     const normalizedThreadId = threadId.trim()
-    const normalizedItemId = itemId.trim()
-    if (!normalizedThreadId || !normalizedItemId) return
-    const message = coreConversations.stateFor(normalizedThreadId).messages.find((row) => row.id === `user:${normalizedItemId}`)
+    const messageId = itemId.trim()
+    if (!normalizedThreadId || !messageId) return
+    const message = coreConversations.stateFor(normalizedThreadId).messages.find((row) => row.id === messageId)
     if (message?.outbox?.status !== 'failed') return
-    coreConversations.discard(normalizedThreadId, normalizedItemId)
+    coreConversations.discardFailed(normalizedThreadId, messageId)
   }
 
   async function sendMessageToNewThread(payload: ComposerSubmission<UiComposerContextKind>, cwd: string): Promise<string> {
@@ -822,8 +783,8 @@ export function useDesktopState() {
         ...resumedThreadById.value,
         [threadId]: true,
       }
-      const item = await enqueueMessageForThread(threadId, payload)
-      if (item) void submitOutboxItem(item, 'queue').catch(() => undefined)
+      const item = commandPayloadForThread(threadId, payload)
+      if (item) void submitConversationCommand(item, 'queue').catch(() => undefined)
       return threadId
     } catch (unknownError) {
       const errorMessage = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
@@ -842,7 +803,7 @@ export function useDesktopState() {
     isInterruptingTurn.value = true
     error.value = ''
     try {
-      await interruptThreadTurn(threadId)
+      await coreConversations.interrupt(threadId)
     } catch (unknownError) {
       const errorMessage = unknownError instanceof Error ? unknownError.message : 'Failed to interrupt active turn'
       error.value = errorMessage
@@ -985,7 +946,6 @@ export function useDesktopState() {
     setSelectedPermissionMode,
     setSelectedSubmitMode,
     respondToPendingServerRequest,
-    recordRollbackAudit,
     renameProject,
     hideProject,
     restoreProject,
