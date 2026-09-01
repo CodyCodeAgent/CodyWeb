@@ -1,6 +1,5 @@
 export function useDesktopRealtimeState(input: {
   hydratePreferences: () => Promise<void>
-  loadPendingApprovals: () => Promise<void>
   refreshRateLimits: () => Promise<unknown>
   resetDomainState: () => void
 }) {
@@ -10,7 +9,6 @@ export function useDesktopRealtimeState(input: {
     // one-shot: forwarding every raw App Server RPC to every browser tab made a
     // slow tab a backpressure source and created reconnect churn.
     void input.hydratePreferences()
-    void input.loadPendingApprovals()
     void input.refreshRateLimits()
   }
 

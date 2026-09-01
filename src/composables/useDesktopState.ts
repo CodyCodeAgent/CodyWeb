@@ -9,9 +9,11 @@ import {
   conversationFeedFromState,
   conversationLiveOverlayFromState,
   type ConversationFeedEntry,
+  type ConversationRequest,
   type CodexEvent,
   type ConversationScrollState,
 } from '@codycodeagent/cody-web-core/conversation'
+import { normalizeConversationRequest } from '@codycodeagent/cody-web-core/presentation'
 import {
   compactThread,
   buildTurnInput,
@@ -26,7 +28,7 @@ import {
   setProjectHidden,
   setThreadHidden,
 } from '../api/codexCatalogClient'
-import { useServerRequestState } from './useServerRequestState'
+import { respondServerRequest } from '../api/codexBridgeClient'
 import { useDesktopComposerState } from './useDesktopComposerState'
 import { useDesktopRealtimeState } from './useDesktopRealtimeState'
 import { useDesktopThreadState } from './useDesktopThreadState'
@@ -66,6 +68,7 @@ import type {
   UiComposerContextKind,
   UiMessage,
   UiQueuedMessage,
+  UiServerRequest,
   UiServerRequestReply,
   UiThread,
   UiThreadContextUsage,
@@ -100,6 +103,13 @@ function messageRowsFromCoreFeed(feed: readonly ConversationFeedEntry[]): UiMess
   })
 }
 
+function serverRequestsFromCore(requests: readonly ConversationRequest[]): UiServerRequest[] {
+  return requests.flatMap((request) => {
+    const normalized = normalizeConversationRequest(request)
+    return normalized ? [normalized] : []
+  })
+}
+
 
 export function useDesktopState() {
   const threadState = useDesktopThreadState()
@@ -119,8 +129,6 @@ export function useDesktopState() {
   const coreConversations = useCoreConversationRegistry()
   coreConversations.focus(selectedThreadId.value)
   const conversationStateByThreadId = coreConversations.stateByThreadId
-  const serverRequestState = useServerRequestState(selectedThreadId, (message) => { error.value = message })
-  const pendingServerRequestsByThreadId = serverRequestState.byThreadId
   const {
     rateLimitSnapshot,
     isLoadingRateLimits,
@@ -161,15 +169,20 @@ export function useDesktopState() {
     }
   })
 
-  const selectedThreadServerRequests = serverRequestState.selected
   const selectedCoreConversation = computed(() => (
     coreConversations.stateFor(selectedThreadId.value)
+  ))
+  const selectedThreadServerRequests = computed(() => (
+    serverRequestsFromCore(selectedCoreConversation.value.pendingRequests)
   ))
   const isLoadingMessages = computed(() => loadingMessagesByThreadId.value[selectedThreadId.value] === true)
   const hasLoadedSelectedMessages = computed(
     () => loadedMessagesByThreadId.value[selectedThreadId.value] === true,
   )
-  const allPendingServerRequests = serverRequestState.all
+  const allPendingServerRequests = computed(() => (
+    Object.values(conversationStateByThreadId.value)
+      .flatMap((conversation) => serverRequestsFromCore(conversation.pendingRequests))
+  ))
   const selectedLiveOverlay = computed(() => {
     return conversationLiveOverlayFromState(selectedCoreConversation.value)
   })
@@ -308,7 +321,6 @@ export function useDesktopState() {
     )
     eventUnreadByThreadId.value = pruneMap(eventUnreadByThreadId.value)
     inProgressById.value = pruneMap(inProgressById.value)
-    pendingServerRequestsByThreadId.value = pruneMap(pendingServerRequestsByThreadId.value)
     coreConversations.prune(activeThreadIds)
     loadingMessagesByThreadId.value = Object.fromEntries(
       Object.entries(loadingMessagesByThreadId.value).filter(([threadId]) => activeThreadIds.has(threadId)),
@@ -897,7 +909,18 @@ export function useDesktopState() {
   }
 
   async function respondToPendingServerRequest(reply: UiServerRequestReply): Promise<void> {
-    await serverRequestState.respond(reply)
+    const matchingRequest = Object.values(conversationStateByThreadId.value)
+      .flatMap((conversation) => conversation.pendingRequests)
+      .find((request) => Number(request.id) === reply.id)
+    try {
+      await respondServerRequest({ id: reply.id, approvalScope: reply.approvalScope, result: reply.result, error: reply.error })
+      // The resolve notification normally updates Core immediately. Refreshing
+      // the owner snapshot closes the race where that notification reached a
+      // different browser tab first; it never mutates a product-local copy.
+      if (matchingRequest) await coreConversations.refresh(matchingRequest.threadId)
+    } catch (requestError) {
+      error.value = requestError instanceof Error ? requestError.message : 'Failed to reply to server request'
+    }
   }
 
   function resetRealtimeDomainState(): void {
@@ -911,7 +934,6 @@ export function useDesktopState() {
 
   const realtimeState = useDesktopRealtimeState({
     hydratePreferences: hydrateTurnPreferencesFromSettingsStore,
-    loadPendingApprovals: serverRequestState.load,
     refreshRateLimits,
     resetDomainState: resetRealtimeDomainState,
   })
