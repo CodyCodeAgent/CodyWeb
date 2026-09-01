@@ -415,7 +415,6 @@ import type {
 import type { PromptInsertion } from './composables/promptLibraryRules'
 
 const MOBILE_SIDEBAR_BREAKPOINT = 700
-const BACKEND_DISCONNECT_GRACE_MS = 2_500
 const BACKEND_RESTORED_BANNER_MS = 4_000
 const {
   projectGroups,
@@ -663,10 +662,8 @@ const backendConnectionMessage = computed(() => {
   return t('app.backend.restoredBody')
 })
 let hasHydratedDefaultNewThreadCwd = false
-let backendDisconnectGraceTimer: number | null = null
 let backendRestoreTimer: number | null = null
 let stopBackendConnectionMonitor: (() => void) | null = null
-let lastRealtimePhase: RealtimeConnectionSnapshot['phase'] = 'idle'
 
 onMounted(() => {
   applyCurrentTheme()
@@ -689,10 +686,6 @@ onUnmounted(() => {
 })
 
 function clearBackendConnectionTimers(): void {
-  if (backendDisconnectGraceTimer !== null) {
-    window.clearTimeout(backendDisconnectGraceTimer)
-    backendDisconnectGraceTimer = null
-  }
   if (backendRestoreTimer !== null) {
     window.clearTimeout(backendRestoreTimer)
     backendRestoreTimer = null
@@ -717,13 +710,7 @@ function realtimeDisconnectDetail(snapshot: RealtimeConnectionSnapshot): string 
 }
 
 function handleRealtimeConnection(snapshot: RealtimeConnectionSnapshot): void {
-  lastRealtimePhase = snapshot.phase
-
   if (snapshot.phase === 'connected') {
-    if (backendDisconnectGraceTimer !== null) {
-      window.clearTimeout(backendDisconnectGraceTimer)
-      backendDisconnectGraceTimer = null
-    }
     backendLastError.value = ''
     if (backendConnectionState.value === 'offline') {
       backendConnectionState.value = 'restored'
@@ -743,19 +730,20 @@ function handleRealtimeConnection(snapshot: RealtimeConnectionSnapshot): void {
     return
   }
 
-  if (snapshot.phase === 'idle') return
+  // `reconnecting` is a normal browser-transport state. Safari can suspend a
+  // background tab and close its socket with 1005 even while the App Server
+  // and native Turn remain healthy. The shared Core socket owns retry/backoff;
+  // do not manufacture a backend-offline alert from that transient close.
+  if (snapshot.phase === 'idle' || snapshot.phase === 'connecting' || snapshot.phase === 'reconnecting') return
+
+  // Only Core's terminal browser close policy reaches `disconnected`. This is
+  // a browser transport diagnosis, not evidence that the App Server restarted.
   backendLastError.value = realtimeDisconnectDetail(snapshot)
-  if (backendConnectionState.value === 'offline' || backendDisconnectGraceTimer !== null) return
   if (backendRestoreTimer !== null) {
     window.clearTimeout(backendRestoreTimer)
     backendRestoreTimer = null
   }
-  backendDisconnectGraceTimer = window.setTimeout(() => {
-    backendDisconnectGraceTimer = null
-    if (lastRealtimePhase !== 'connected' && lastRealtimePhase !== 'idle') {
-      backendConnectionState.value = 'offline'
-    }
-  }, BACKEND_DISCONNECT_GRACE_MS)
+  backendConnectionState.value = 'offline'
 }
 
 function updateMobileViewport(): void {

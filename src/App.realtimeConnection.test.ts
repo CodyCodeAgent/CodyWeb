@@ -9,6 +9,8 @@ describe('App realtime connection architecture', () => {
     expect(appSource).toContain('reconnectCodexRealtime()')
     expect(appSource).not.toContain('/codex-api/meta/version')
     expect(appSource).not.toContain('setInterval(')
+    expect(appSource).not.toContain('BACKEND_DISCONNECT_GRACE_MS')
+    expect(appSource).toContain("snapshot.phase === 'idle' || snapshot.phase === 'connecting' || snapshot.phase === 'reconnecting'")
     expect(appSource).toContain('v-if="backendConnectionState === \'offline\'"')
   })
 
