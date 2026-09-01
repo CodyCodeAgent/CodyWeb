@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
     attach: vi.fn(async () => ({ events: [] as CodexEvent[] })),
     read: vi.fn(async () => [] as CodexEvent[]),
     submit: vi.fn(async (input: { clientCommandId: string }) => ({ clientCommandId: input.clientCommandId })),
+    setThreadSubscriptions: vi.fn(),
     subscribeEvents: vi.fn((listener: (event: CodexEvent) => void) => {
       eventListener = listener
       return () => { if (eventListener === listener) eventListener = null }
@@ -49,6 +50,7 @@ vi.mock('../api/codexThreadClient', () => ({
 vi.mock('../api/codexRealtimeClient', () => ({
   subscribeConversationEvents: mocks.subscribeEvents,
   subscribeRealtimeConnection: mocks.subscribeConnection,
+  setConversationThreadSubscriptions: mocks.setThreadSubscriptions,
 }))
 
 function event(input: Partial<CodexEvent> & Pick<CodexEvent, 'id' | 'type' | 'threadId'>): CodexEvent {
@@ -69,6 +71,7 @@ describe('useCoreConversationRegistry', () => {
     expect(mocks.subscribeEvents).toHaveBeenCalledTimes(1)
     expect(mocks.subscribeConnection).toHaveBeenCalledTimes(1)
     registry.dispose()
+    expect(mocks.setThreadSubscriptions).toHaveBeenCalledWith([])
   })
 
   it('keeps a background-thread event that arrives before selection and attach', async () => {
@@ -81,6 +84,7 @@ describe('useCoreConversationRegistry', () => {
     await registry.connect('thread-b')
 
     expect(mocks.attach).toHaveBeenCalledWith('thread-b')
+    expect(mocks.setThreadSubscriptions).toHaveBeenCalledWith(['thread-b'])
     expect(registry.stateFor('thread-b').messages).toEqual([
       expect.objectContaining({ id: 'agent:agent-b', text: '后台线程输出' }),
     ])
