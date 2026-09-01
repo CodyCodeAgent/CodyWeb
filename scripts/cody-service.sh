@@ -65,7 +65,7 @@ find_our_pids() {
   # executable command and the process working directory instead of assuming
   # an absolute command line; otherwise a stale server can keep the port and
   # make a deployment health check hit the wrong build.
-  ps -axo pid= | while read -r pid; do
+  ps -axo pid=,command= | awk '$0 ~ /node/ && $0 ~ /dist-cli\/index\.js/ { print $1 }' | while read -r pid; do
     [[ -n "$pid" && "$pid" != "$known" ]] && is_our_process "$pid" && printf '%s\n' "$pid"
   done || true
   return 0
