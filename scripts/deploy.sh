@@ -13,7 +13,47 @@ RUNTIME_DIR="${CODY_RUNTIME_DIR:-$DEFAULT_RUNTIME_DIR}"
 ENV_FILE="$RUNTIME_DIR/service.env"
 LOCK_HASH_FILE="$RUNTIME_DIR/package-lock.sha256"
 NATIVE_CACHE_DIR="$RUNTIME_DIR/native-modules"
+DEPLOY_LOCK_DIR="$RUNTIME_DIR/deploy.lock"
+DEPLOY_LOCK_PID_FILE="$DEPLOY_LOCK_DIR/pid"
 cd "$PROJECT_DIR"; mkdir -p "$RUNTIME_DIR"
+
+# A release build and service restart must be one transaction.  Without this
+# lock, a slow SSH client can leave a deployment running while a second client
+# concurrently rebuilds and restarts the same stable service PID/port.
+release_deploy_lock() {
+  rm -f "$DEPLOY_LOCK_PID_FILE"
+  rmdir "$DEPLOY_LOCK_DIR" 2>/dev/null || true
+}
+
+acquire_deploy_lock() {
+  if mkdir "$DEPLOY_LOCK_DIR" 2>/dev/null; then
+    printf '%s\n' "$$" > "$DEPLOY_LOCK_PID_FILE"
+    trap release_deploy_lock EXIT INT TERM
+    return 0
+  fi
+
+  local owner_pid=""
+  if [[ -f "$DEPLOY_LOCK_PID_FILE" ]]; then
+    owner_pid="$(tr -dc '0-9' < "$DEPLOY_LOCK_PID_FILE")"
+  fi
+  if [[ -n "$owner_pid" ]] && kill -0 "$owner_pid" 2>/dev/null; then
+    echo "Another CodyWeb deployment is already running (PID $owner_pid). Refusing to race its build or restart." >&2
+    exit 75
+  fi
+
+  # A previous deployer died before its EXIT trap.  Only remove the explicit,
+  # empty lock directory after proving its recorded owner is gone.
+  rm -f "$DEPLOY_LOCK_PID_FILE"
+  rmdir "$DEPLOY_LOCK_DIR" 2>/dev/null || {
+    echo "CodyWeb deployment lock is stale but cannot be safely released: $DEPLOY_LOCK_DIR" >&2
+    exit 75
+  }
+  mkdir "$DEPLOY_LOCK_DIR"
+  printf '%s\n' "$$" > "$DEPLOY_LOCK_PID_FILE"
+  trap release_deploy_lock EXIT INT TERM
+}
+
+acquire_deploy_lock
 if [[ -f "$ENV_FILE" ]]; then
   set -a
   source "$ENV_FILE"
