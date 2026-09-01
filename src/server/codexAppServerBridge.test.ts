@@ -188,7 +188,7 @@ async function readJsonResponse(url: string, init?: RequestInit): Promise<{ stat
 }
 
 describe('bridge server request endpoints', () => {
-  it('lists pending approvals and forwards replies through the HTTP bridge', async () => {
+  it('lists pending approvals and routes replies through the Core conversation owner', async () => {
     const sharedBridgeKey = '__codexRemoteSharedBridge__'
     const replies: unknown[] = []
     const fakeAppServer = {
@@ -209,6 +209,7 @@ describe('bridge server request endpoints', () => {
       respondToServerRequest: async (payload: unknown) => {
         replies.push(payload)
       },
+      noteConversationApprovalScope: () => {},
       dispose: () => {},
       getDiagnostics: () => ({
         status: 'running',
@@ -241,6 +242,7 @@ describe('bridge server request endpoints', () => {
         submit: async () => ({ clientCommandId: 'test-command' }),
         attach: async () => {},
         interrupt: async () => false,
+        respondServerRequest: async (payload: unknown) => { replies.push(payload) },
         subscribe: () => () => {},
         dispose: async () => {},
       },

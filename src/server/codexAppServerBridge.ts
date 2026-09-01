@@ -22,7 +22,14 @@ import {
   readTurnId,
 } from '@codycodeagent/cody-web-core/protocol'
 import { latestTerminalTurnEvent } from '@codycodeagent/cody-web-core/conversation'
-import { normalizeCodexNotification, type ExecutionContext } from '@codycodeagent/cody-web-core/session'
+import {
+  normalizeCodexNotification,
+  type ExecutionContext,
+  type ExecutionPolicyProvider,
+  type PolicyDecision,
+  type ProtectedOperation,
+  type ServerRequestResolution,
+} from '@codycodeagent/cody-web-core/session'
 import type { CodexEvent } from '@codycodeagent/cody-web-core/conversation'
 import { NotificationDispatcher, type NotificationDispatchEvent } from './notificationDispatchService.js'
 import { buildSecurityAccessSnapshot } from './securityAccess.js'
@@ -653,10 +660,11 @@ class AppServerProcess {
     })
     this.host.subscribe((notification) => {
       if (notification.method === 'server/request') {
-        const request = asRecord(notification.params)
-        if (request && typeof request.id === 'number' && typeof request.method === 'string') {
-          void this.handleServerRequest(request.id, request.method, request.params ?? null)
-        }
+        // Core's CodexSessionManager is the only server-request broker.  The
+        // bridge still republishes this raw notification for product-specific
+        // audit/UI projection, but must not create a second pending map or
+        // resolve the App Server request itself.
+        this.emitNotification(notification)
         return
       }
       // CodyWeb emits a richer resolved notification after policy/audit work.
@@ -681,16 +689,127 @@ class AppServerProcess {
     return {
       ensureInitialized: () => this.host.ensureInitialized(),
       call: (method, params, options) => this.host.call(method, params, options),
-      subscribe: (listener) => this.host.subscribe((notification) => {
-        if (notification.method === 'server/request' || notification.method === 'server/request/resolved') return
-        listener(notification)
-      }),
+      subscribe: (listener) => this.host.subscribe(listener),
       listPendingRequests: () => this.host.listPendingRequests(),
       resolveServerRequest: (id, reply) => this.host.resolveServerRequest(id, reply),
       diagnostics: () => this.host.diagnostics(),
       failureReport: () => this.host.failureReport(),
       dispose: async () => undefined,
     }
+  }
+
+  /**
+   * Product policy is deliberately injected into Core's single request broker.
+   * It may decide allow/deny/ask and write audit data, but it never resolves
+   * the App Server request itself.
+   */
+  conversationPolicy(): ExecutionPolicyProvider {
+    return {
+      evaluate: (operation) => this.evaluateConversationPolicy(operation),
+      onResolved: (resolution) => this.recordConversationRequestResolution(resolution),
+    }
+  }
+
+  noteConversationApprovalScope(payload: unknown): void {
+    const body = asRecord(payload)
+    const id = body?.id
+    const scope = body?.approvalScope
+    if (typeof id !== 'number' || !Number.isInteger(id)) return
+    if (scope === 'single' || scope === 'session' || scope === 'workspace' || scope === 'permanent') {
+      this.pendingServerRequestApprovalScopes.set(id, scope)
+    }
+  }
+
+  private pendingRequestFromOperation(operation: ProtectedOperation): PendingServerRequest {
+    return {
+      id: operation.requestId,
+      method: operation.method,
+      params: operation.params,
+      receivedAtIso: new Date().toISOString(),
+      commandPolicy: null,
+      fileChangePolicy: null,
+    }
+  }
+
+  private async evaluateConversationPolicy(operation: ProtectedOperation): Promise<PolicyDecision> {
+    const pendingRequest = this.pendingRequestFromOperation(operation)
+    try {
+      pendingRequest.commandPolicy = await this.evaluatePendingRequestCommandPolicy(pendingRequest)
+      if (pendingRequest.commandPolicy?.status === 'denied') {
+        return { action: 'deny', reason: pendingRequest.commandPolicy.reason }
+      }
+      pendingRequest.fileChangePolicy = await this.evaluatePendingRequestFileChangePolicy(pendingRequest)
+      if (pendingRequest.fileChangePolicy && pendingRequest.fileChangePolicy.status !== 'allowed') {
+        return { action: 'deny', reason: pendingRequest.fileChangePolicy.reason }
+      }
+      if (isStoredGrantEligibleRequest(pendingRequest.method)) {
+        const grant = await findMatchingApprovalGrant({
+          cwd: readServerRequestCwd(pendingRequest.params),
+          method: pendingRequest.method,
+          subject: readServerRequestSubject(pendingRequest.method, pendingRequest.params),
+        })
+        if (grant) return { action: 'allow', reply: { result: { decision: 'accept' } }, reason: `stored approval grant (${grant.scope})` }
+      }
+    } catch (error) {
+      this.pushLog('warning', 'bridge', `Conversation policy lookup failed: ${getErrorMessage(error, 'unknown error')}`)
+    }
+    return { action: 'ask' }
+  }
+
+  private async recordConversationRequestResolution(resolution: ServerRequestResolution): Promise<void> {
+    const pendingRequest = this.pendingRequestFromOperation(resolution.operation)
+    pendingRequest.commandPolicy = await this.evaluatePendingRequestCommandPolicy(pendingRequest).catch(() => null)
+    pendingRequest.fileChangePolicy = await this.evaluatePendingRequestFileChangePolicy(pendingRequest).catch(() => null)
+    const decision = readApprovalDecisionFromReply(resolution.reply)
+    const requestedScope = this.pendingServerRequestApprovalScopes.get(resolution.operation.requestId)
+    this.pendingServerRequestApprovalScopes.delete(resolution.operation.requestId)
+    let grant: ToolingApprovalGrant | null = null
+    if (resolution.automatic && resolution.policyDecision?.action === 'allow' && isStoredGrantEligibleRequest(pendingRequest.method)) {
+      grant = await findMatchingApprovalGrant({
+        cwd: readServerRequestCwd(pendingRequest.params),
+        method: pendingRequest.method,
+        subject: readServerRequestSubject(pendingRequest.method, pendingRequest.params),
+      })
+    }
+    const scope = resolution.automatic
+      ? grant?.scope ?? 'single'
+      : normalizeApprovalDecisionScope(requestedScope, decision)
+    const resolvedAtIso = new Date().toISOString()
+    const auditInput = buildApprovalAuditInput({
+      requestId: pendingRequest.id,
+      pendingRequest,
+      reply: resolution.reply,
+      scope,
+      mode: resolution.automatic ? 'automatic' : 'manual',
+      resolvedAtIso,
+    })
+    void recordApprovalDecisionAuditEvent(auditInput)
+    if (!resolution.automatic) void createPersistentApprovalGrant(auditInput)
+    if (grant) {
+      void recordApprovalGrantUse({
+        cwd: auditInput.cwd ?? '',
+        grant,
+        requestId: pendingRequest.id,
+        method: pendingRequest.method,
+        subject: auditInput.subject ?? '',
+        threadId: auditInput.threadId,
+        turnId: auditInput.turnId,
+        itemId: auditInput.itemId,
+      })
+    }
+    this.emitNotification({
+      method: 'server/request/resolved',
+      params: {
+        id: pendingRequest.id,
+        method: pendingRequest.method,
+        threadId: auditInput.threadId,
+        decision,
+        scope,
+        mode: resolution.automatic ? 'automatic' : 'manual',
+        ...(grant ? { grantId: grant.id } : {}),
+        resolvedAtIso,
+      },
+    })
   }
 
   private pushLog(
@@ -1089,11 +1208,25 @@ class AppServerProcess {
   }
 
   listPendingServerRequests(): PendingServerRequest[] {
-    return Array.from(this.pendingServerRequests.values())
+    const live = this.host.listPendingRequests().map((request) => ({
+      id: request.id,
+      method: request.method,
+      params: request.params,
+      receivedAtIso: request.receivedAtIso,
+      commandPolicy: null,
+      fileChangePolicy: null,
+    }))
+    const smoke = Array.from(this.pendingServerRequests.values()).filter((request) => request.isSmokeInjected)
+    return [...live, ...smoke]
   }
 
   isServerRequestPending(id: number): boolean {
-    return this.pendingServerRequests.has(id)
+    return this.host.listPendingRequests().some((request) => request.id === id)
+      || this.pendingServerRequests.has(id)
+  }
+
+  isSmokeServerRequest(id: number): boolean {
+    return this.pendingServerRequests.get(id)?.isSmokeInjected === true
   }
 
   injectSmokeServerRequest(payload: unknown): PendingServerRequest {
@@ -1487,13 +1620,16 @@ function getSharedBridgeState(): SharedBridgeState {
     // before the Feishu integration existed. Hydrate it in place so the shared
     // app-server remains reusable instead of forcing a second process.
     if (!existing.conversations) {
-      existing.conversations = new CodyWebConversationOwner(existing.appServer.sessionHost())
+      existing.conversations = new CodyWebConversationOwner(existing.appServer.sessionHost(), existing.appServer.conversationPolicy())
     }
     if (!existing.feishuIntegration) {
       existing.feishuIntegration = createFeishuIntegration({
         owner: existing.conversations,
-        respondToServerRequest: (payload) => existing.appServer.respondToServerRequest(payload),
-        isServerRequestPending: (id) => existing.appServer.isServerRequestPending(id),
+        respondToServerRequest: async (payload) => {
+          existing.appServer.noteConversationApprovalScope(payload)
+          await existing.conversations.respondServerRequest(payload)
+        },
+        isServerRequestPending: (id) => existing.conversations.isServerRequestPending(id),
         subscribe: (listener) => existing.appServer.onNotification(listener),
         catalogSync: existing.catalogSync,
       })
@@ -1502,7 +1638,7 @@ function getSharedBridgeState(): SharedBridgeState {
   }
 
   const appServer = new AppServerProcess()
-  const conversations = new CodyWebConversationOwner(appServer.sessionHost())
+  const conversations = new CodyWebConversationOwner(appServer.sessionHost(), appServer.conversationPolicy())
   const catalogSync = new CatalogSyncService((method, params) => appServer.rpc(method, params))
   const tokenUsageReconciliation = new TokenUsageReconciliationService()
   const productEventHub = new ProductEventHub()
@@ -1525,8 +1661,11 @@ function getSharedBridgeState(): SharedBridgeState {
   })
   const feishuIntegration = createFeishuIntegration({
     owner: conversations,
-    respondToServerRequest: (payload) => appServer.respondToServerRequest(payload),
-    isServerRequestPending: (id) => appServer.isServerRequestPending(id),
+    respondToServerRequest: async (payload) => {
+      appServer.noteConversationApprovalScope(payload)
+      await conversations.respondServerRequest(payload)
+    },
+    isServerRequestPending: (id) => conversations.isServerRequestPending(id),
     subscribe: (listener) => appServer.onNotification(listener),
     catalogSync,
   })
@@ -1694,7 +1833,21 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       snapshotConversation: (threadId, context) => conversations.snapshot(threadId, context as ExecutionContext),
       submitConversation: (payload) => conversations.submit(payload as ConversationSubmitIntent),
       interruptConversation: (threadId, context) => conversations.interrupt(threadId, context as ExecutionContext),
-      respond: (payload) => appServer.respondToServerRequest(payload),
+      respond: async (payload) => {
+        try {
+          appServer.noteConversationApprovalScope(payload)
+          await conversations.respondServerRequest(payload)
+        } catch (error) {
+          // Smoke-injected requests never pass through a real Core host. Keep
+          // this test-only escape hatch isolated from production approvals.
+          const id = asRecord(payload)?.id
+          if (typeof id === 'number' && appServer.isSmokeServerRequest(id)) {
+            await appServer.respondToServerRequest(payload)
+            return
+          }
+          throw error
+        }
+      },
       listPending: () => appServer.listPendingServerRequests(),
       listMethods: () => methodCatalog.listMethods(),
       listNotifications: () => methodCatalog.listNotificationMethods(),

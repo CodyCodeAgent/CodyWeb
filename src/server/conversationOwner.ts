@@ -1,13 +1,15 @@
 import {
   CodexSessionManager,
   type CodexConversationSnapshot,
+  type ExecutionPolicyProvider,
   type ExecutionContext,
   type TurnHandle,
   type TurnInput,
   type TurnOutcome,
 } from '@codycodeagent/cody-web-core/session'
-import type { AppServerHost } from '@codycodeagent/cody-web-core/runtime'
+import type { AppServerHost, ServerRequestReply } from '@codycodeagent/cody-web-core/runtime'
 import type { CodexEvent } from '@codycodeagent/cody-web-core/conversation'
+import { asRecord } from '@codycodeagent/cody-web-core/protocol'
 
 export type ConversationSubmitIntent = {
   threadId: string
@@ -32,8 +34,8 @@ export class CodyWebConversationOwner {
   private readonly listeners = new Set<(event: CodexEvent) => void>()
   private readonly stopManagerEvents: () => void
 
-  constructor(host: AppServerHost) {
-    this.manager = new CodexSessionManager({ host })
+  constructor(host: AppServerHost, policy?: ExecutionPolicyProvider) {
+    this.manager = new CodexSessionManager({ host, policy })
     this.stopManagerEvents = this.manager.subscribe((event) => {
       for (const listener of this.listeners) listener(event)
     })
@@ -139,6 +141,34 @@ export class CodyWebConversationOwner {
     await this.ensureAttached(normalizedThreadId, context)
     this.manager.setContext(normalizedThreadId, context)
     await this.manager.respondQuestion(normalizedThreadId, requestId, answer)
+  }
+
+  /**
+   * UI/Feishu replies are deliberately routed through Core's pending-request
+   * manager.  The bridge must not race a raw `resolveServerRequest` call with
+   * the manager's request lifecycle.
+   */
+  async respondServerRequest(payload: unknown): Promise<void> {
+    const body = asRecord(payload)
+    if (!body) throw new Error('Invalid response payload: expected object')
+    const id = body.id
+    if (typeof id !== 'number' || !Number.isInteger(id)) throw new Error('Invalid response payload: "id" must be an integer')
+    const rawError = asRecord(body.error)
+    const reply: ServerRequestReply = rawError
+      ? {
+          error: {
+            code: typeof rawError.code === 'number' && Number.isFinite(rawError.code) ? Math.trunc(rawError.code) : -32000,
+            message: typeof rawError.message === 'string' && rawError.message.trim() ? rawError.message.trim() : 'Server request rejected by client',
+          },
+        }
+      : Object.prototype.hasOwnProperty.call(body, 'result')
+        ? { result: body.result }
+        : (() => { throw new Error('Invalid response payload: expected "result" or "error"') })()
+    await this.manager.respondServerRequest(String(id), reply)
+  }
+
+  isServerRequestPending(requestId: number): boolean {
+    return this.manager.isServerRequestPending(String(requestId))
   }
 
   async listThreads(...args: Parameters<CodexSessionManager['listThreads']>) { return this.manager.listThreads(...args) }
