@@ -137,11 +137,18 @@ describe('useCoreConversationRegistry', () => {
     registry.dispose()
   })
 
-  it('reconciles only the focused or active conversations after one socket reconnect', async () => {
+  it('reconciles focused, running and pending-request conversations while leaving the rest lazy', async () => {
     const registry = useCoreConversationRegistry()
     registry.focus('thread-a')
     await registry.connect('thread-a')
     await registry.connect('thread-b')
+    await registry.connect('thread-c')
+    await registry.connect('thread-d')
+    mocks.emit(event({ id: 'running-b', type: 'turn.started', threadId: 'thread-b', turnId: 'turn-b' }))
+    mocks.emit(event({
+      id: 'approval-c', type: 'approval.requested', threadId: 'thread-c', turnId: 'turn-c',
+      data: { requestId: 'request-c', method: 'item/fileChange/requestApproval' },
+    }))
     mocks.read.mockClear()
 
     mocks.connection({
@@ -156,7 +163,20 @@ describe('useCoreConversationRegistry', () => {
     })
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(mocks.read.mock.calls).toEqual([['thread-a']])
+    expect(mocks.read.mock.calls).toEqual([
+      ['thread-a'],
+      ['thread-b'],
+      ['thread-c'],
+    ])
+
+    registry.focus('thread-d')
+    await registry.refresh('thread-d')
+    expect(mocks.read.mock.calls).toEqual([
+      ['thread-a'],
+      ['thread-b'],
+      ['thread-c'],
+      ['thread-d'],
+    ])
     registry.dispose()
   })
 })

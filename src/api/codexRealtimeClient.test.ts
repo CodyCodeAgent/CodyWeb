@@ -236,4 +236,39 @@ describe('codex realtime client', () => {
     expect(secondStates).toEqual(['idle', 'connecting'])
     stopSecond()
   })
+
+  it('ignores delayed open, message and close callbacks from a replaced socket', () => {
+    FakeWebSocket.instances = []
+    const states: string[] = []
+    const receivedRpc: unknown[] = []
+    const client = createCodexRealtimeClient({
+      getWindow: () => fakeWindow(),
+      getWebSocket: () => FakeWebSocket,
+    })
+    const stopRpc = client.subscribeRpcNotifications((notification) => receivedRpc.push(notification))
+    const stopConnection = client.subscribeConnection((state) => states.push(state.phase))
+    const firstSocket = FakeWebSocket.instances[0]!
+    firstSocket.emit('open')
+
+    client.reconnectNow()
+    const secondSocket = FakeWebSocket.instances[1]!
+    const statesBeforeLateCallbacks = [...states]
+    firstSocket.emit('open')
+    firstSocket.emit('message', {
+      data: JSON.stringify({ type: 'rpc', notification: { method: 'late/notification', params: {} } }),
+    })
+    firstSocket.emit('close', { code: 1006, reason: 'late close' })
+
+    expect(states).toEqual(statesBeforeLateCallbacks)
+    expect(receivedRpc).toEqual([])
+
+    secondSocket.emit('open')
+    secondSocket.emit('message', {
+      data: JSON.stringify({ type: 'rpc', notification: { method: 'current/notification', params: {} } }),
+    })
+    expect(states.at(-1)).toBe('connected')
+    expect(receivedRpc).toEqual([expect.objectContaining({ method: 'current/notification' })])
+    stopRpc()
+    stopConnection()
+  })
 })
