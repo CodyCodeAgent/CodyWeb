@@ -16,8 +16,12 @@ export function normalizeAppMessageType(rawType: string | undefined, role: strin
   return role.trim() || 'message'
 }
 
-export function isVisibleAppConversationMessage(message: Pick<UiMessage, 'messageType' | 'role'>): boolean {
+export function isVisibleAppConversationMessage(message: Pick<UiMessage, 'messageType' | 'role' | 'outbox'>): boolean {
   const type = normalizeAppMessageType(message.messageType, message.role)
+  // A failed pre-admission command is owned by the retryable composer outbox.
+  // Keeping it in the transcript as well would give one logical message two
+  // presentation owners and render it twice.
+  if (message.role === 'user' && message.outbox?.status === 'failed') return false
   if (type === 'worked') return true
   return type !== 'turnActivity.live' && type !== 'turnError.live' && type !== 'agentReasoning.live'
 }

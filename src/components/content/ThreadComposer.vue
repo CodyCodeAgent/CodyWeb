@@ -441,7 +441,11 @@ const submitModeOptions = computed<Array<{ value: ComposerSubmitMode; label: str
 const submitModeLabel = computed(() =>
   props.selectedSubmitMode === 'steer' ? t('composer.submitMode.guide') : t('composer.submitMode.queue'),
 )
-const visibleQueuedMessages = computed(() => props.queuedMessages ?? [])
+// The transcript owns admitted queued/sending commands. The composer is the
+// sole presentation owner for failed pre-admission commands and their retry
+// actions. Filter defensively so callers cannot reintroduce duplicate bubbles.
+const visibleQueuedMessages = computed(() => (props.queuedMessages ?? [])
+  .filter((message) => message.status === 'failed'))
 const queuedActionLabel = computed(() => props.isTurnInProgress
   ? t('composer.outbox.guideNow')
   : t('composer.outbox.sendNow'))

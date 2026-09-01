@@ -85,43 +85,49 @@ describe('ThreadComposer', () => {
     expect(wrapper.emitted('update:selected-permission-mode')).toEqual([['yolo']])
   })
 
-  it('renders queued messages above the draft and emits queue actions', async () => {
+  it('renders only failed commands above the draft and emits retry actions', async () => {
     const wrapper = mountComposer({
       isTurnInProgress: true,
       queuedMessages: [
         {
-          id: 'queued-1',
+          id: 'failed-1',
           threadId: 'thread-1',
           text: '比如这样',
-          status: 'queued',
+          status: 'failed',
           createdAtIso: '2026-08-20T00:00:00.000Z',
+          lastError: 'request failed',
         },
       ],
     })
 
     const item = wrapper.get('[data-testid="thread-composer-outbox-item"]')
     expect(item.text()).toContain('比如这样')
-    expect(item.text()).toContain('Queued locally')
+    expect(item.text()).toContain('Waiting to retry')
+    expect(item.text()).toContain('request failed')
     expect(item.text()).toContain('Guide now')
 
     await item.find('.thread-composer-outbox-send').trigger('click')
     await item.find('.thread-composer-outbox-delete').trigger('click')
 
-    expect(wrapper.emitted('sendQueuedMessageNow')).toEqual([[{ threadId: 'thread-1', messageId: 'queued-1' }]])
-    expect(wrapper.emitted('deleteQueuedMessage')).toEqual([[{ threadId: 'thread-1', messageId: 'queued-1' }]])
+    expect(wrapper.emitted('sendQueuedMessageNow')).toEqual([[{ threadId: 'thread-1', messageId: 'failed-1' }]])
+    expect(wrapper.emitted('deleteQueuedMessage')).toEqual([[{ threadId: 'thread-1', messageId: 'failed-1' }]])
   })
 
-  it('hides queue actions after the process owner accepts a command', () => {
+  it('does not duplicate queued or sending optimistic messages in the composer', () => {
     const wrapper = mountComposer({
-      queuedMessages: [{
-        id: 'accepted-1', threadId: 'thread-1', text: 'owned by runtime', status: 'queued', canManage: false,
-        createdAtIso: '2026-08-20T00:00:00.000Z',
-      }],
+      queuedMessages: [
+        {
+          id: 'queued-1', threadId: 'thread-1', text: 'queued transcript bubble', status: 'queued',
+          createdAtIso: '2026-08-20T00:00:00.000Z',
+        },
+        {
+          id: 'sending-1', threadId: 'thread-1', text: 'sending transcript bubble', status: 'sending',
+          createdAtIso: '2026-08-20T00:00:01.000Z',
+        },
+      ],
     })
 
-    const item = wrapper.get('[data-testid="thread-composer-outbox-item"]')
-    expect(item.text()).toContain('Queued locally')
-    expect(item.find('.thread-composer-outbox-actions').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="thread-composer-outbox-item"]').exists()).toBe(false)
   })
 
   it('places prompt library content into the draft without sending it', async () => {

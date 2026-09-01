@@ -96,9 +96,24 @@ describe('app shell rules', () => {
       message({ id: 'activity', messageType: 'turnActivity.live' }),
       message({ id: 'reasoning', messageType: 'agentReasoning.live' }),
       message({ id: 'error', messageType: 'turnError.live' }),
+      message({
+        id: 'failed-outbox',
+        role: 'user',
+        messageType: 'userMessage.outbox.failed',
+        outbox: { status: 'failed', lastError: 'request failed' },
+      }),
     ])
 
     expect(visible.map((item) => item.id)).toEqual(['answer', 'worked'])
+  })
+
+  it('keeps queued and sending optimistic messages in the transcript', () => {
+    const visible = filterAppConversationMessages([
+      message({ id: 'queued', role: 'user', outbox: { status: 'queued' } }),
+      message({ id: 'sending', role: 'user', outbox: { status: 'sending' } }),
+    ])
+
+    expect(visible.map((item) => item.id)).toEqual(['queued', 'sending'])
   })
 
   it('builds known thread ids and new-thread folder options', () => {

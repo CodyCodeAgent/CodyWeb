@@ -378,7 +378,10 @@ export function useDesktopState() {
 
   function queuedMessagesForThread(threadId: string): UiQueuedMessage[] {
     return coreConversations.stateFor(threadId).messages
-      .filter((message) => message.role === 'user' && Boolean(message.outbox))
+      // Core's queued/sending optimistic row is already the transcript's
+      // immediate user bubble. The composer owns only failed commands that
+      // still need an explicit retry or discard decision.
+      .filter((message) => message.role === 'user' && message.outbox?.status === 'failed')
       .map((message) => {
         const id = message.id.startsWith('user:') ? message.id.slice('user:'.length) : message.id
         return {
@@ -388,7 +391,7 @@ export function useDesktopState() {
           status: message.outbox!.status,
           createdAtIso: '',
           lastError: message.outbox?.lastError,
-          canManage: message.outbox?.status === 'failed',
+          canManage: true,
         }
       })
   }
