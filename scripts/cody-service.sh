@@ -3,7 +3,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-RUNTIME_DIR="${CODY_RUNTIME_DIR:-$PROJECT_DIR/.cody-runtime}"
+# A release checkout is intentionally disposable.  Its service control state
+# must live beside the release family, not inside one particular release, so a
+# newly unpacked version can stop the old process before taking the port.
+PROJECT_PARENT_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
+if [[ "$(basename "$PROJECT_DIR")" == CodyWeb-release-* ]]; then
+  DEFAULT_RUNTIME_DIR="$PROJECT_PARENT_DIR/.codyweb-runtime"
+else
+  # Keep checkout-local state for ordinary developer runs unless an explicit
+  # stable directory is supplied by the deployment environment.
+  DEFAULT_RUNTIME_DIR="$PROJECT_DIR/.cody-runtime"
+fi
+RUNTIME_DIR="${CODY_RUNTIME_DIR:-$DEFAULT_RUNTIME_DIR}"
 ENV_FILE="$RUNTIME_DIR/service.env"
 mkdir -p "$RUNTIME_DIR"
 if [[ -f "$ENV_FILE" ]]; then
@@ -50,13 +61,22 @@ process_cwd() {
   printf '%s' "$cwd"
 }
 is_our_process() {
-  local command cwd
+  local command environment cwd
   kill -0 "$1" 2>/dev/null || return 1
   command="$(ps -p "$1" -o command= 2>/dev/null || true)"
   [[ "$command" == *"node"* && "$command" == *"dist-cli/index.js"* ]] || return 1
-  [[ "$command" == *"$PROJECT_DIR/dist-cli/index.js"* ]] && return 0
+  [[ "$command" == *"--port $PORT"* ]] || return 1
+  if [[ -r "/proc/$1/environ" ]]; then
+    environment="$(tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null || true)"
+    if printf '%s\n' "$environment" | grep -Fxq 'CODY_SERVICE_ID=codyweb'; then return 0; fi
+  fi
+
+  # One migration-only fallback.  Releases deployed before CODY_SERVICE_ID
+  # existed have their PID file under their old directory, so the stable PID
+  # file cannot name them.  Limit recognition to another CodyWeb release on
+  # this exact port; never infer ownership from an arbitrary Node process.
   cwd="$(process_cwd "$1")"
-  [[ "$cwd" == "$PROJECT_DIR" ]]
+  [[ "$cwd" == "$PROJECT_PARENT_DIR"/CodyWeb-release-* ]]
 }
 find_our_pids() {
   local pid known=""
@@ -97,7 +117,7 @@ start_service() {
   if [[ -n "$PASSWORD" ]]; then args+=(--password "$PASSWORD")
   elif [[ "$HOST" == "127.0.0.1" || "$HOST" == "localhost" || "$HOST" == "::1" ]]; then args+=(--no-password)
   else echo "CODY_PASSWORD is required when CODY_HOST is not loopback." >&2; return 1; fi
-  echo "Starting CodyWeb on $HOST:$PORT..."; nohup setsid node "${args[@]}" >> "$LOG_FILE" 2>&1 < /dev/null & pid=$!; printf '%s\n' "$pid" > "$PID_FILE"
+  echo "Starting CodyWeb on $HOST:$PORT..."; nohup setsid env CODY_SERVICE_ID=codyweb node "${args[@]}" >> "$LOG_FILE" 2>&1 < /dev/null & pid=$!; printf '%s\n' "$pid" > "$PID_FILE"
   for _ in {1..50}; do
     if ! kill -0 "$pid" 2>/dev/null; then echo "CodyWeb exited during startup. See $LOG_FILE" >&2; tail -n 30 "$LOG_FILE" >&2 || true; rm -f "$PID_FILE"; return 1; fi
     if node -e "fetch('http://$HOST:$PORT/').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"; then echo "CodyWeb is running (PID $pid). Log: $LOG_FILE"; return 0; fi

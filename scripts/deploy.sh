@@ -3,7 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-RUNTIME_DIR="${CODY_RUNTIME_DIR:-$PROJECT_DIR/.cody-runtime}"
+PROJECT_PARENT_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
+if [[ "$(basename "$PROJECT_DIR")" == CodyWeb-release-* ]]; then
+  DEFAULT_RUNTIME_DIR="$PROJECT_PARENT_DIR/.codyweb-runtime"
+else
+  DEFAULT_RUNTIME_DIR="$PROJECT_DIR/.cody-runtime"
+fi
+RUNTIME_DIR="${CODY_RUNTIME_DIR:-$DEFAULT_RUNTIME_DIR}"
 ENV_FILE="$RUNTIME_DIR/service.env"
 LOCK_HASH_FILE="$RUNTIME_DIR/package-lock.sha256"
 cd "$PROJECT_DIR"; mkdir -p "$RUNTIME_DIR"
