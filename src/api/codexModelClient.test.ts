@@ -12,8 +12,13 @@ import {
 const rpcMock = vi.hoisted(() => ({
   rpcCall: vi.fn(),
 }))
+const httpMock = vi.hoisted(() => ({
+  fetchCodexJson: vi.fn(),
+  readRpcResult: vi.fn((payload: unknown) => (payload as { result: unknown }).result),
+}))
 
 vi.mock('./codexRpcClient', () => rpcMock)
+vi.mock('./codexHttpClient', () => httpMock)
 
 afterEach(() => {
   vi.clearAllMocks()
@@ -70,31 +75,29 @@ describe('codex model client', () => {
   })
 
   it('loads collaboration modes while dropping invalid and duplicate names', async () => {
-    rpcMock.rpcCall.mockResolvedValue({
-      data: [
+    httpMock.fetchCodexJson.mockResolvedValue({ payload: { result: [
         {
           name: 'default',
           mode: 'default',
           model: null,
-          reasoning_effort: 'low',
+          reasoningEffort: 'low',
           developer_instructions: null,
         },
         {
           name: 'default',
           mode: 'plan',
           model: 'gpt-5',
-          reasoning_effort: 'high',
+          reasoningEffort: 'high',
           developer_instructions: null,
         },
         {
           name: 'bad',
           mode: 'other',
           model: null,
-          reasoning_effort: null,
+          reasoningEffort: null,
           developer_instructions: null,
         },
-      ],
-    })
+      ] }, status: 200 })
 
     await expect(getCollaborationModes()).resolves.toEqual([
       {
@@ -106,22 +109,23 @@ describe('codex model client', () => {
         developerInstructions: null,
       },
     ])
-    expect(rpcMock.rpcCall).toHaveBeenCalledWith('collaborationMode/list', {})
+    expect(httpMock.fetchCodexJson).toHaveBeenCalledWith('/codex-api/conversations/collaboration-modes', expect.objectContaining({
+      method: 'conversation/collaboration-modes/list',
+    }))
   })
 
   it('loads model ids using id before model and keeps first occurrence', async () => {
-    rpcMock.rpcCall.mockResolvedValue({
-      data: [
+    httpMock.fetchCodexJson.mockResolvedValue({ payload: { result: [
         { id: 'gpt-5', model: 'fallback', displayName: 'GPT-5', description: '', hidden: false, isDefault: true, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [] },
         { id: '', model: 'gpt-4.1', displayName: 'GPT-4.1', description: '', hidden: false, isDefault: false, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [] },
         { id: 'gpt-5', model: 'duplicate', displayName: 'Duplicate', description: '', hidden: false, isDefault: false, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [] },
         { id: '', model: '', displayName: '', description: '', hidden: true, isDefault: false, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [] },
-      ],
-      nextCursor: null,
-    })
+      ] }, status: 200 })
 
     await expect(getAvailableModelIds()).resolves.toEqual(['gpt-5', 'gpt-4.1'])
-    expect(rpcMock.rpcCall).toHaveBeenCalledWith('model/list', { limit: 100 })
+    expect(httpMock.fetchCodexJson).toHaveBeenCalledWith('/codex-api/conversations/models', expect.objectContaining({
+      method: 'conversation/models/list',
+    }))
   })
 
   it('loads current model config with normalized reasoning effort', async () => {

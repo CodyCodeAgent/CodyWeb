@@ -4,20 +4,16 @@ import {
   buildTurnInput,
   getThreadEvents,
   getThreadGroups,
+  renameThread,
   startThread,
   submitThreadCommand,
 } from './codexThreadClient'
-import type { Thread } from '@codycodeagent/cody-web-core/protocol'
-
-const rpcMock = vi.hoisted(() => ({
-  rpcCall: vi.fn(),
-}))
 const httpMock = vi.hoisted(() => ({
   fetchCodexJson: vi.fn(),
   jsonPostInit: vi.fn((body: unknown) => ({ method: 'POST', body: JSON.stringify(body) })),
+  queryPath: vi.fn((path: string, params: Record<string, unknown>) => `${path}?archived=${String(params.archived)}`),
   readRpcResult: vi.fn((payload: unknown) => (payload as { result: unknown }).result),
 }))
-vi.mock('./codexRpcClient', () => rpcMock)
 vi.mock('./codexHttpClient', () => httpMock)
 
 afterEach(() => {
@@ -25,36 +21,24 @@ afterEach(() => {
 })
 
 describe('codex thread client', () => {
-  function thread(overrides: Partial<Thread> = {}): Thread {
+  function thread(overrides: Record<string, unknown> = {}) {
     return {
-      id: 'thread-1',
-      extra: null,
+      threadId: 'thread-1',
       sessionId: 'session-1',
-      forkedFromId: null,
-      parentThreadId: null,
+      forkedFromThreadId: '',
+      parentThreadId: '',
       preview: 'Preview',
       name: 'Thread',
       ephemeral: false,
-      section: null,
-      sectionEnteredAt: null,
-      historyMode: 'paginated',
-      modelProvider: 'openai',
-      createdAt: 1_700_000_000,
-      updatedAt: 1_700_000_100,
-      recencyAt: 1_700_000_100,
-      status: { type: 'idle' },
-      path: null,
-      cwd: '/repo',
-      cliVersion: 'test',
+      createdAtIso: '2026-09-01T00:00:00.000Z',
+      updatedAtIso: '2026-09-01T00:00:01.000Z',
       source: 'appServer',
+      status: 'idle',
+      activeFlags: [],
+      cwd: '/repo',
       canAcceptDirectInput: true,
-      threadSource: null,
-      agentNickname: null,
-      agentRole: null,
-      gitInfo: null,
-      turns: [],
       ...overrides,
-    } as Thread
+    }
   }
 
   it('builds turn input from skills, text, and local images', () => {
@@ -75,16 +59,14 @@ describe('codex thread client', () => {
     ])
   })
 
-  it('loads all thread list pages before grouping', async () => {
-    rpcMock.rpcCall
-      .mockResolvedValueOnce({
-        data: [thread({ id: 'first', cwd: '/repo/one', updatedAt: 10 })],
-        nextCursor: 'cursor-2',
-      })
-      .mockResolvedValueOnce({
-        data: [thread({ id: 'second', cwd: '/repo/two', updatedAt: 20 })],
-        nextCursor: null,
-      })
+  it('loads the catalog through the Core conversation owner', async () => {
+    httpMock.fetchCodexJson.mockResolvedValue({
+      payload: { result: [
+        thread({ threadId: 'first', cwd: '/repo/one', updatedAtIso: '2026-09-01T00:00:10.000Z' }),
+        thread({ threadId: 'second', cwd: '/repo/two', updatedAtIso: '2026-09-01T00:00:20.000Z' }),
+      ] },
+      status: 200,
+    })
 
     await expect(getThreadGroups(false)).resolves.toEqual([
       {
@@ -103,65 +85,46 @@ describe('codex thread client', () => {
       },
     ])
 
-    expect(rpcMock.rpcCall).toHaveBeenNthCalledWith(1, 'thread/list', {
-      archived: false,
-      limit: 100,
-      sortDirection: 'desc',
-      sortKey: 'updated_at',
-    })
-    expect(rpcMock.rpcCall).toHaveBeenNthCalledWith(2, 'thread/list', {
-      archived: false,
-      limit: 100,
-      sortDirection: 'desc',
-      sortKey: 'updated_at',
-      cursor: 'cursor-2',
-    })
+    expect(httpMock.fetchCodexJson).toHaveBeenCalledWith('/codex-api/conversations/threads?archived=false', expect.objectContaining({
+      method: 'conversation/threads/list',
+    }))
   })
 
-  it('loads authoritative native Thread events for the Core controller', async () => {
-    rpcMock.rpcCall.mockResolvedValue({
-      thread: thread({
-        turns: [{
-          id: 'turn-1',
-          status: 'completed',
-          error: null,
-          itemsView: 'full',
-          startedAt: null,
-          completedAt: null,
-          durationMs: null,
-          items: [
-            {
-              type: 'commandExecution', id: 'cmd-1', command: 'npm test', cwd: '/repo',
-              processId: 'pty-1', status: 'completed', commandActions: [], aggregatedOutput: '2 passed',
-              exitCode: 0, durationMs: 1_200,
-            },
-            { type: 'agentMessage', id: 'answer-1', text: 'Done.' },
-          ],
-        }] as never,
-      }),
+  it('loads an owner-atomic snapshot for the Core controller', async () => {
+    httpMock.fetchCodexJson.mockResolvedValue({
+      payload: { result: { watermark: 8, events: [
+        { id: 'answer-1', type: 'assistant.completed', threadId: 'thread-1', turnId: 'turn-1', itemId: 'answer-1', atIso: '2026-09-01T00:00:00.000Z', data: { text: 'Done.' } },
+      ] } },
+      status: 200,
     })
 
     await expect(getThreadEvents(' thread-1 ')).resolves.toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'tool.completed', itemId: 'cmd-1' }),
       expect.objectContaining({ type: 'assistant.completed', itemId: 'answer-1' }),
-      expect.objectContaining({ type: 'turn.completed', turnId: 'turn-1' }),
     ]))
 
-    expect(rpcMock.rpcCall).toHaveBeenCalledWith('thread/read', {
-      threadId: 'thread-1',
-      includeTurns: true,
-    })
+    expect(httpMock.fetchCodexJson).toHaveBeenCalledWith('/codex-api/conversations/snapshot', expect.objectContaining({
+      method: 'conversation/snapshot',
+    }))
   })
 
   it('starts threads with normalized optional params', async () => {
-    rpcMock.rpcCall.mockResolvedValue({ thread: thread() })
+    httpMock.fetchCodexJson.mockResolvedValue({ payload: { result: { threadId: 'thread-1' } }, status: 201 })
 
     await expect(startThread(' /repo ', ' gpt-5 ')).resolves.toBe('thread-1')
 
-    expect(rpcMock.rpcCall).toHaveBeenCalledWith('thread/start', {
-      cwd: '/repo',
-      model: 'gpt-5',
-    })
+    expect(httpMock.fetchCodexJson).toHaveBeenCalledWith('/codex-api/conversations/threads/start', expect.objectContaining({
+      method: 'conversation/threads/start',
+    }))
+    expect(httpMock.jsonPostInit).toHaveBeenCalledWith({ context: { thread: { cwd: '/repo', model: 'gpt-5' } } })
+  })
+
+  it('renames through the Core owner rather than generic RPC', async () => {
+    httpMock.fetchCodexJson.mockResolvedValue({ payload: { result: { ok: true } }, status: 200 })
+    await renameThread(' thread-1 ', ' Renamed ')
+    expect(httpMock.fetchCodexJson).toHaveBeenCalledWith('/codex-api/conversations/threads/rename', expect.objectContaining({
+      method: 'conversation/threads/rename',
+    }))
+    expect(httpMock.jsonPostInit).toHaveBeenCalledWith({ threadId: 'thread-1', name: 'Renamed' })
   })
 
   it('attaches and submits only through the process-wide conversation owner', async () => {
@@ -183,6 +146,5 @@ describe('codex thread client', () => {
     expect(httpMock.fetchCodexJson).toHaveBeenNthCalledWith(2, '/codex-api/conversations/submit', expect.objectContaining({
       method: 'conversation/submit',
     }))
-    expect(rpcMock.rpcCall).not.toHaveBeenCalledWith('turn/start', expect.anything())
   })
 })

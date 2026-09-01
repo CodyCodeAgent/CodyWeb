@@ -7,16 +7,17 @@ import {
   uploadComposerImage,
 } from './codexComposerClient'
 
-const rpcMock = vi.hoisted(() => ({
-  rpcCall: vi.fn(),
-}))
-
 const bridgeMock = vi.hoisted(() => ({
   uploadLocalImage: vi.fn(),
 }))
+const httpMock = vi.hoisted(() => ({
+  fetchCodexJson: vi.fn(),
+  jsonPostInit: vi.fn((body: unknown) => ({ method: 'POST', body: JSON.stringify(body) })),
+  readRpcResult: vi.fn((payload: unknown) => (payload as { result: unknown }).result),
+}))
 
 vi.mock('./codexBridgeClient', () => bridgeMock)
-vi.mock('./codexRpcClient', () => rpcMock)
+vi.mock('./codexHttpClient', () => httpMock)
 
 afterEach(() => {
   vi.clearAllMocks()
@@ -51,52 +52,16 @@ describe('codex composer client', () => {
   })
 
   it('loads available skills with cwd filtering, de-duping, and name sorting', async () => {
-    rpcMock.rpcCall.mockResolvedValue({
-      data: [
-        {
-          cwd: '/repo',
-          skills: [
-            {
-              name: 'zeta',
-              path: '/skills/zeta',
-              enabled: true,
-              description: '',
-              shortDescription: '',
-              scope: 'repo', interface: undefined,
-            },
-            {
-              name: 'alpha',
-              path: '/skills/alpha',
-              enabled: true,
-              description: 'Alpha long',
-              shortDescription: '',
-              scope: 'repo', interface: undefined,
-            },
-          ], errors: [],
-        },
-        {
-          cwd: '/repo',
-          skills: [
-            {
-              name: 'alpha',
-              path: '/skills/alpha',
-              enabled: true,
-              description: 'duplicate',
-              shortDescription: '',
-              scope: 'repo', interface: undefined,
-            },
-            {
-              name: 'beta',
-              path: '',
-              enabled: true,
-              description: '',
-              shortDescription: '',
-              scope: 'repo', interface: undefined,
-            },
-          ], errors: [],
-        },
-      ],
-    })
+    httpMock.fetchCodexJson.mockResolvedValue({ payload: { result: [
+      {
+        name: 'alpha', path: '/skills/alpha', enabled: true, description: 'duplicate', displayName: 'alpha',
+        scope: 'repo', brandColor: '', iconSmall: '', iconLarge: '', defaultPrompt: '', dependencies: [],
+      },
+      {
+        name: 'zeta', path: '/skills/zeta', enabled: true, description: '', displayName: 'zeta',
+        scope: 'repo', brandColor: '', iconSmall: '', iconLarge: '', defaultPrompt: '', dependencies: [],
+      },
+    ] }, status: 200 })
 
     await expect(getAvailableSkills(' /repo ')).resolves.toEqual([
       {
@@ -112,7 +77,9 @@ describe('codex composer client', () => {
         description: '',
       },
     ])
-    expect(rpcMock.rpcCall).toHaveBeenCalledWith('skills/list', { cwds: ['/repo'] })
+    expect(httpMock.fetchCodexJson).toHaveBeenCalledWith('/codex-api/conversations/skills?cwd=%2Frepo', expect.objectContaining({
+      method: 'conversation/skills/list',
+    }))
   })
 
   it('wraps composer image upload failures with the file name', async () => {
@@ -129,21 +96,23 @@ describe('codex composer client', () => {
   })
 
   it('loads skill catalog entries for unique normalized workspaces', async () => {
-    rpcMock.rpcCall.mockResolvedValue({ data: [{ cwd: '/repo', skills: [], errors: [] }] })
+    httpMock.fetchCodexJson.mockResolvedValue({ payload: { result: [{ cwd: '/repo', skills: [], errors: [] }] }, status: 200 })
 
     await expect(getSkillCatalog([' /repo ', '/repo', ''])).resolves.toEqual([
       { cwd: '/repo', skills: [], errors: [] },
     ])
-    expect(rpcMock.rpcCall).toHaveBeenCalledWith('skills/list', { cwds: ['/repo'] })
+    expect(httpMock.fetchCodexJson).toHaveBeenCalledWith('/codex-api/conversations/skill-catalog?cwd=%2Frepo', expect.objectContaining({
+      method: 'conversation/skills/catalog',
+    }))
   })
 
   it('updates skill enabled state by path', async () => {
-    rpcMock.rpcCall.mockResolvedValue({})
+    httpMock.fetchCodexJson.mockResolvedValue({ payload: { result: { ok: true } }, status: 200 })
 
     await expect(setSkillEnabled(' /skills/design/SKILL.md ', false)).resolves.toBeUndefined()
-    expect(rpcMock.rpcCall).toHaveBeenCalledWith('skills/config/write', {
-      path: '/skills/design/SKILL.md',
-      enabled: false,
-    })
+    expect(httpMock.fetchCodexJson).toHaveBeenCalledWith('/codex-api/conversations/skills/enabled', expect.objectContaining({
+      method: 'conversation/skills/enabled',
+    }))
+    expect(httpMock.jsonPostInit).toHaveBeenCalledWith({ path: '/skills/design/SKILL.md', enabled: false })
   })
 })

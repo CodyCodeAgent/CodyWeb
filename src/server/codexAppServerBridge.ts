@@ -26,6 +26,7 @@ import {
   CodexSessionManager,
   normalizeCodexNotification,
   type ExecutionContext,
+  type ListCodexThreadsOptions,
   type TurnInput,
 } from '@codycodeagent/cody-web-core/session'
 import type { CodexEvent } from '@codycodeagent/cody-web-core/conversation'
@@ -1392,6 +1393,53 @@ class CodyWebConversationService {
     return this.manager.readSnapshot(normalizedThreadId)
   }
 
+  async start(context: ExecutionContext): Promise<{ threadId: string }> {
+    const binding = await this.manager.startThread(context)
+    this.attachedThreadIds.add(binding.threadId)
+    return { threadId: binding.threadId }
+  }
+
+  async listThreads(options: ListCodexThreadsOptions = {}): Promise<Awaited<ReturnType<CodexSessionManager['listThreads']>>>
+  {
+    return this.manager.listThreads(options)
+  }
+
+  async listModels(): Promise<Awaited<ReturnType<CodexSessionManager['listModels']>>> {
+    return this.manager.listModels()
+  }
+
+  async listCollaborationModes(): Promise<Awaited<ReturnType<CodexSessionManager['listCollaborationModes']>>> {
+    return this.manager.listCollaborationModes()
+  }
+
+  async listSkills(cwds: string[]): Promise<Awaited<ReturnType<CodexSessionManager['listSkills']>>> {
+    return this.manager.listSkills(cwds)
+  }
+
+  async listSkillCatalog(cwds: string[]): Promise<Awaited<ReturnType<CodexSessionManager['listSkillCatalog']>>> {
+    return this.manager.listSkillCatalog(cwds)
+  }
+
+  async setSkillEnabled(path: string, enabled: boolean): Promise<void> {
+    await this.manager.setSkillEnabled(path, enabled)
+  }
+
+  async renameThread(threadId: string, name: string): Promise<void> {
+    await this.manager.renameThread(threadId, name)
+  }
+
+  async forkThread(threadId: string): Promise<{ threadId: string }> {
+    return { threadId: await this.manager.forkThread(threadId) }
+  }
+
+  async compactThread(threadId: string): Promise<void> {
+    await this.manager.compactThread(threadId)
+  }
+
+  async archiveThread(threadId: string): Promise<void> {
+    await this.manager.archiveThread(threadId)
+  }
+
   async submit(request: ConversationSubmitRequest): Promise<{ clientCommandId: string }> {
     const threadId = request.threadId.trim()
     const clientCommandId = request.clientCommandId.trim()
@@ -1763,6 +1811,17 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
   const domainRoutes = [
     createGatewayRoutes({
       rpc,
+      listConversationThreads: (options) => conversations.listThreads(options),
+      listConversationModels: () => conversations.listModels(),
+      listConversationCollaborationModes: () => conversations.listCollaborationModes(),
+      listConversationSkills: (cwds) => conversations.listSkills(cwds),
+      listConversationSkillCatalog: (cwds) => conversations.listSkillCatalog(cwds),
+      setConversationSkillEnabled: (path, enabled) => conversations.setSkillEnabled(path, enabled),
+      startConversationThread: (context) => conversations.start(context as ExecutionContext),
+      renameConversationThread: (threadId, name) => conversations.renameThread(threadId, name),
+      forkConversationThread: (threadId) => conversations.forkThread(threadId),
+      compactConversationThread: (threadId) => conversations.compactThread(threadId),
+      archiveConversationThread: (threadId) => conversations.archiveThread(threadId),
       attachConversation: (threadId, context) => conversations.attach(threadId, context as ExecutionContext),
       snapshotConversation: (threadId, context) => conversations.snapshot(threadId, context as ExecutionContext),
       submitConversation: (payload) => conversations.submit(payload as ConversationSubmitRequest),

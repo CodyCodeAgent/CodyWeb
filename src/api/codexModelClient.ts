@@ -8,7 +8,8 @@ import {
 } from '@codycodeagent/cody-web-core/composer'
 import { normalizeCodexApiError } from './codexErrors'
 import { rpcCall } from './codexRpcClient'
-import { CodexSessionCatalog } from '@codycodeagent/cody-web-core/session'
+import { fetchCodexJson, readRpcResult } from './codexHttpClient'
+import type { CodexCollaborationModeOption, CodexModelOption } from '@codycodeagent/cody-web-core/session'
 
 export type CurrentModelConfig = {
   model: string
@@ -33,7 +34,16 @@ async function callRpc<T>(method: string, params?: unknown): Promise<T> {
   }
 }
 
-const sessionCatalog = new CodexSessionCatalog({ call: callRpc })
+async function getOwnerResult<T>(path: string, method: string): Promise<T> {
+  const { payload, status } = await fetchCodexJson(path, {
+    init: { method: 'GET' },
+    method,
+    networkErrorMessage: `${method} request failed before it was sent`,
+    httpErrorMessage: `${method} request failed`,
+    timeoutMs: 25_000,
+  })
+  return readRpcResult(payload, status, method, `${method} returned malformed envelope`) as T
+}
 
 export function normalizeReasoningEffort(value: unknown): KnownReasoningEffort | '' {
   return typeof value === 'string' && isKnownReasoningEffort(value) ? value : ''
@@ -80,7 +90,7 @@ export function normalizeCollaborationModeOption(
 }
 
 export async function getCollaborationModes(): Promise<ComposerCollaborationModeOption[]> {
-  const rows = await sessionCatalog.listCollaborationModes()
+  const rows = await getOwnerResult<CodexCollaborationModeOption[]>('/codex-api/conversations/collaboration-modes', 'conversation/collaboration-modes/list')
   const options: ComposerCollaborationModeOption[] = []
   const seen = new Set<string>()
 
@@ -107,7 +117,7 @@ export async function setDefaultModel(model: string): Promise<void> {
 
 export async function getAvailableModelIds(): Promise<string[]> {
   const ids: string[] = []
-  for (const row of await sessionCatalog.listModels()) {
+  for (const row of await getOwnerResult<CodexModelOption[]>('/codex-api/conversations/models', 'conversation/models/list')) {
     const candidate = row.id || row.model
     if (!candidate || ids.includes(candidate)) continue
     ids.push(candidate)

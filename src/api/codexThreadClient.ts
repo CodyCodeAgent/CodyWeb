@@ -1,37 +1,29 @@
 import { normalizeCodexApiError } from './codexErrors'
-import { rpcCall } from './codexRpcClient'
 import { normalizeCatalogThreadGroups } from './normalizers/v2'
 import type { UiProjectGroup } from '../types/codex'
-import { buildTurnUserInput, CodexSessionCatalog, CodexThreadCommands } from '@codycodeagent/cody-web-core/session'
+import { buildTurnUserInput } from '@codycodeagent/cody-web-core/session'
+import type { CodexThreadSummary } from '@codycodeagent/cody-web-core/session'
 import type { ExecutionContext, TurnInput } from '@codycodeagent/cody-web-core/session'
-import { fetchCodexJson, jsonPostInit, readRpcResult } from './codexHttpClient'
+import { fetchCodexJson, jsonPostInit, queryPath, readRpcResult } from './codexHttpClient'
 import type { CodexEvent } from '@codycodeagent/cody-web-core/conversation'
 import type { ConversationAttachment, ConversationSnapshot } from '@codycodeagent/cody-web-core/client'
 import type { ComposerImage, ComposerSkill } from '@codycodeagent/cody-web-core/composer'
 
-async function callRpc<T>(method: string, params?: unknown): Promise<T> {
-  try {
-    return await rpcCall<T>(method, params)
-  } catch (error) {
-    throw normalizeCodexApiError(error, `RPC ${method} failed`, method)
-  }
-}
-
-const sessionCatalog = new CodexSessionCatalog({ call: callRpc })
-const threadCommands = new CodexThreadCommands({ call: callRpc })
-
 async function getThreadGroupsV2(archived = false): Promise<UiProjectGroup[]> {
-  return normalizeCatalogThreadGroups(await sessionCatalog.listThreads({ archived }))
+  const { payload, status } = await fetchCodexJson(queryPath('/codex-api/conversations/threads', { archived }), {
+    init: { method: 'GET' },
+    method: 'conversation/threads/list',
+    networkErrorMessage: 'Conversation thread catalog request failed before it was sent',
+    httpErrorMessage: 'Failed to load conversation thread catalog',
+    timeoutMs: 25_000,
+  })
+  const result = readRpcResult(payload, status, 'conversation/threads/list', 'Conversation thread catalog returned malformed envelope')
+  if (!Array.isArray(result)) throw new Error('Conversation thread catalog returned malformed rows')
+  return normalizeCatalogThreadGroups(result as CodexThreadSummary[])
 }
 
 export async function getThreadEvents(threadId: string): Promise<CodexEvent[]> {
-  const normalizedThreadId = threadId.trim()
-  if (!normalizedThreadId) return []
-  try {
-    return (await sessionCatalog.readThreadSnapshot(normalizedThreadId)).events
-  } catch (error) {
-    throw normalizeCodexApiError(error, `Failed to load thread ${normalizedThreadId}`, 'thread/read')
-  }
+  return (await getThreadConversationSnapshot(threadId)).events
 }
 
 export async function getThreadGroups(archived = false): Promise<UiProjectGroup[]> {
@@ -47,32 +39,64 @@ export async function renameThread(threadId: string, name: string): Promise<void
   const normalizedName = name.trim()
   if (!normalizedThreadId || !normalizedName) return
 
-  await threadCommands.renameThread(normalizedThreadId, normalizedName)
+  const { payload, status } = await fetchCodexJson('/codex-api/conversations/threads/rename', {
+    init: jsonPostInit({ threadId: normalizedThreadId, name: normalizedName }),
+    method: 'conversation/threads/rename',
+    networkErrorMessage: 'Conversation thread rename failed before request was sent',
+    httpErrorMessage: 'Conversation thread rename failed',
+    timeoutMs: 25_000,
+  })
+  readRpcResult(payload, status, 'conversation/threads/rename', 'Conversation thread rename returned malformed envelope')
 }
 
 export async function forkThread(threadId: string): Promise<string> {
   const normalizedThreadId = threadId.trim()
   if (!normalizedThreadId) return ''
 
-  return threadCommands.forkThread(normalizedThreadId)
+  const { payload, status } = await fetchCodexJson('/codex-api/conversations/threads/fork', {
+    init: jsonPostInit({ threadId: normalizedThreadId }),
+    method: 'conversation/threads/fork',
+    networkErrorMessage: 'Conversation thread fork failed before request was sent',
+    httpErrorMessage: 'Conversation thread fork failed',
+    timeoutMs: 25_000,
+  })
+  const result = readRpcResult(payload, status, 'conversation/threads/fork', 'Conversation thread fork returned malformed envelope') as { threadId?: unknown }
+  if (typeof result.threadId !== 'string' || !result.threadId.trim()) throw new Error('Conversation thread fork returned no thread id')
+  return result.threadId.trim()
 }
 
 export async function compactThread(threadId: string): Promise<void> {
   const normalizedThreadId = threadId.trim()
   if (!normalizedThreadId) return
-  await threadCommands.compactThread(normalizedThreadId)
+  const { payload, status } = await fetchCodexJson('/codex-api/conversations/threads/compact', {
+    init: jsonPostInit({ threadId: normalizedThreadId }),
+    method: 'conversation/threads/compact',
+    networkErrorMessage: 'Conversation thread compact failed before request was sent',
+    httpErrorMessage: 'Conversation thread compact failed',
+    timeoutMs: 25_000,
+  })
+  readRpcResult(payload, status, 'conversation/threads/compact', 'Conversation thread compact returned malformed envelope')
 }
 
 export async function startThread(cwd?: string, model?: string): Promise<string> {
   try {
-    const params: { cwd?: string; model?: string } = {}
+    const thread: { cwd?: string; model?: string } = {}
     if (typeof cwd === 'string' && cwd.trim().length > 0) {
-      params.cwd = cwd.trim()
+      thread.cwd = cwd.trim()
     }
     if (typeof model === 'string' && model.trim().length > 0) {
-      params.model = model.trim()
+      thread.model = model.trim()
     }
-    return await threadCommands.startThread(params)
+    const { payload, status } = await fetchCodexJson('/codex-api/conversations/threads/start', {
+      init: jsonPostInit({ context: { thread } }),
+      method: 'conversation/threads/start',
+      networkErrorMessage: 'Conversation thread start failed before request was sent',
+      httpErrorMessage: 'Conversation thread start failed',
+      timeoutMs: 25_000,
+    })
+    const result = readRpcResult(payload, status, 'conversation/threads/start', 'Conversation thread start returned malformed envelope') as { threadId?: unknown }
+    if (typeof result.threadId !== 'string' || !result.threadId.trim()) throw new Error('Conversation thread start returned no thread id')
+    return result.threadId.trim()
   } catch (error) {
     throw normalizeCodexApiError(error, 'Failed to start a new thread', 'thread/start')
   }
