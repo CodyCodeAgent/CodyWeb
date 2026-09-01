@@ -40,11 +40,32 @@ load_login_proxy_env() {
 }
 
 read_pid() { [[ -f "$PID_FILE" ]] || return 1; local pid; pid="$(tr -dc '0-9' < "$PID_FILE")"; [[ -n "$pid" ]] || return 1; printf '%s' "$pid"; }
-is_our_process() { local command; kill -0 "$1" 2>/dev/null || return 1; command="$(ps -p "$1" -o command= 2>/dev/null || true)"; [[ "$command" == *"$PROJECT_DIR/dist-cli/index.js"* ]]; }
+process_cwd() {
+  local pid="$1" cwd=""
+  if [[ -L "/proc/$pid/cwd" ]]; then
+    cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+  elif command -v lsof >/dev/null 2>&1; then
+    cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)"
+  fi
+  printf '%s' "$cwd"
+}
+is_our_process() {
+  local command cwd
+  kill -0 "$1" 2>/dev/null || return 1
+  command="$(ps -p "$1" -o command= 2>/dev/null || true)"
+  [[ "$command" == *"node"* && "$command" == *"dist-cli/index.js"* ]] || return 1
+  [[ "$command" == *"$PROJECT_DIR/dist-cli/index.js"* ]] && return 0
+  cwd="$(process_cwd "$1")"
+  [[ "$cwd" == "$PROJECT_DIR" ]]
+}
 find_our_pids() {
   local pid known=""
   if pid="$(read_pid 2>/dev/null)" && is_our_process "$pid"; then known="$pid"; printf '%s\n' "$pid"; fi
-  ps -axo pid=,command= | awk -v needle="$PROJECT_DIR/dist-cli/index.js" 'index($0, needle) { print $1 }' | while read -r pid; do
+  # Some launches use a relative `dist-cli/index.js` path. Verify both the
+  # executable command and the process working directory instead of assuming
+  # an absolute command line; otherwise a stale server can keep the port and
+  # make a deployment health check hit the wrong build.
+  ps -axo pid= | while read -r pid; do
     [[ -n "$pid" && "$pid" != "$known" ]] && is_our_process "$pid" && printf '%s\n' "$pid"
   done || true
   return 0
