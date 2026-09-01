@@ -125,7 +125,6 @@ export function useDesktopState() {
   const latestMessageLoadRequestIdByThreadId = new Map<string, number>()
   let nextMessageLoadRequestId = 0
   let latestThreadsRequestId = 0
-  let nextOptimisticUserMessageId = 0
   const directThreadRecoveryById = new Map<string, Promise<void>>()
   const stopCoreEventSubscription = coreConversations.subscribeEvents((event) => {
     if (event.type === 'command.failed') {
@@ -408,43 +407,6 @@ export function useDesktopState() {
       atIso: new Date().toISOString(),
       data: { tool: message.tool },
     })
-  }
-
-  function addOptimisticUserMessage(
-    threadId: string,
-    turnInput: {
-      text: string
-      images: ComposerSubmission<UiComposerContextKind>['images']
-      skills: ComposerSubmission<UiComposerContextKind>['skills']
-    },
-    preferredMessageId = '',
-  ): string {
-    if (!threadId) return ''
-
-    if (!preferredMessageId) nextOptimisticUserMessageId += 1
-    const messageId = preferredMessageId || `command:${threadId}:${String(nextOptimisticUserMessageId)}`
-    coreConversations.enqueue({
-      threadId,
-      commandId: messageId,
-      text: turnInput.text,
-      images: turnInput.images.map((image) => image.url).filter((url) => url.trim().length > 0),
-      skills: turnInput.skills,
-    })
-    return messageId
-  }
-
-  function ensureOutboxOptimisticUserMessage(item: PendingConversationCommand): string {
-    return addOptimisticUserMessage(item.threadId, item, item.id)
-  }
-
-  function bindOptimisticUserMessageToTurn(threadId: string, turnId: string, messageId: string): void {
-    if (!turnId || !messageId) return
-    coreConversations.bind(threadId, messageId, turnId)
-  }
-
-  function removeOptimisticUserMessage(threadId: string, messageId: string): void {
-    if (!threadId || !messageId) return
-    coreConversations.discard(threadId, messageId)
   }
 
   function applyRealtimeUpdates(notification: RpcNotification): void {
@@ -751,10 +713,9 @@ export function useDesktopState() {
         contexts: payload.contexts,
       },
     })
-    // Core owns the optimistic row immediately. Browser storage must never
-    // become a second durable queue that can resurrect stale commands after
-    // a refresh or service deployment.
-    ensureOutboxOptimisticUserMessage(item)
+    // This is only a command payload. Core.submit is the sole operation that
+    // admits it and synchronously inserts the optimistic row; product state
+    // must never maintain a parallel transcript/outbox before admission.
     return item
   }
 
@@ -852,7 +813,8 @@ export function useDesktopState() {
       skills: (failed.skills ?? []).map((skill) => ({ ...skill, description: '', displayName: skill.displayName ?? skill.name })),
     })
     if (!replacement) return
-    coreConversations.discard(normalizedThreadId, normalizedItemId)
+    // Keep the failed attempt in the transcript. A retry is a new command and
+    // must remain distinguishable even when its text is identical.
     await submitOutboxItem(replacement, coreConversations.stateFor(normalizedThreadId).activeTurnId ? 'steer' : 'queue')
   }
 
@@ -862,7 +824,7 @@ export function useDesktopState() {
     if (!normalizedThreadId || !normalizedItemId) return
     const message = coreConversations.stateFor(normalizedThreadId).messages.find((row) => row.id === `user:${normalizedItemId}`)
     if (message?.outbox?.status !== 'failed') return
-    removeOptimisticUserMessage(normalizedThreadId, normalizedItemId)
+    coreConversations.discard(normalizedThreadId, normalizedItemId)
   }
 
   async function sendMessageToNewThread(payload: ComposerSubmission<UiComposerContextKind>, cwd: string): Promise<string> {

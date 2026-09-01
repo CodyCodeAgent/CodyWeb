@@ -134,15 +134,6 @@ export function useCoreConversationRegistry() {
     await controllerFor(threadId).refresh()
   }
 
-  function enqueue(input: { threadId: string; commandId: string; text: string; images?: string[]; skills?: ComposerSkill[] }): void {
-    controllerFor(input.threadId).enqueueUserMessage({
-      id: input.commandId,
-      text: input.text,
-      ...(input.images?.length ? { images: input.images } : {}),
-      ...(input.skills?.length ? { skills: input.skills } : {}),
-    })
-  }
-
   function submit(input: {
     threadId: string
     commandId: string
@@ -163,14 +154,6 @@ export function useCoreConversationRegistry() {
       input: input.turnInput,
       ...(input.context ? { context: input.context } : {}),
     })
-  }
-
-  function bind(threadId: string, commandId: string, turnId: string): void {
-    controllerFor(threadId).bindQueuedUserMessage(commandId, turnId)
-  }
-
-  function fail(threadId: string, commandId: string, error: string): void {
-    controllerFor(threadId).failQueuedUserMessage(commandId, error)
   }
 
   function discard(threadId: string, commandId: string): void {
@@ -211,5 +194,5 @@ export function useCoreConversationRegistry() {
     stateByThreadId.value = {}
   }
 
-  return { stateByThreadId, stateFor, focus, connect, refresh, enqueue, submit, bind, fail, discard, ingest, subscribeEvents, prune, dispose }
+  return { stateByThreadId, stateFor, focus, connect, refresh, submit, discard, ingest, subscribeEvents, prune, dispose }
 }
