@@ -5,11 +5,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { WebSocket } from 'ws'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   APP_SERVER_DIAGNOSTICS_RPC_TIMEOUT_MS,
   APP_SERVER_RPC_TIMEOUT_MS,
   attachCodexBridgeWebSocketServer,
+  CODEX_BRIDGE_WEBSOCKET_MAX_BUFFERED_BYTES,
   CODEX_APP_SERVER_ARGS,
   appServerRpcTimeoutMessage,
   createAutomaticTurnCheckpoint,
@@ -117,6 +118,45 @@ function readFirstWebSocketMessage(url: string): Promise<unknown> {
     socket.once('error', (error) => {
       clearTimeout(timeout)
       reject(error)
+    })
+  })
+}
+
+function openReadyWebSocket(url: string): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url)
+    const timeout = setTimeout(() => {
+      socket.close()
+      reject(new Error('Timed out waiting for websocket ready frame'))
+    }, 3000)
+    socket.once('message', (data) => {
+      clearTimeout(timeout)
+      try {
+        const message = JSON.parse(String(data)) as { type?: string }
+        if (message.type !== 'ready') throw new Error('Expected websocket ready frame')
+        resolve(socket)
+      } catch (error) {
+        socket.close()
+        reject(error)
+      }
+    })
+    socket.once('error', (error) => {
+      clearTimeout(timeout)
+      reject(error)
+    })
+  })
+}
+
+function waitForWebSocketMessage(socket: WebSocket): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timed out waiting for websocket message')), 3000)
+    socket.once('message', (data) => {
+      clearTimeout(timeout)
+      try {
+        resolve(JSON.parse(String(data)))
+      } catch (error) {
+        reject(error)
+      }
     })
   })
 }
@@ -396,6 +436,11 @@ describe('bridge server request endpoints', () => {
 })
 
 describe('bridge websocket server', () => {
+  it('bounds each client send buffer independently', () => {
+    expect(CODEX_BRIDGE_WEBSOCKET_MAX_BUFFERED_BYTES).toBeGreaterThan(0)
+    expect(CODEX_BRIDGE_WEBSOCKET_MAX_BUFFERED_BYTES).toBeLessThanOrEqual(8 * 1024 * 1024)
+  })
+
   it('accepts websocket upgrades and sends a ready frame', async () => {
     const server = createServer((_req, res) => {
       res.writeHead(404)
@@ -412,6 +457,104 @@ describe('bridge websocket server', () => {
       disposeWebSocketServer()
       await closeServer(server)
     }
+  })
+
+  it('keeps a second browser client alive when the first client closes', async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(404)
+      res.end()
+    })
+    const disposeWebSocketServer = attachCodexBridgeWebSocketServer(server)
+    let first: WebSocket | undefined
+    let second: WebSocket | undefined
+
+    try {
+      const port = await listen(server)
+      const url = `ws://127.0.0.1:${String(port)}/codex-api/ws`
+      ;[first, second] = await Promise.all([openReadyWebSocket(url), openReadyWebSocket(url)])
+      await new Promise<void>((resolve) => {
+        first?.once('close', () => resolve())
+        first?.close()
+      })
+
+      const pong = waitForWebSocketMessage(second)
+      second.send(JSON.stringify({ type: 'ping' }))
+      await expect(pong).resolves.toMatchObject({ type: 'pong' })
+    } finally {
+      first?.close()
+      second?.close()
+      disposeWebSocketServer()
+      await closeServer(server)
+    }
+  })
+})
+
+describe('shared bridge ownership', () => {
+  it('disposes the app-server only after the last middleware owner releases it', () => {
+    const sharedBridgeKey = '__codexRemoteSharedBridge__'
+    const disposeAppServer = vi.fn()
+    const disposeConversations = vi.fn(async () => {})
+    const stopCatalog = vi.fn()
+    const stopNotifications = vi.fn()
+    const clearProductEvents = vi.fn()
+    const stopFeishu = vi.fn(async () => {})
+    const globalScope = globalThis as typeof globalThis & Record<string, unknown>
+    globalScope[sharedBridgeKey] = {
+      ownerCount: 0,
+      appServer: {
+        dispose: disposeAppServer,
+        rpc: async () => ({}),
+        respondToServerRequest: async () => {},
+        listPendingServerRequests: () => [],
+        isServerRequestPending: () => false,
+        onNotification: () => () => {},
+      },
+      conversations: {
+        submit: async () => ({ clientCommandId: 'test-command' }),
+        attach: async () => ({ events: [] }),
+        interrupt: async () => false,
+        subscribe: () => () => {},
+        dispose: disposeConversations,
+      },
+      catalogSync: {
+        stop: stopCatalog,
+        syncNow: async () => {},
+        refreshForRead: async () => {},
+        onNotification: () => {},
+        getStatus: () => ({ successCount: 1 }),
+      },
+      methodCatalog: {
+        listMethods: async () => [],
+        listNotificationMethods: async () => [],
+      },
+      stopNotificationDispatch: stopNotifications,
+      productEventHub: {
+        clear: clearProductEvents,
+        subscribe: () => () => {},
+        emit: () => {},
+      },
+      feishuIntegration: {
+        routes: [],
+        start: async () => {},
+        stop: stopFeishu,
+        draftScenarioPackage: async () => ({}),
+      },
+    }
+
+    const first = createCodexBridgeMiddleware()
+    const second = createCodexBridgeMiddleware()
+    first.dispose()
+    expect(disposeAppServer).not.toHaveBeenCalled()
+    expect(stopCatalog).not.toHaveBeenCalled()
+
+    second.dispose()
+    expect(disposeAppServer).toHaveBeenCalledTimes(1)
+    expect(disposeConversations).toHaveBeenCalledTimes(1)
+    expect(stopCatalog).toHaveBeenCalledTimes(1)
+    expect(stopNotifications).toHaveBeenCalledTimes(1)
+    expect(clearProductEvents).toHaveBeenCalledTimes(1)
+    expect(stopFeishu).toHaveBeenCalledTimes(1)
+    delete globalScope[sharedBridgeKey]
   })
 })
 

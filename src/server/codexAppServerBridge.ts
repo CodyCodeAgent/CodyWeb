@@ -1304,6 +1304,7 @@ type SharedBridgeState = {
   stopNotificationDispatch: () => void
   productEventHub: ProductEventHub
   feishuIntegration: FeishuIntegration
+  ownerCount: number
 }
 
 export type CodexBridgeWebSocketOptions = {
@@ -1312,6 +1313,7 @@ export type CodexBridgeWebSocketOptions = {
 }
 
 export const CODEX_BRIDGE_WEBSOCKET_HEARTBEAT_MS = 30_000
+export const CODEX_BRIDGE_WEBSOCKET_MAX_BUFFERED_BYTES = 4 * 1024 * 1024
 
 type BridgeWebSocketMessage =
   | {
@@ -1436,7 +1438,18 @@ class ProductEventHub {
 
 function sendBridgeWebSocketMessage(socket: WebSocket, message: BridgeWebSocketMessage): void {
   if (socket.readyState !== WebSocket.OPEN) return
-  socket.send(JSON.stringify(message))
+  // A background tab must never be able to accumulate an unbounded copy of
+  // every Codex delta in the server process. Disconnect only that slow client;
+  // the browser reconnect path restores its canonical state from Core.
+  if (socket.bufferedAmount > CODEX_BRIDGE_WEBSOCKET_MAX_BUFFERED_BYTES) {
+    socket.terminate()
+    return
+  }
+  try {
+    socket.send(JSON.stringify(message))
+  } catch {
+    socket.terminate()
+  }
 }
 
 const SHARED_BRIDGE_KEY = '__codexRemoteSharedBridge__'
@@ -1538,6 +1551,7 @@ function getSharedBridgeState(): SharedBridgeState {
 
   const existing = globalScope[SHARED_BRIDGE_KEY]
   if (existing) {
+    existing.ownerCount ??= 0
     // Older tests and hot-reloaded processes may have created the shared bridge
     // before the Feishu integration existed. Hydrate it in place so the shared
     // app-server remains reusable instead of forcing a second process.
@@ -1626,6 +1640,7 @@ function getSharedBridgeState(): SharedBridgeState {
     stopNotificationDispatch,
     productEventHub,
     feishuIntegration,
+    ownerCount: 0,
   }
   globalScope[SHARED_BRIDGE_KEY] = created
   if (process.env.NODE_ENV !== 'test') {
@@ -1639,6 +1654,36 @@ function getSharedBridgeState(): SharedBridgeState {
     })
   }
   return created
+}
+
+function retainSharedBridgeState(): { state: SharedBridgeState; release: () => void } {
+  const state = getSharedBridgeState()
+  state.ownerCount += 1
+  let released = false
+
+  return {
+    state,
+    release: () => {
+      if (released) return
+      released = true
+      state.ownerCount = Math.max(0, state.ownerCount - 1)
+      if (state.ownerCount > 0) return
+
+      state.catalogSync.stop()
+      state.tokenUsageReconciliation?.stop()
+      state.agentTasks?.stop()
+      state.stopNotificationDispatch()
+      state.productEventHub.clear()
+      void state.feishuIntegration.stop()
+      void state.conversations.dispose()
+      state.appServer.dispose()
+
+      const globalScope = globalThis as typeof globalThis & {
+        [SHARED_BRIDGE_KEY]?: SharedBridgeState
+      }
+      if (globalScope[SHARED_BRIDGE_KEY] === state) delete globalScope[SHARED_BRIDGE_KEY]
+    },
+  }
 }
 
 async function buildGatewayDiagnostics(
@@ -1692,7 +1737,8 @@ async function handleCheckpointHealthRoute(url: URL, res: ServerResponse): Promi
 }
 
 export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
-  const { appServer, conversations, catalogSync, tokenUsageReconciliation, agentTasks, methodCatalog, stopNotificationDispatch, productEventHub, feishuIntegration } = getSharedBridgeState()
+  const retained = retainSharedBridgeState()
+  const { appServer, conversations, catalogSync, tokenUsageReconciliation, agentTasks, methodCatalog, productEventHub, feishuIntegration } = retained.state
   const rpc = (method: string, params: unknown): Promise<unknown> => appServer.rpc(method, params)
   const domainRoutes = [
     createGatewayRoutes({
@@ -1743,20 +1789,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
   }
 
   middleware.dispose = () => {
-    catalogSync.stop()
-    tokenUsageReconciliation?.stop()
-    agentTasks?.stop()
-    stopNotificationDispatch()
-    productEventHub.clear()
-    void feishuIntegration.stop()
-    void conversations.dispose()
-    appServer.dispose()
-    const globalScope = globalThis as typeof globalThis & {
-      [SHARED_BRIDGE_KEY]?: SharedBridgeState
-    }
-    if (globalScope[SHARED_BRIDGE_KEY]?.appServer === appServer) {
-      delete globalScope[SHARED_BRIDGE_KEY]
-    }
+    retained.release()
   }
 
   return middleware
@@ -1766,7 +1799,8 @@ export function attachCodexBridgeWebSocketServer(
   server: HttpServer,
   options: CodexBridgeWebSocketOptions = {},
 ): () => void {
-  const { appServer, conversations, productEventHub } = getSharedBridgeState()
+  const retained = retainSharedBridgeState()
+  const { appServer, conversations, productEventHub } = retained.state
   const webSocketServer = new WebSocketServer({ noServer: true })
   const clients = new Set<WebSocket>()
   const liveClients = new WeakMap<WebSocket, boolean>()
@@ -1853,7 +1887,10 @@ export function attachCodexBridgeWebSocketServer(
 
   server.on('upgrade', onUpgrade)
 
+  let disposed = false
   return () => {
+    if (disposed) return
+    disposed = true
     clearInterval(heartbeatInterval)
     server.off('upgrade', onUpgrade)
     for (const client of clients) {
@@ -1861,5 +1898,6 @@ export function attachCodexBridgeWebSocketServer(
     }
     clients.clear()
     webSocketServer.close()
+    retained.release()
   }
 }
