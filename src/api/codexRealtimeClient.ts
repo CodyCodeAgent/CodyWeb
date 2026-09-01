@@ -17,7 +17,7 @@ export type ProductNotification = {
   method: string
 }
 
-export type RealtimeConnectionPhase = 'idle' | 'connecting' | 'connected' | 'reconnecting'
+export type RealtimeConnectionPhase = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
 
 export type RealtimeConnectionSnapshot = {
   phase: RealtimeConnectionPhase
@@ -251,7 +251,7 @@ export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = 
           return
         }
         publishConnection({
-          phase: 'reconnecting',
+          phase: event.willReconnect === false ? 'disconnected' : 'reconnecting',
           reconnectAttempt: event.reconnectAttempt ?? connectionSnapshot.reconnectAttempt + 1,
           disconnectedAtIso: event.atIso ?? nowIso(),
           closeCode: event.closeCode ?? null,

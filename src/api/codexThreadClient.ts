@@ -6,7 +6,7 @@ import { buildTurnUserInput, CodexSessionCatalog, CodexThreadCommands } from '@c
 import type { ExecutionContext, TurnInput } from '@codycodeagent/cody-web-core/session'
 import { fetchCodexJson, jsonPostInit, readRpcResult } from './codexHttpClient'
 import type { CodexEvent } from '@codycodeagent/cody-web-core/conversation'
-import type { ConversationAttachment } from '@codycodeagent/cody-web-core/client'
+import type { ConversationAttachment, ConversationSnapshot } from '@codycodeagent/cody-web-core/client'
 import type { ComposerImage, ComposerSkill } from '@codycodeagent/cody-web-core/composer'
 
 async function callRpc<T>(method: string, params?: unknown): Promise<T> {
@@ -117,6 +117,26 @@ export async function attachThreadConversation(threadId: string): Promise<Conver
     ? result.events.filter((event: unknown): event is CodexEvent => Boolean(event && typeof event === 'object'))
     : []
   return { events }
+}
+
+/** The server-side Core owner supplies the atomic history/realtime cut. */
+export async function getThreadConversationSnapshot(threadId: string): Promise<ConversationSnapshot> {
+  const normalizedThreadId = threadId.trim()
+  if (!normalizedThreadId) return { events: [], watermark: 0 }
+  const { payload, status } = await fetchCodexJson('/codex-api/conversations/snapshot', {
+    init: jsonPostInit({ threadId: normalizedThreadId, context: { thread: {} } }),
+    method: 'conversation/snapshot',
+    networkErrorMessage: 'Conversation snapshot failed before request was sent',
+    httpErrorMessage: 'Conversation snapshot failed',
+    timeoutMs: 25_000,
+  })
+  const result = readRpcResult(payload, status, 'conversation/snapshot', 'Conversation snapshot returned malformed envelope') as { events?: unknown; watermark?: unknown }
+  return {
+    events: Array.isArray(result.events)
+      ? result.events.filter((event: unknown): event is CodexEvent => Boolean(event && typeof event === 'object'))
+      : [],
+    watermark: typeof result.watermark === 'number' && Number.isFinite(result.watermark) ? result.watermark : 0,
+  }
 }
 
 export function buildTurnInput(

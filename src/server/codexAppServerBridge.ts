@@ -1384,6 +1384,14 @@ class CodyWebConversationService {
     return { events: this.manager.listAttachmentEvents(normalizedThreadId) }
   }
 
+  async snapshot(threadId: string, context: ExecutionContext): Promise<{ events: CodexEvent[]; watermark: number }> {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) throw new Error('threadId is required')
+    await this.ensureAttached(normalizedThreadId, context)
+    this.manager.setContext(normalizedThreadId, context)
+    return this.manager.readSnapshot(normalizedThreadId)
+  }
+
   async submit(request: ConversationSubmitRequest): Promise<{ clientCommandId: string }> {
     const threadId = request.threadId.trim()
     const clientCommandId = request.clientCommandId.trim()
@@ -1756,6 +1764,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     createGatewayRoutes({
       rpc,
       attachConversation: (threadId, context) => conversations.attach(threadId, context as ExecutionContext),
+      snapshotConversation: (threadId, context) => conversations.snapshot(threadId, context as ExecutionContext),
       submitConversation: (payload) => conversations.submit(payload as ConversationSubmitRequest),
       interruptConversation: (threadId, context) => conversations.interrupt(threadId, context as ExecutionContext),
       respond: (payload) => appServer.respondToServerRequest(payload),

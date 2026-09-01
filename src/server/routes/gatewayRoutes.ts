@@ -3,6 +3,7 @@ import { asRecord, readJsonBody, setJson, type DomainRoute } from './httpRoute.j
 type PendingRequestGateway = {
   rpc: (method: string, params: unknown) => Promise<unknown>
   attachConversation: (threadId: string, context: unknown) => Promise<unknown>
+  snapshotConversation: (threadId: string, context: unknown) => Promise<unknown>
   submitConversation: (payload: unknown) => Promise<unknown>
   interruptConversation: (threadId: string, context: unknown) => Promise<boolean>
   respond: (payload: unknown) => Promise<void>
@@ -28,6 +29,11 @@ export function createGatewayRoutes(gateway: PendingRequestGateway): DomainRoute
         const attachment = await gateway.attachConversation(threadId, body?.context ?? {})
         setJson(res, 200, { result: { attached: true, ...(asRecord(attachment) ?? {}) } })
       }
+    } else if (key === 'POST /codex-api/conversations/snapshot') {
+      const body = asRecord(await readJsonBody(req))
+      const threadId = typeof body?.threadId === 'string' ? body.threadId : ''
+      if (!threadId.trim()) setJson(res, 400, { error: 'Invalid body: expected { threadId, context? }' })
+      else setJson(res, 200, { result: await gateway.snapshotConversation(threadId, body?.context ?? {}) })
     } else if (key === 'POST /codex-api/conversations/submit') {
       setJson(res, 202, { result: await gateway.submitConversation(await readJsonBody(req)) })
     } else if (key === 'POST /codex-api/conversations/interrupt') {

@@ -10,7 +10,7 @@ import {
   type ConversationState,
 } from '@codycodeagent/cody-web-core/conversation'
 import type { ComposerSkill } from '@codycodeagent/cody-web-core/composer'
-import { attachThreadConversation, getThreadEvents, interruptThreadTurn, submitThreadCommand } from '../api/codexThreadClient'
+import { getThreadConversationSnapshot, getThreadEvents, interruptThreadTurn, submitThreadCommand } from '../api/codexThreadClient'
 import {
   subscribeConversationEvents,
   subscribeRealtimeConnection,
@@ -32,24 +32,35 @@ export function useCoreConversationRegistry() {
   let focusedThreadId = ''
 
   const stopConversationEvents = subscribeConversationEvents((event) => {
-    controllerFor(event.threadId).ingestEvent(event)
+    controllerFor(event.threadId).ingestEvent(event, event.ownerRevision)
     for (const listener of eventListeners) listener(event)
   })
 
+  const connectionEvent = (snapshot: RealtimeConnectionSnapshot): ConversationSubscriptionEvent | null => {
+    if (snapshot.phase === 'connected') return { type: 'connected', atIso: snapshot.connectedAtIso }
+    if (snapshot.phase === 'reconnecting' || snapshot.phase === 'disconnected') {
+      return {
+        type: 'disconnected',
+        error: snapshot.closeReason || 'CodyWeb realtime transport disconnected.',
+        atIso: snapshot.disconnectedAtIso,
+        reconnectAttempt: snapshot.reconnectAttempt,
+        closeCode: snapshot.closeCode,
+        closeReason: snapshot.closeReason,
+        willReconnect: snapshot.phase !== 'disconnected',
+      }
+    }
+    return null
+  }
+
+  const publishConnectionToThread = (threadId: string, snapshot: RealtimeConnectionSnapshot): void => {
+    const event = connectionEvent(snapshot)
+    if (!event) return
+    for (const listener of transportListenersByThreadId.get(threadId) ?? []) listener(event)
+  }
+
   const stopConnection = subscribeRealtimeConnection((snapshot) => {
     connectionSnapshot = snapshot
-    const event: ConversationSubscriptionEvent | null = snapshot.phase === 'connected'
-      ? { type: 'connected', atIso: snapshot.connectedAtIso }
-      : snapshot.phase === 'reconnecting'
-        ? {
-            type: 'disconnected',
-            error: snapshot.closeReason || 'CodyWeb realtime transport disconnected.',
-            atIso: snapshot.disconnectedAtIso,
-            reconnectAttempt: snapshot.reconnectAttempt,
-            closeCode: snapshot.closeCode,
-            closeReason: snapshot.closeReason,
-          }
-        : null
+    const event = connectionEvent(snapshot)
     if (!event) return
     for (const [threadId, listeners] of transportListenersByThreadId) {
       if (event.type === 'connected') {
@@ -65,12 +76,7 @@ export function useCoreConversationRegistry() {
 
   function transportForThread(threadId: string): ConversationTransport {
     return {
-      async attach(attachedThreadId) {
-        // Attachment is a replaceable owner snapshot consumed by Core during
-        // reconciliation. It is deliberately not re-broadcast as a new live
-        // event; doing both gives reconnects two semantic paths.
-        return attachThreadConversation(attachedThreadId)
-      },
+      snapshot: getThreadConversationSnapshot,
       read: getThreadEvents,
       submit(command) {
         return submitThreadCommand({
@@ -90,13 +96,14 @@ export function useCoreConversationRegistry() {
         transportListenersByThreadId.set(threadId, listeners)
         if (connectionSnapshot?.phase === 'connected') {
           listener({ type: 'connected', atIso: connectionSnapshot.connectedAtIso })
-        } else if (connectionSnapshot?.phase === 'reconnecting') {
+        } else if (connectionSnapshot?.phase === 'reconnecting' || connectionSnapshot?.phase === 'disconnected') {
           listener({
             type: 'disconnected',
             atIso: connectionSnapshot.disconnectedAtIso,
             reconnectAttempt: connectionSnapshot.reconnectAttempt,
             closeCode: connectionSnapshot.closeCode,
             closeReason: connectionSnapshot.closeReason,
+            willReconnect: connectionSnapshot.phase !== 'disconnected',
           })
         }
         return () => {
@@ -127,6 +134,10 @@ export function useCoreConversationRegistry() {
   function focus(threadId: string): void {
     focusedThreadId = threadId.trim()
     setConversationThreadSubscriptions(focusedThreadId ? [focusedThreadId] : [])
+    // A controller may have been created while another thread was focused.
+    // Replay the current transport state immediately; it must not wait for a
+    // future socket transition to learn that the shared socket is healthy.
+    if (focusedThreadId && connectionSnapshot) publishConnectionToThread(focusedThreadId, connectionSnapshot)
   }
 
   async function connect(threadId: string): Promise<void> {
@@ -183,7 +194,7 @@ export function useCoreConversationRegistry() {
   }
 
   function ingest(threadId: string, event: Parameters<ConversationController['ingestEvent']>[0]): void {
-    controllerFor(threadId).ingestEvent(event)
+    controllerFor(threadId).ingestEvent(event, event.ownerRevision)
   }
 
   function subscribeEvents(listener: (event: Parameters<ConversationController['ingestEvent']>[0]) => void): () => void {

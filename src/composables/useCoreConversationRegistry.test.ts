@@ -4,7 +4,7 @@ import { useCoreConversationRegistry } from './useCoreConversationRegistry'
 
 const mocks = vi.hoisted(() => {
   type ConnectionSnapshot = {
-    phase: 'idle' | 'connecting' | 'connected' | 'reconnecting'
+    phase: 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
     reconnectAttempt: number
     connectedAtIso: string
     disconnectedAtIso: string
@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => {
   let eventListener: ((event: CodexEvent) => void) | null = null
   let connectionListener: ((snapshot: ConnectionSnapshot) => void) | null = null
   return {
-    attach: vi.fn(async () => ({ events: [] as CodexEvent[] })),
+    snapshot: vi.fn(async () => ({ events: [] as CodexEvent[], watermark: 0 })),
     read: vi.fn(async () => [] as CodexEvent[]),
     submit: vi.fn(async (input: { clientCommandId: string }) => ({ clientCommandId: input.clientCommandId })),
     interrupt: vi.fn(async () => undefined),
@@ -43,7 +43,7 @@ const mocks = vi.hoisted(() => {
 })
 
 vi.mock('../api/codexThreadClient', () => ({
-  attachThreadConversation: mocks.attach,
+  getThreadConversationSnapshot: mocks.snapshot,
   getThreadEvents: mocks.read,
   interruptThreadTurn: mocks.interrupt,
   submitThreadCommand: mocks.submit,
@@ -85,7 +85,7 @@ describe('useCoreConversationRegistry', () => {
 
     await registry.connect('thread-b')
 
-    expect(mocks.attach).toHaveBeenCalledWith('thread-b')
+    expect(mocks.snapshot).toHaveBeenCalledWith('thread-b')
     expect(mocks.setThreadSubscriptions).toHaveBeenCalledWith(['thread-b'])
     expect(registry.stateFor('thread-b').messages).toEqual([
       expect.objectContaining({ id: 'agent:agent-b', text: '后台线程输出' }),
@@ -156,7 +156,7 @@ describe('useCoreConversationRegistry', () => {
       id: 'approval-c', type: 'approval.requested', threadId: 'thread-c', turnId: 'turn-c',
       data: { requestId: 'request-c', method: 'item/fileChange/requestApproval' },
     }))
-    mocks.read.mockClear()
+    mocks.snapshot.mockClear()
 
     mocks.connection({
       phase: 'reconnecting', reconnectAttempt: 1,
@@ -170,7 +170,7 @@ describe('useCoreConversationRegistry', () => {
     })
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(mocks.read.mock.calls).toEqual([
+    expect(mocks.snapshot.mock.calls).toEqual([
       ['thread-a'],
       ['thread-b'],
       ['thread-c'],
@@ -178,10 +178,11 @@ describe('useCoreConversationRegistry', () => {
 
     registry.focus('thread-d')
     await registry.refresh('thread-d')
-    expect(mocks.read.mock.calls).toEqual([
+    expect(mocks.snapshot.mock.calls).toEqual([
       ['thread-a'],
       ['thread-b'],
       ['thread-c'],
+      ['thread-d'],
       ['thread-d'],
     ])
     registry.dispose()
