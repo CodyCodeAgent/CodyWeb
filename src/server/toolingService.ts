@@ -1429,6 +1429,24 @@ async function runGitOptional(args: string[], cwd: string): Promise<string> {
   }
 }
 
+/**
+ * `git branch --show-current` only arrived in Git 2.22. The deployed
+ * developer hosts still include Git 2.20, while symbolic-ref has existed for
+ * much longer and deliberately returns no value for a detached HEAD.
+ */
+async function currentGitBranch(cwd: string): Promise<string> {
+  return (await runGitOptional(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd)).trim()
+}
+
+/**
+ * Keep rollback usable on Git 2.20 as well as newer clients. This is the
+ * pre-2.23 equivalent of `git restore --staged --worktree`.
+ */
+async function restoreGitPaths(cwd: string, paths: string[]): Promise<void> {
+  await runGit(['reset', 'HEAD', '--', ...paths], cwd)
+  await runGit(['checkout', '--', ...paths], cwd)
+}
+
 function runCommandWithInput(
   command: string,
   args: string[],
@@ -7033,7 +7051,7 @@ export async function getWorkspaceGitStatus(cwd: string): Promise<ToolingGitStat
   const workspace = await getGitWorkspace(cwd)
   const [statusRaw, branch, upstream] = await Promise.all([
     runGitOptional(['status', '--porcelain=v1', '-z', '--untracked-files=all'], workspace.repoRoot),
-    runGitOptional(['branch', '--show-current'], workspace.repoRoot),
+    currentGitBranch(workspace.repoRoot),
     runGitOptional(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], workspace.repoRoot),
   ])
   const files = parsePorcelainZ(statusRaw).map(statusFileFromPorcelainEntry)
@@ -7041,7 +7059,7 @@ export async function getWorkspaceGitStatus(cwd: string): Promise<ToolingGitStat
   return {
     cwd: workspace.cwd,
     repoRoot: workspace.repoRoot,
-    branch: branch.trim(),
+    branch,
     upstream: upstream.trim(),
     generatedAtIso: new Date().toISOString(),
     ...gitStatusCounts(files),
@@ -7888,7 +7906,7 @@ export async function getWorkspaceSnapshot(cwd: string): Promise<ToolingWorkspac
     : ''
   const statusFiles = parsePorcelainZ(statusRaw).map(statusFileFromPorcelainEntry)
   const statusCounts = gitStatusCounts(statusFiles)
-  const branch = workspace ? (await runGitOptional(['branch', '--show-current'], repoRoot)).trim() : ''
+  const branch = workspace ? await currentGitBranch(repoRoot) : ''
   const upstream = workspace ? (await runGitOptional(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], repoRoot)).trim() : ''
   const packageData = await readPackageScripts(repoRoot)
   const configFiles = await readWorkspaceConfigFiles(repoRoot)
@@ -8636,7 +8654,7 @@ export async function rollbackWorkspaceFile(params: {
   if (isOnlyUntracked) {
     await rm(resolve(workspace.repoRoot, relativePath), { recursive: true, force: true })
   } else {
-    await runGit(['restore', '--staged', '--worktree', '--', relativePath], workspace.repoRoot)
+    await restoreGitPaths(workspace.repoRoot, [relativePath])
   }
 
   const remainingStatus = await readStatusForPaths(workspace, [relativePath])
@@ -8706,7 +8724,7 @@ export async function rollbackWorkspaceChanges(params: {
   const trackedChangeCount = beforeEntries.length - untrackedPaths.length
 
   if (trackedChangeCount > 0) {
-    await runGit(['restore', '--staged', '--worktree', '.'], workspace.repoRoot)
+    await restoreGitPaths(workspace.repoRoot, ['.'])
   }
 
   let removedUntrackedCount = 0

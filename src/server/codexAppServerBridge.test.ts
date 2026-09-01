@@ -300,11 +300,16 @@ describe('bridge server request endpoints', () => {
           result: { decision: 'accept' },
         },
       ])
-      await expect(readJson(`${baseUrl}/codex-api/rpc`, {
+      await expect(readJsonResponse(`${baseUrl}/codex-api/rpc`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ method: 'thread/resume', params: { threadId: 'thread-restored' } }),
-      })).resolves.toEqual({ result: {} })
+      })).resolves.toMatchObject({
+        status: 403,
+        body: {
+          error: expect.stringContaining('Core conversation owner API'),
+        },
+      })
     } finally {
       middleware.dispose()
       await closeServer(server)

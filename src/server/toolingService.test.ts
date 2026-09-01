@@ -712,10 +712,12 @@ describe('toolingService', () => {
     })
 
     const listed = await listApprovalGrants(repo)
-    expect(listed.grants).toEqual([expect.objectContaining({ id: grant?.id })])
+    // Permanent grants belong to the user's runtime, so a real developer
+    // machine may legitimately have additional rows beyond this temp repo.
+    expect(listed.grants).toEqual(expect.arrayContaining([expect.objectContaining({ id: grant?.id })]))
 
     const revoked = await revokeApprovalGrant({ cwd: repo, grantId: grant?.id ?? '' })
-    expect(revoked.grants).toEqual([])
+    expect(revoked.grants).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: grant?.id })]))
     await expect(findMatchingApprovalGrant({ cwd: repo, method, subject: command })).resolves.toBeNull()
 
     const auditTrail = await listWorkspaceAuditEvents({ cwd: repo, limit: 10 })
@@ -2644,7 +2646,7 @@ describe('toolingService', () => {
 
   it('builds pull request drafts from commits ahead of a base branch', async () => {
     const repo = await createRepo()
-    const baseBranch = (await git(repo, ['branch', '--show-current'])).trim()
+    const baseBranch = (await git(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).trim()
     await git(repo, ['checkout', '-b', 'codex/pr-draft'])
     await writeFile(join(repo, 'example.txt'), 'feature change\n', 'utf8')
     await git(repo, ['add', 'example.txt'])
@@ -2675,7 +2677,7 @@ describe('toolingService', () => {
 
   it('dry-runs pull request creation and records audit evidence', async () => {
     const repo = await createRepo()
-    const baseBranch = (await git(repo, ['branch', '--show-current'])).trim()
+    const baseBranch = (await git(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).trim()
     await git(repo, ['checkout', '-b', 'codex/pr-create'])
     await writeFile(join(repo, 'example.txt'), 'ready for pr\n', 'utf8')
     await git(repo, ['add', 'example.txt'])
