@@ -27,7 +27,7 @@
     <WorkspaceCodeWorkbench v-if="isCodeView && selectedThread?.cwd" :cwd="selectedThread.cwd" :thread-id="composerThreadContextId"
       :messages="filteredMessages" @ask-code="emit('askCode', $event)">
       <template #conversation>
-        <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages" :cwd="selectedThread?.cwd ?? ''"
+        <ThreadConversation :messages="filteredMessages" :feed="selectedConversationFeed" :is-loading="isLoadingMessages" :cwd="selectedThread?.cwd ?? ''"
           :thread-title="selectedThread?.title ?? ''" :load-error="selectedMessageLoadError" :active-thread-id="composerThreadContextId"
           :scroll-state="selectedThreadScrollState" :live-overlay="liveOverlay" :pending-requests="selectedThreadServerRequests"
           :share-selection-active="conversationShareSelecting"
@@ -45,7 +45,7 @@
       </div>
     </section>
     <div v-else class="content-workbench"><div class="content-thread">
-      <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages" :cwd="selectedThread?.cwd ?? ''"
+      <ThreadConversation :messages="filteredMessages" :feed="selectedConversationFeed" :is-loading="isLoadingMessages" :cwd="selectedThread?.cwd ?? ''"
         :thread-title="selectedThread?.title ?? ''"
         :load-error="selectedMessageLoadError" :active-thread-id="composerThreadContextId" :scroll-state="selectedThreadScrollState"
         :live-overlay="liveOverlay" :pending-requests="selectedThreadServerRequests" :share-selection-active="conversationShareSelecting"
@@ -80,7 +80,7 @@ import type {
   ComposerSubmitMode,
   KnownReasoningEffort,
 } from '@codycodeagent/cody-web-core/composer'
-import type { ConversationScrollState } from '@codycodeagent/cody-web-core/conversation'
+import type { ConversationFeedEntry, ConversationScrollState } from '@codycodeagent/cody-web-core/conversation'
 import type { PromptInsertion } from '../../composables/promptLibraryRules'
 import { useLocale } from '../../composables/useLocale'
 import type { UiComposerContextKind, UiComposerPermissionMode, UiComposerSubmitAck, UiLiveOverlay, UiMessage, UiQueuedMessage, UiServerRequest, UiServerRequestReply, UiThread, WorkspaceComposerContext } from '../../types/codex'
@@ -102,7 +102,7 @@ defineProps<{
   selectedModelId: string; selectedReasoningEffort: KnownReasoningEffort | ''; collaborationModeOptions: ComposerCollaborationModeOption[]
   selectedCollaborationModeName: string; selectedPermissionMode: UiComposerPermissionMode; selectedSubmitMode: ComposerSubmitMode
   homeComposerBusyLabel: string
-  filteredMessages: UiMessage[]; isLoadingMessages: boolean; selectedThread: UiThread | null; selectedMessageLoadError: string
+  filteredMessages: UiMessage[]; selectedConversationFeed: ConversationFeedEntry[]; isLoadingMessages: boolean; selectedThread: UiThread | null; selectedMessageLoadError: string
   selectedThreadScrollState: ConversationScrollState | null; liveOverlay: UiLiveOverlay | null; selectedThreadServerRequests: UiServerRequest[]
   selectedQueuedMessages: UiQueuedMessage[]
   threadComposerBusyLabel: string; isSelectedThreadInProgress: boolean; isInterruptingTurn: boolean

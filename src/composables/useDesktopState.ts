@@ -8,7 +8,7 @@ import {
 import {
   conversationFeedFromState,
   conversationLiveOverlayFromState,
-  conversationTranscriptFromState,
+  type ConversationFeedEntry,
   type CodexEvent,
   type ConversationScrollState,
 } from '@codycodeagent/cody-web-core/conversation'
@@ -70,6 +70,35 @@ import type {
   UiThread,
   UiThreadContextUsage,
 } from '../types/codex'
+
+/**
+ * Converts only non-terminal Core feed rows for product features which deal
+ * with copyable content rather than the conversation timeline. Ordering and
+ * terminal semantics stay in `ConversationFeedEntry` and are rendered by the
+ * conversation surface directly.
+ */
+function messageRowsFromCoreFeed(feed: readonly ConversationFeedEntry[]): UiMessage[] {
+  return feed.flatMap((entry): UiMessage[] => {
+    if (entry.kind === 'message') return [entry.message]
+    if (entry.kind === 'timeline') {
+      if (entry.entry.kind === 'reasoning') {
+        return [{ id: entry.id, turnId: entry.turnId, role: 'system', text: entry.entry.text, messageType: 'reasoning' }]
+      }
+      return [{
+        id: entry.id,
+        turnId: entry.turnId,
+        role: 'system',
+        text: '',
+        messageType: `tool.${entry.entry.tool.kind}`,
+        tool: entry.entry.tool,
+      }]
+    }
+    if (entry.kind === 'plan') {
+      return [{ id: entry.id, turnId: entry.turnId, role: 'assistant', text: entry.plan.text, messageType: 'plan' }]
+    }
+    return []
+  })
+}
 
 
 export function useDesktopState() {
@@ -173,8 +202,16 @@ export function useDesktopState() {
     const threadId = selectedThreadId.value
     if (!threadId) return []
 
-    return conversationTranscriptFromState(coreConversations.stateFor(threadId)) as UiMessage[]
+    // This is a compatibility projection for surfaces that only understand
+    // message-like content (share configuration, code attachments, etc.).
+    // It deliberately excludes turn/activity rows: those are typed Core feed
+    // entries and must never be reintroduced as synthetic "Worked" or
+    // "Stopped" messages by a product renderer.
+    return messageRowsFromCoreFeed(conversationFeedFromState(coreConversations.stateFor(threadId)))
   })
+  const selectedConversationFeed = computed<ConversationFeedEntry[]>(() => (
+    conversationFeedFromState(selectedCoreConversation.value)
+  ))
   const selectedQueuedMessages = computed<UiQueuedMessage[]>(() => queuedMessagesForThread(selectedThreadId.value))
 
   function setSelectedThreadId(nextThreadId: string): void {
@@ -891,6 +928,7 @@ export function useDesktopState() {
     selectedLiveOverlay,
     selectedStructuredPlan,
     selectedCoreConversation,
+    selectedConversationFeed,
     selectedMessageLoadError,
     selectedQueuedMessages,
     selectedThreadId,

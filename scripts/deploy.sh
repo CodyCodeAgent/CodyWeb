@@ -12,6 +12,7 @@ fi
 RUNTIME_DIR="${CODY_RUNTIME_DIR:-$DEFAULT_RUNTIME_DIR}"
 ENV_FILE="$RUNTIME_DIR/service.env"
 LOCK_HASH_FILE="$RUNTIME_DIR/package-lock.sha256"
+NATIVE_CACHE_DIR="$RUNTIME_DIR/native-modules"
 cd "$PROJECT_DIR"; mkdir -p "$RUNTIME_DIR"
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -24,7 +25,56 @@ command -v npm >/dev/null || { echo "npm is required." >&2; exit 1; }
 node -e "const major=Number(process.versions.node.split('.')[0]); if(major<18) { console.error('Node.js 18+ is required.'); process.exit(1) }"
 current_hash="$(node -e "const fs=require('fs'),crypto=require('crypto'); process.stdout.write(crypto.createHash('sha256').update(fs.readFileSync('package-lock.json')).digest('hex'))")"
 installed_hash="$(test -f "$LOCK_HASH_FILE" && tr -d '[:space:]' < "$LOCK_HASH_FILE" || true)"
-if [[ ! -d node_modules || "$current_hash" != "$installed_hash" ]]; then echo "Installing locked dependencies..."; npm ci; printf '%s\n' "$current_hash" > "$LOCK_HASH_FILE"
+native_binding_cache_path() {
+  local abi version
+  abi="$(node -p 'process.versions.modules')"
+  version="$(node -p 'require("./node_modules/better-sqlite3/package.json").version')"
+  printf '%s/better-sqlite3/node-abi-%s/%s/better_sqlite3.node' "$NATIVE_CACHE_DIR" "$abi" "$version"
+}
+
+verify_better_sqlite3() {
+  node -e 'const Database=require("better-sqlite3"); const db=new Database(":memory:"); if(db.prepare("select 1 as ok").get().ok!==1) process.exit(1); db.close()'
+}
+
+cache_better_sqlite3() {
+  local source target
+  source="node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+  [[ -f "$source" ]] || return 0
+  target="$(native_binding_cache_path)"
+  mkdir -p "$(dirname "$target")"
+  install -m 755 "$source" "$target"
+}
+
+restore_cached_better_sqlite3() {
+  local source target
+  source="$(native_binding_cache_path)"
+  target="node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+  if [[ ! -f "$source" ]]; then
+    echo "Native dependency installation failed and no matching better-sqlite3 cache exists at $source." >&2
+    echo "Install with a compatible Python/GLIBC once to seed the cache; refusing to use a binary from another ABI or package version." >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$target")"
+  install -m 755 "$source" "$target"
+  verify_better_sqlite3
+}
+
+install_locked_dependencies() {
+  if npm ci; then
+    verify_better_sqlite3
+    cache_better_sqlite3
+    return 0
+  fi
+
+  echo "npm ci could not build the platform-native dependency; retrying JavaScript install with a verified local native cache..." >&2
+  npm ci --ignore-scripts
+  restore_cached_better_sqlite3
+}
+
+if [[ ! -d node_modules || "$current_hash" != "$installed_hash" ]]; then
+  echo "Installing locked dependencies..."
+  install_locked_dependencies
+  printf '%s\n' "$current_hash" > "$LOCK_HASH_FILE"
 else echo "Dependencies are already initialized for the current lockfile."; fi
 
 echo "Building production bundles..."; npm run build

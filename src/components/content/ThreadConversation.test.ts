@@ -2,6 +2,7 @@
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
+import type { ConversationFeedEntry } from '@codycodeagent/cody-web-core/conversation'
 import ThreadConversation from './ThreadConversation.vue'
 import type { UiLiveOverlay, UiMessage } from '../../types/codex'
 import { useTheme } from '../../theme/useTheme'
@@ -33,6 +34,7 @@ function message(index: number, overrides: Partial<UiMessage> = {}): UiMessage {
 
 function mountConversation(input: {
   messages?: UiMessage[]
+  feed?: ConversationFeedEntry[]
   liveOverlay?: UiLiveOverlay | null
   isLoading?: boolean
   scrollState?: {
@@ -46,6 +48,7 @@ function mountConversation(input: {
   return mount(ThreadConversation, {
     props: {
       messages: input.messages ?? [],
+      feed: input.feed,
       pendingRequests: [],
       liveOverlay: input.liveOverlay ?? null,
       isLoading: input.isLoading ?? false,
@@ -227,6 +230,23 @@ describe('ThreadConversation', () => {
     expect(receipt.findAll('.system-event-divider-line')).toHaveLength(2)
     expect(receipt.find('details').exists()).toBe(false)
     expect(receipt.find('summary').exists()).toBe(false)
+  })
+
+  it('uses the Core feed order and keeps terminal rows out of the message stream', () => {
+    const feed: ConversationFeedEntry[] = [
+      { id: 'user-1', kind: 'message', turnId: 'turn-1', message: message(1, { role: 'user', text: 'First' }) },
+      { id: 'assistant-1', kind: 'message', turnId: 'turn-1', message: message(2, { text: 'Answer' }) },
+      { id: 'worked-1', kind: 'turn', turnId: 'turn-1', status: 'completed', durationMs: 1_000, error: '' },
+      { id: 'user-2', kind: 'message', turnId: 'turn-2', message: message(3, { role: 'user', text: 'Second' }) },
+      { id: 'stopped-2', kind: 'turn', turnId: 'turn-2', status: 'interrupted', durationMs: null, error: '' },
+    ]
+    const wrapper = mountConversation({ feed })
+
+    expect(wrapper.findAll('[data-testid="conversation-message"]')).toHaveLength(3)
+    expect(wrapper.findAll('[data-testid="turn-receipt"]')).toHaveLength(1)
+    expect(wrapper.findAll('[data-turn-status="interrupted"]')).toHaveLength(1)
+    expect(wrapper.find('[data-message-type="worked"]').exists()).toBe(false)
+    expect(wrapper.text()).toMatch(/First[\s\S]*Answer[\s\S]*Worked for 1s[\s\S]*Second[\s\S]*本次回复已停止/)
   })
 
   it('keeps the full native transcript locally and reveals history in Core-sized windows', async () => {

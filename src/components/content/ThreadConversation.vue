@@ -196,7 +196,30 @@
         <p class="conversation-history-window">{{ visibleMessageWindowLabel }}</p>
       </li>
 
-      <template v-for="(message, renderedMessageIndex) in visibleMessages" :key="message.id">
+      <template v-for="(row, renderedRowIndex) in visibleRows" :key="row.id">
+        <li
+          v-if="row.kind === 'turn'"
+          class="conversation-item conversation-item-terminal"
+          :data-turn-status="row.status"
+        >
+          <div class="message-row"><div class="message-stack">
+            <div v-if="row.status === 'completed'" class="system-event-divider turn-receipt" data-testid="turn-receipt" role="status">
+              <span class="system-event-divider-heading">
+                <span class="system-event-divider-line" aria-hidden="true" />
+                <strong>{{ turnEntryHeadline(row.durationMs) }}</strong>
+                <span class="system-event-divider-line" aria-hidden="true" />
+              </span>
+            </div>
+            <div v-else class="system-event-divider turn-terminal-state" role="status">
+              <span class="system-event-divider-heading">
+                <span class="system-event-divider-line" aria-hidden="true" />
+                <strong>{{ row.status === 'failed' ? (row.error || '本次回复失败') : '本次回复已停止' }}</strong>
+                <span class="system-event-divider-line" aria-hidden="true" />
+              </span>
+            </div>
+          </div></div>
+        </li>
+        <template v-else v-for="message in [row.message]" :key="message.id">
         <li
           v-if="shouldRenderConversationMessage(message)"
           class="conversation-item"
@@ -228,10 +251,10 @@
             v-if="messageUsesIdentityLane(message) && message.role !== 'user'"
             class="message-identity-slot"
             data-role="assistant"
-            :data-visible="shouldShowMessageIdentity(message, renderedMessageIndex)"
+            :data-visible="shouldShowMessageIdentity(message, messageRenderIndex(renderedRowIndex))"
           >
             <MessageIdentityAvatar
-              v-if="shouldShowMessageIdentity(message, renderedMessageIndex)"
+              v-if="shouldShowMessageIdentity(message, messageRenderIndex(renderedRowIndex))"
               role="assistant"
               :growth="codyGrowth"
               :is-loading="isCodyGrowthLoading"
@@ -362,14 +385,14 @@
               </article>
 
               <button
-                v-if="shouldShowCopyButton(message, renderedMessageIndex)"
+                v-if="shouldShowCopyButton(message, messageRenderIndex(renderedRowIndex))"
                 data-testid="conversation-copy-button"
                 class="message-copy-button"
                 type="button"
                 :aria-label="copyButtonAriaLabel(message.id)"
                 :title="copyButtonTitle(message.id)"
                 :data-copied="copiedMessageId === message.id"
-                @click="copyMessage(message, renderedMessageIndex)"
+                @click="copyMessage(message, messageRenderIndex(renderedRowIndex))"
               >
                 <IconTablerCopy class="message-copy-icon" />
               </button>
@@ -379,10 +402,10 @@
             v-if="messageUsesIdentityLane(message) && message.role === 'user'"
             class="message-identity-slot"
             data-role="user"
-            :data-visible="shouldShowMessageIdentity(message, renderedMessageIndex)"
+            :data-visible="shouldShowMessageIdentity(message, messageRenderIndex(renderedRowIndex))"
           >
             <MessageIdentityAvatar
-              v-if="shouldShowMessageIdentity(message, renderedMessageIndex)"
+              v-if="shouldShowMessageIdentity(message, messageRenderIndex(renderedRowIndex))"
               role="user"
               :growth="codyGrowth"
               :is-loading="isCodyGrowthLoading"
@@ -391,6 +414,7 @@
           </div>
         </div>
         </li>
+        </template>
       </template>
       <li v-if="liveOverlay" class="conversation-item conversation-item-overlay">
         <div class="message-row">
@@ -489,6 +513,7 @@ import {
   MESSAGE_HISTORY_PAGE_SIZE,
   buildConversationScrollMetrics,
   buildConversationScrollState,
+  formatTurnDuration,
   hiddenMessageCount as coreHiddenMessageCount,
   nextVisibleMessageCount,
   normalizedConversationBottomLockFrames,
@@ -498,6 +523,7 @@ import {
   shouldPreserveConversationViewport,
   shouldRestoreConversationToBottom,
   visibleMessageStartIndex,
+  type ConversationFeedEntry,
   type ConversationScrollState,
 } from '@codycodeagent/cody-web-core/conversation'
 import type { UiLiveOverlay, UiMessage, UiServerRequest, UiServerRequestReply } from '../../types/codex'
@@ -561,10 +587,38 @@ import { useLocale } from '../../composables/useLocale'
 import { useCodyGrowth } from '../../composables/useCodyGrowth'
 import { useTheme } from '../../theme/useTheme'
 
+type ConversationDisplayRow =
+  | { id: string; kind: 'message'; message: UiMessage }
+  | { id: string; kind: 'turn'; status: 'completed' | 'failed' | 'interrupted'; durationMs: number | null; error: string }
+
+function messageRowFromFeedEntry(entry: ConversationFeedEntry): ConversationDisplayRow | null {
+  if (entry.kind === 'message') return { id: entry.id, kind: 'message', message: entry.message }
+  if (entry.kind === 'timeline') {
+    if (entry.entry.kind === 'reasoning') {
+      return { id: entry.id, kind: 'message', message: { id: entry.id, turnId: entry.turnId, role: 'system', text: entry.entry.text, messageType: 'reasoning' } }
+    }
+    return {
+      id: entry.id,
+      kind: 'message',
+      message: { id: entry.id, turnId: entry.turnId, role: 'system', text: '', messageType: `tool.${entry.entry.tool.kind}`, tool: entry.entry.tool },
+    }
+  }
+  if (entry.kind === 'plan') {
+    return { id: entry.id, kind: 'message', message: { id: entry.id, turnId: entry.turnId, role: 'assistant', text: entry.plan.text, messageType: 'plan' } }
+  }
+  if (entry.kind === 'turn') {
+    return { id: entry.id, kind: 'turn', status: entry.status, durationMs: entry.durationMs, error: entry.error }
+  }
+  // Approval cards and live activity already have dedicated Core-derived
+  // surfaces in this product.  Do not append them a second time to the feed.
+  return null
+}
+
 const props = defineProps<{
   cwd?: string
   threadTitle?: string
   messages: UiMessage[]
+  feed?: ConversationFeedEntry[]
   pendingRequests: UiServerRequest[]
   liveOverlay: UiLiveOverlay | null
   isLoading: boolean
@@ -630,19 +684,28 @@ const hasLiveOverlayDetails = computed(() => {
 })
 const liveOverlayDetailsLabel = computed(() => liveOverlayDetailsToggleLabel(isLiveOverlayExpanded.value))
 const conversationRequestCards = computed(() => buildServerRequestCards(props.pendingRequests))
+const displayRows = computed<ConversationDisplayRow[]>(() => {
+  if (!props.feed) return props.messages.map((message) => ({ id: message.id, kind: 'message' as const, message }))
+  return props.feed.flatMap((entry) => {
+    const row = messageRowFromFeedEntry(entry)
+    return row ? [row] : []
+  })
+})
+const displayMessages = computed<UiMessage[]>(() => displayRows.value.flatMap((row) => row.kind === 'message' ? [row.message] : []))
 const normalizedVisibleMessagesCount = computed(() => normalizedVisibleMessageCount(
-  props.messages.length,
+  displayRows.value.length,
   requestedVisibleMessageCount.value,
 ))
 const visibleMessagesStartIndex = computed(() => visibleMessageStartIndex(
-  props.messages.length,
+  displayRows.value.length,
   normalizedVisibleMessagesCount.value,
 ))
 const hiddenMessagesCount = computed(() => coreHiddenMessageCount(
-  props.messages.length,
+  displayRows.value.length,
   normalizedVisibleMessagesCount.value,
 ))
-const visibleMessages = computed(() => props.messages.slice(visibleMessagesStartIndex.value))
+const visibleRows = computed(() => displayRows.value.slice(visibleMessagesStartIndex.value))
+const visibleMessages = computed(() => visibleRows.value.flatMap((row) => row.kind === 'message' ? [row.message] : []))
 const visibleFileChangeGroups = computed(() => buildFileChangeMessageGroups(visibleMessages.value))
 const fileChangeGroupsByHeadId = computed<Record<string, FileChangeMessageGroup<UiMessage>>>(() => Object.fromEntries(
   visibleFileChangeGroups.value.map((group) => [group.headId, group]),
@@ -731,12 +794,12 @@ function outboxStatusLabel(message: UiMessage): string {
 }
 const historyButtonLabel = computed(() => historyPageButtonLabel(hiddenMessagesCount.value, MESSAGE_HISTORY_PAGE_SIZE))
 const visibleMessageWindowLabel = computed(() => visibleMessageWindowSummary(
-  props.messages.length,
+  displayRows.value.length,
   normalizedVisibleMessagesCount.value,
 ))
 const showBlockingLoading = computed(() => shouldShowBlockingConversationLoading({
   isLoading: props.isLoading,
-  messageCount: props.messages.length,
+  messageCount: displayRows.value.length,
   pendingRequestCount: props.pendingRequests.length,
   hasLiveOverlay: props.liveOverlay !== null,
 }))
@@ -745,27 +808,27 @@ const threadLoadingLabel = computed(
 )
 const showRefreshStatus = computed(() => shouldShowConversationRefreshStatus({
   isLoading: props.isLoading,
-  messageCount: props.messages.length,
+  messageCount: displayRows.value.length,
   pendingRequestCount: props.pendingRequests.length,
   hasLiveOverlay: props.liveOverlay !== null,
 }))
 const showBlockingLoadError = computed(() => shouldShowBlockingConversationLoadError({
   isLoading: props.isLoading,
   loadError: props.loadError,
-  messageCount: props.messages.length,
+  messageCount: displayRows.value.length,
   pendingRequestCount: props.pendingRequests.length,
   hasLiveOverlay: props.liveOverlay !== null,
 }))
 const showInlineLoadError = computed(() => shouldShowInlineConversationLoadError({
   isLoading: props.isLoading,
   loadError: props.loadError,
-  messageCount: props.messages.length,
+  messageCount: displayRows.value.length,
   pendingRequestCount: props.pendingRequests.length,
   hasLiveOverlay: props.liveOverlay !== null,
 }))
 const showEmptyConversation = computed(() =>
   !showBlockingLoadError.value &&
-  props.messages.length === 0 &&
+  displayRows.value.length === 0 &&
   props.pendingRequests.length === 0 &&
   props.liveOverlay === null,
 )
@@ -774,7 +837,7 @@ const showScrollToBottomButton = computed(() => {
   return shouldShowThreadScrollToBottomButton({
     activeThreadId: props.activeThreadId,
     isLoading: props.isLoading,
-    messageCount: props.messages.length,
+    messageCount: displayRows.value.length,
     pendingRequestCount: props.pendingRequests.length,
     hasLiveOverlay: props.liveOverlay !== null,
     scrollState: { scrollTop: 0, scrollRatio: 0, isAtBottom: isFollowingBottom.value },
@@ -785,12 +848,19 @@ function toAbsoluteMessageIndex(renderedMessageIndex: number): number {
   return visibleMessagesStartIndex.value + renderedMessageIndex
 }
 
+function messageRenderIndex(renderedRowIndex: number): number {
+  return visibleRows.value
+    .slice(0, renderedRowIndex)
+    .filter((row): row is Extract<ConversationDisplayRow, { kind: 'message' }> => row.kind === 'message')
+    .length
+}
+
 function shouldShowCopyButton(message: UiMessage, renderedMessageIndex: number): boolean {
-  return shouldShowThreadCopyButton(props.messages, message, toAbsoluteMessageIndex(renderedMessageIndex))
+  return shouldShowThreadCopyButton(displayMessages.value, message, toAbsoluteMessageIndex(renderedMessageIndex))
 }
 
 function buildCopyTextAt(message: UiMessage, renderedMessageIndex: number): string {
-  return buildThreadCopyTextAt(props.messages, message, toAbsoluteMessageIndex(renderedMessageIndex))
+  return buildThreadCopyTextAt(displayMessages.value, message, toAbsoluteMessageIndex(renderedMessageIndex))
 }
 
 function defaultToolTimelineOpen(message: UiMessage): boolean {
@@ -990,7 +1060,7 @@ async function revealEarlierMessages(): Promise<void> {
   isRestoringEarlierMessages = true
   isFollowingBottom.value = false
   requestedVisibleMessageCount.value = nextVisibleMessageCount(
-    props.messages.length,
+    displayRows.value.length,
     normalizedVisibleMessagesCount.value,
     MESSAGE_HISTORY_PAGE_SIZE,
   )
@@ -1115,7 +1185,7 @@ async function scheduleScrollRestore(): Promise<void> {
 }
 
 watch(
-  () => props.messages,
+  displayRows,
   async () => {
     if (props.isLoading) return
     await scheduleScrollRestore()
@@ -1264,6 +1334,10 @@ function turnReceiptHeadline(message: UiMessage): string {
   if (typeof payload?.label === 'string') return payload.label
   const [headline] = message.text.split(' · ')
   return headline || message.text
+}
+
+function turnEntryHeadline(durationMs: number | null): string {
+  return durationMs === null ? 'Answered' : `Worked for ${formatTurnDuration(durationMs)}`
 }
 
 </script>
