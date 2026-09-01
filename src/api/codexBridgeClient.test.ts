@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   fetchDirectoryListing,
-  fetchPendingServerRequests,
   respondServerRequest,
   uploadLocalImage,
 } from './codexBridgeClient'
@@ -46,20 +45,6 @@ describe('codex bridge client', () => {
         result: { ok: true },
       }),
     }))
-  })
-
-  it('reads pending server requests and tolerates malformed payloads', async () => {
-    mockFetch(new Response(JSON.stringify({
-      data: [
-        { id: 1 },
-        { id: 2 },
-      ],
-    }), { status: 200 }))
-
-    await expect(fetchPendingServerRequests()).resolves.toEqual([{ id: 1 }, { id: 2 }])
-
-    mockFetch(new Response(JSON.stringify({ data: null }), { status: 200 }))
-    await expect(fetchPendingServerRequests()).resolves.toEqual([])
   })
 
   it('normalizes directory listings and drops malformed entries', async () => {

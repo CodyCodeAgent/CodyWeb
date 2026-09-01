@@ -53,17 +53,6 @@ export async function respondServerRequest(body: ServerRequestReplyBody): Promis
   })
 }
 
-export async function fetchPendingServerRequests(): Promise<unknown[]> {
-  const { payload } = await fetchCodexJson('/codex-api/server-requests/pending', {
-    method: 'server-requests/pending',
-    networkErrorMessage: 'Pending server requests failed before request was sent',
-    httpErrorMessage: 'Pending server requests failed',
-  })
-  const record = asRecord(payload)
-  const data = record?.data
-  return Array.isArray(data) ? data : []
-}
-
 export async function fetchDirectoryListing(path: string): Promise<UiDirectoryListing> {
   const normalizedPath = path.trim()
 
