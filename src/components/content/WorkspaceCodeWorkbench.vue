@@ -188,7 +188,7 @@
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchWorkspaceDiff, fetchWorkspaceFile, fetchWorkspaceFiles, searchWorkspace } from '../../api/codexWorkspaceResourcesClient'
-import { buildDiffReview, type UiDiffLineKind, type UiDiffReviewFile } from '../../composables/useDiffReview'
+import { buildDiffReview, buildDiffReviewFromPatches, type UiDiffLineKind, type UiDiffReviewFile } from '../../composables/useDiffReview'
 import type { UiMessage, UiWorkspaceCodeTab, UiWorkspaceFileContent, UiWorkspaceFileEntry, UiWorkspaceLocation, UiWorkspaceSearchItem, UiWorkspaceSearchScope, WorkspaceComposerContext } from '../../types/codex'
 import IconTablerChevronLeft from '../icons/IconTablerChevronLeft.vue'
 import IconTablerFolderOpen from '../icons/IconTablerFolderOpen.vue'
@@ -253,10 +253,13 @@ let searchController: AbortController | null = null
 let chatMediaQuery: MediaQueryList | null = null
 let navigatorMediaQuery: MediaQueryList | null = null
 
-const fallbackMessages = ref<UiMessage[]>([])
+const fallbackPatch = ref('')
 const isLoadingFallbackDiff = ref(false)
 const diffReview = computed(() => {
-  const review = buildDiffReview([...props.messages, ...fallbackMessages.value])
+  const transcriptReview = buildDiffReview(props.messages)
+  const review = transcriptReview.files.length > 0
+    ? transcriptReview
+    : buildDiffReviewFromPatches(fallbackPatch.value.trim() ? [{ id: 'workspace-diff-fallback', patch: fallbackPatch.value }] : [])
   return {
     ...review,
     files: review.files.map((file) => ({
@@ -466,13 +469,15 @@ async function openRelativePath(rawPath: string): Promise<void> {
 }
 
 async function loadFallbackDiff(): Promise<void> {
-  if (buildDiffReview(props.messages).files.length > 0) return
+  if (buildDiffReview(props.messages).files.length > 0) {
+    fallbackPatch.value = ''
+    return
+  }
   isLoadingFallbackDiff.value = true
   try {
     const snapshot = await fetchWorkspaceDiff(props.cwd)
-    if (!snapshot.patch.trim()) return
-    fallbackMessages.value = [{ id: 'workspace-diff-fallback', role: 'system', text: '', tool: { kind: 'fileChange', title: 'Workspace diff', status: 'completed', summary: 'Workspace changes', details: [], output: snapshot.patch } }]
-  } catch { fallbackMessages.value = [] }
+    fallbackPatch.value = snapshot.patch.trim()
+  } catch { fallbackPatch.value = '' }
   finally { isLoadingFallbackDiff.value = false }
 }
 

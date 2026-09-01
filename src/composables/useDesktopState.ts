@@ -303,13 +303,6 @@ export function useDesktopState() {
     }
   }
 
-  function setThreadInProgress(threadId: string, nextInProgress: boolean): void {
-    const nextState = updateThreadBooleanState(inProgressById.value, threadId, nextInProgress)
-    if (nextState === inProgressById.value) return
-    inProgressById.value = nextState
-    applyThreadFlags()
-  }
-
   // Sidebar activity is a projection of Core state, including state replaced
   // by a native history refresh. It must never be advanced independently by
   // an HTTP acknowledgement or a product event handler.
@@ -583,12 +576,10 @@ export function useDesktopState() {
 
   async function compactThreadById(threadId: string): Promise<void> {
     try {
-      setThreadInProgress(threadId, true)
       await compactThread(threadId)
       await coreConversations.refresh(threadId)
       await loadThreads()
     } catch (unknownError) {
-      setThreadInProgress(threadId, false)
       const errorMessage = unknownError instanceof Error ? unknownError.message : 'Failed to compact thread'
       error.value = errorMessage
     }

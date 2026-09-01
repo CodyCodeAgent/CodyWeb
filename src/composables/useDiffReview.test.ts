@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildDiffReview, buildSplitDiffRows, sliceDiffHunkLines } from './useDiffReview'
+import { buildDiffReview, buildDiffReviewFromPatches, buildSplitDiffRows, sliceDiffHunkLines } from './useDiffReview'
 import type { UiMessage } from '../types/codex'
 
 function fileChangeMessage(id: string, output: string, details: string[] = []): UiMessage {
@@ -20,6 +20,16 @@ function fileChangeMessage(id: string, output: string, details: string[] = []): 
 }
 
 describe('useDiffReview', () => {
+  it('builds a workspace-snapshot review without manufacturing a conversation message', () => {
+    const review = buildDiffReviewFromPatches([{
+      id: 'workspace-snapshot',
+      patch: ['diff --git a/src/example.ts b/src/example.ts', '--- a/src/example.ts', '+++ b/src/example.ts', '@@ -1 +1 @@', '-old', '+new'].join('\n'),
+    }])
+
+    expect(review.files).toHaveLength(1)
+    expect(review.files[0]).toMatchObject({ filePath: 'src/example.ts', messageIds: ['workspace-snapshot'] })
+  })
+
   it('parses file and hunk structure from unified diffs', () => {
     const review = buildDiffReview([
       fileChangeMessage(

@@ -1,4 +1,4 @@
-import type { UiMessage, UiToolTimelineEntry } from '../types/codex'
+import type { UiMessage } from '../types/codex'
 
 export type UiDiffLineKind = 'add' | 'remove' | 'context' | 'meta'
 
@@ -66,6 +66,12 @@ type MutableDiffFile = UiDiffReviewFile & {
   patchLines: string[]
 }
 
+type DiffPatchSource = {
+  id: string
+  patch: string
+  fallbackDetails?: string[]
+}
+
 function stripDiffPath(value: string): string {
   const trimmed = value.trim()
   if (trimmed === '/dev/null') return trimmed
@@ -73,8 +79,8 @@ function stripDiffPath(value: string): string {
   return trimmed
 }
 
-function readFallbackPaths(tool: UiToolTimelineEntry): string[] {
-  return tool.details
+function readFallbackPaths(details: readonly string[]): string[] {
+  return details
     .map((detail) => {
       if (detail.startsWith('status:')) return ''
       const separatorIndex = detail.indexOf(': ')
@@ -93,9 +99,9 @@ function statusFromDetailLabel(label: string): string {
   return 'modified'
 }
 
-function fallbackFilesFromDetails(tool: UiToolTimelineEntry, messageId: string): MutableDiffFile[] {
+function fallbackFilesFromDetails(details: readonly string[], messageId: string): MutableDiffFile[] {
   const files: MutableDiffFile[] = []
-  for (const detail of tool.details) {
+  for (const detail of details) {
     const trimmed = detail.trim()
     if (!trimmed || trimmed.toLowerCase().startsWith('status:')) continue
 
@@ -407,17 +413,16 @@ function mergeFile(target: UiDiffReviewFile, source: UiDiffReviewFile): UiDiffRe
   }
 }
 
-export function buildDiffReview(messages: UiMessage[]): UiDiffReview {
+function buildDiffReviewFromSources(sources: readonly DiffPatchSource[]): UiDiffReview {
   const byPath = new Map<string, UiDiffReviewFile>()
 
-  for (const message of messages) {
-    if (message.tool?.kind !== 'fileChange') continue
-    const parsedFiles = message.tool.output?.trim()
-      ? parseUnifiedPatch(message.tool.output, message.id, readFallbackPaths(message.tool))
-      : fallbackFilesFromDetails(message.tool, message.id)
+  for (const source of sources) {
+    const parsedFiles = source.patch.trim()
+      ? parseUnifiedPatch(source.patch, source.id, readFallbackPaths(source.fallbackDetails ?? []))
+      : []
     const filesForMessage = parsedFiles.length > 0
       ? parsedFiles
-      : fallbackFilesFromDetails(message.tool, message.id)
+      : fallbackFilesFromDetails(source.fallbackDetails ?? [], source.id)
 
     for (const file of filesForMessage) {
       const immutableFile: UiDiffReviewFile = {
@@ -454,4 +459,22 @@ export function buildDiffReview(messages: UiMessage[]): UiDiffReview {
       patch: files.map((file) => file.patch).filter(Boolean).join('\n\n'),
     },
   }
+}
+
+/** Builds a review from Core-owned file-change transcript entries. */
+export function buildDiffReview(messages: UiMessage[]): UiDiffReview {
+  return buildDiffReviewFromSources(messages.flatMap((message) => {
+    if (message.tool?.kind !== 'fileChange') return []
+    return [{
+      id: message.id,
+      patch: message.tool.output ?? '',
+      fallbackDetails: message.tool.details,
+    }]
+  }))
+}
+
+/** Builds an inspection-only review from a workspace snapshot, without
+ * manufacturing a conversation message or merging it into the transcript. */
+export function buildDiffReviewFromPatches(patches: readonly DiffPatchSource[]): UiDiffReview {
+  return buildDiffReviewFromSources(patches)
 }
