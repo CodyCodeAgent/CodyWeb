@@ -1,19 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   notificationFromProductNotification,
-  notificationFromRpcNotification,
+  notificationFromConversationEvent,
   shouldSendBrowserNotification,
   type BrowserNotificationEvent,
 } from './useBrowserNotifications'
-import type { ProductNotification, RpcNotification } from '../api/codexRealtimeClient'
-
-function buildNotification(method: string, params: unknown): RpcNotification {
-  return {
-    method,
-    params,
-    atIso: '2026-07-05T09:30:00.000Z',
-  }
-}
+import type { ProductNotification } from '../api/codexRealtimeClient'
 
 function buildProductNotification(overrides: Partial<ProductNotification> = {}): ProductNotification {
   return {
@@ -30,16 +22,12 @@ function buildProductNotification(overrides: Partial<ProductNotification> = {}):
   }
 }
 
-describe('notificationFromRpcNotification', () => {
-  it('maps server requests to approval notifications', () => {
-    const event = notificationFromRpcNotification(buildNotification('server/request', {
-      id: 12,
-      method: 'item/commandExecution/requestApproval',
-      params: {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-      },
-    }))
+describe('notificationFromConversationEvent', () => {
+  it('maps Core approval events to approval notifications', () => {
+    const event = notificationFromConversationEvent({
+      id: 'request-12', type: 'approval.requested', threadId: 'thread-1', turnId: 'turn-1',
+      atIso: '2026-07-05T09:30:00.000Z', data: { method: 'item/commandExecution/requestApproval' },
+    })
 
     expect(event).toMatchObject({
       kind: 'approval',
@@ -47,21 +35,14 @@ describe('notificationFromRpcNotification', () => {
       severity: 'warning',
     })
     expect(event?.body).toContain('item/commandExecution/requestApproval')
-    expect(event?.sourceId).toContain('thread-1')
-    expect(event?.sourceId).toContain('turn-1')
+    expect(event?.sourceId).toBe('request-12')
   })
 
-  it('maps failed completed turns to danger notifications', () => {
-    const event = notificationFromRpcNotification(buildNotification('turn/completed', {
-      turn: {
-        id: 'turn-7',
-        threadId: 'thread-7',
-        status: 'failed',
-        error: {
-          message: 'Typecheck failed',
-        },
-      },
-    }))
+  it('maps terminal Core events without reparsing raw protocol', () => {
+    const event = notificationFromConversationEvent({
+      id: 'failed-7', type: 'turn.failed', threadId: 'thread-7', turnId: 'turn-7',
+      atIso: '2026-07-05T09:30:00.000Z', data: { error: 'Typecheck failed' },
+    })
 
     expect(event).toMatchObject({
       kind: 'turn-failed',
@@ -71,14 +52,11 @@ describe('notificationFromRpcNotification', () => {
     })
   })
 
-  it('keeps successful turn completions for the notification center', () => {
-    const event = notificationFromRpcNotification(buildNotification('turn/completed', {
-      turn: {
-        id: 'turn-9',
-        threadId: 'thread-9',
-        status: 'completed',
-      },
-    }))
+  it('keeps successful Core turn completions for the notification center', () => {
+    const event = notificationFromConversationEvent({
+      id: 'done-9', type: 'turn.completed', threadId: 'thread-9', turnId: 'turn-9',
+      atIso: '2026-07-05T09:30:00.000Z', data: {},
+    })
 
     expect(event).toMatchObject({
       kind: 'turn-completed',
@@ -87,38 +65,11 @@ describe('notificationFromRpcNotification', () => {
     })
   })
 
-  it('only emits rate-limit notifications for high usage', () => {
-    const lowEvent = notificationFromRpcNotification(buildNotification('account/rateLimits/updated', {
-      rateLimits: {
-        primary: { usedPercent: 71 },
-      },
-    }))
-    const highEvent = notificationFromRpcNotification(buildNotification('account/rateLimits/updated', {
-      rateLimits: {
-        primary: { usedPercent: 91.4 },
-      },
-    }))
-
-    expect(lowEvent).toBeNull()
-    expect(highEvent).toMatchObject({
-      kind: 'rate-limit',
-      body: 'Codex usage is at 91%.',
-      severity: 'warning',
-    })
-  })
-
-  it('keeps upstream transport diagnostics out of the product notification center', () => {
-    expect(notificationFromRpcNotification(buildNotification('error', {
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-      message: 'Reconnecting... 2/5',
-    }))).toBeNull()
-
-    expect(notificationFromRpcNotification(buildNotification('error', {
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-      message: 'Reconnecting... 5/5',
-    }))).toBeNull()
+  it('keeps unrelated Core diagnostics out of the product notification center', () => {
+    expect(notificationFromConversationEvent({
+      id: 'activity-1', type: 'turn.activity', threadId: 'thread-1', turnId: 'turn-1',
+      atIso: '2026-07-05T09:30:00.000Z', data: { label: 'Reconnecting... 2/5' },
+    })).toBeNull()
   })
 })
 

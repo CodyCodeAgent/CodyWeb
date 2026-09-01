@@ -5,12 +5,6 @@ import {
   type ReconnectingSocket,
 } from '@codycodeagent/cody-web-core/client'
 
-export type RpcNotification = {
-  method: string
-  params: unknown
-  atIso: string
-}
-
 export type ProductNotification = {
   id: string
   kind: string
@@ -40,11 +34,6 @@ type BridgeWebSocketMessage =
       atIso?: string
     }
   | {
-      type: 'rpc'
-      notification?: unknown
-      atIso?: string
-    }
-  | {
       type: 'product'
       notification?: unknown
       atIso?: string
@@ -56,10 +45,6 @@ type BridgeWebSocketMessage =
     }
 
 type ParsedBridgeWebSocketMessage =
-  | {
-      type: 'rpc'
-      notification: RpcNotification
-    }
   | {
       type: 'product'
       notification: ProductNotification
@@ -124,22 +109,6 @@ export function bridgeWebSocketUrl(windowRef: Pick<Window, 'location'>): string 
   return `${protocol}//${windowRef.location.host}/codex-api/ws`
 }
 
-export function normalizeRpcNotification(value: unknown, fallbackAtIso = defaultNowIso()): RpcNotification | null {
-  const record = asRecord(value)
-  if (!record) return null
-  if (typeof record.method !== 'string' || record.method.length === 0) return null
-
-  const atIso = typeof record.atIso === 'string' && record.atIso.length > 0
-    ? record.atIso
-    : fallbackAtIso
-
-  return {
-    method: record.method,
-    params: record.params ?? null,
-    atIso,
-  }
-}
-
 export function normalizeProductNotification(
   value: unknown,
   fallbackCreatedAtIso = defaultNowIso(),
@@ -180,21 +149,13 @@ export function parseBridgeWebSocketMessage(
 ): ParsedBridgeWebSocketMessage | null {
   try {
     const parsed = JSON.parse(String(rawData)) as BridgeWebSocketMessage
-    if (parsed.type === 'rpc') {
-      const notification = normalizeRpcNotification({
-        ...(asRecord(parsed.notification) ?? {}),
-        atIso: parsed.atIso,
-      }, nowIso())
-      return notification ? { type: 'rpc', notification } : null
-    }
-
     if (parsed.type === 'product') {
       const notification = normalizeProductNotification(parsed.notification, nowIso())
       return notification ? { type: 'product', notification } : null
     }
 
     if (parsed.type === 'conversation') {
-      const event = asRecord(parsed.event)
+      const event = parsed.event && typeof parsed.event === 'object' ? parsed.event as Record<string, unknown> : null
       if (
         event && typeof event.id === 'string' && typeof event.type === 'string' &&
         typeof event.threadId === 'string' && typeof event.atIso === 'string' && asRecord(event.data)
@@ -210,10 +171,10 @@ export function parseBridgeWebSocketMessage(
 }
 
 export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = {}) {
-  const rpcNotificationListeners = new Set<(value: RpcNotification) => void>()
   const productNotificationListeners = new Set<(value: ProductNotification) => void>()
   const connectionListeners = new Set<(value: RealtimeConnectionSnapshot) => void>()
   const conversationEventListeners = new Set<(value: CodexEvent) => void>()
+  const subscribedConversationThreadIds = new Set<string>()
   let bridgeSocket: ReconnectingSocket | null = null
   let connectionSnapshot = initialConnectionSnapshot()
   let hasConnected = false
@@ -223,7 +184,7 @@ export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = 
   const nowIso = options.nowIso ?? defaultNowIso
 
   function hasBridgeSocketListeners(): boolean {
-    return rpcNotificationListeners.size > 0 || productNotificationListeners.size > 0 || conversationEventListeners.size > 0 || connectionListeners.size > 0
+    return productNotificationListeners.size > 0 || conversationEventListeners.size > 0 || connectionListeners.size > 0
   }
 
   function publishConnection(patch: Partial<RealtimeConnectionSnapshot>): void {
@@ -244,18 +205,18 @@ export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = 
     const message = parseBridgeWebSocketMessage(rawData, nowIso)
     if (!message) return
 
-    if (message.type === 'rpc') {
-      for (const listener of rpcNotificationListeners) {
-        listener(message.notification)
-      }
-      return
-    }
-
     if (message.type === 'product') {
       for (const listener of productNotificationListeners) listener(message.notification)
       return
     }
     for (const listener of conversationEventListeners) listener(message.event)
+  }
+
+  function publishConversationSubscription(): void {
+    bridgeSocket?.send(JSON.stringify({
+      type: 'conversation.subscribe',
+      threadIds: [...subscribedConversationThreadIds],
+    }))
   }
 
   function ensureBridgeSocket(): void {
@@ -286,6 +247,7 @@ export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = 
             closeCode: null,
             closeReason: '',
           })
+          publishConversationSubscription()
           return
         }
         publishConnection({
@@ -298,20 +260,6 @@ export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = 
       },
       ...(options.random ? { random: options.random } : {}),
     })
-  }
-
-  function subscribeRpcNotifications(onNotification: (value: RpcNotification) => void): () => void {
-    if (!getWindow() || !getWebSocket()) {
-      return () => {}
-    }
-
-    rpcNotificationListeners.add(onNotification)
-    ensureBridgeSocket()
-
-    return () => {
-      rpcNotificationListeners.delete(onNotification)
-      closeBridgeSocketIfIdle()
-    }
   }
 
   function subscribeProductNotifications(onNotification: (value: ProductNotification) => void): () => void {
@@ -338,6 +286,17 @@ export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = 
     }
   }
 
+  /** The server sends normalized conversation events only for the threads a
+   * tab is actively projecting. This keeps a busy tab from flooding every
+   * other tab with unrelated tool output. */
+  function setConversationThreadSubscriptions(threadIds: readonly string[]): void {
+    const next = new Set(threadIds.map((threadId) => threadId.trim()).filter(Boolean))
+    if (next.size === subscribedConversationThreadIds.size && [...next].every((threadId) => subscribedConversationThreadIds.has(threadId))) return
+    subscribedConversationThreadIds.clear()
+    for (const threadId of next) subscribedConversationThreadIds.add(threadId)
+    publishConversationSubscription()
+  }
+
   function subscribeConnection(onConnection: (value: RealtimeConnectionSnapshot) => void): () => void {
     if (!getWindow() || !getWebSocket()) return () => {}
     connectionListeners.add(onConnection)
@@ -360,16 +319,16 @@ export function createCodexRealtimeClient(options: CodexRealtimeClientOptions = 
   return {
     reconnectNow,
     subscribeConversationEvents,
+    setConversationThreadSubscriptions,
     subscribeConnection,
     subscribeProductNotifications,
-    subscribeRpcNotifications,
   }
 }
 
 const defaultRealtimeClient = createCodexRealtimeClient()
 
-export const subscribeRpcNotifications = defaultRealtimeClient.subscribeRpcNotifications
 export const subscribeProductNotifications = defaultRealtimeClient.subscribeProductNotifications
 export const subscribeConversationEvents = defaultRealtimeClient.subscribeConversationEvents
+export const setConversationThreadSubscriptions = defaultRealtimeClient.setConversationThreadSubscriptions
 export const subscribeRealtimeConnection = defaultRealtimeClient.subscribeConnection
 export const reconnectCodexRealtime = defaultRealtimeClient.reconnectNow

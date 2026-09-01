@@ -1,14 +1,10 @@
 import { computed, ref } from 'vue'
-import { latestTerminalTurnEvent } from '@codycodeagent/cody-web-core/conversation'
-import { readThreadId as readCoreThreadId, readTurnId as readCoreTurnId } from '@codycodeagent/cody-web-core/protocol'
-import { normalizeCodexNotification } from '@codycodeagent/cody-web-core/session'
+import type { CodexEvent } from '@codycodeagent/cody-web-core/conversation'
 import {
+  subscribeConversationEvents,
   subscribeProductNotifications,
-  subscribeRpcNotifications,
   type ProductNotification,
-  type RpcNotification,
 } from '../api/codexRealtimeClient'
-import { asRecord, readNumber, readString as readProtocolString } from '../api/protocolValueReaders'
 
 export type BrowserNotificationPreference = 'off' | 'important' | 'all'
 export type BrowserNotificationPermission = NotificationPermission | 'unsupported'
@@ -37,152 +33,41 @@ export type BrowserNotificationEvent = {
 const PREFERENCE_STORAGE_KEY = 'cody-web-ui.browser-notifications.v1'
 const MAX_EVENTS = 30
 
-function readString(value: unknown): string {
-  return readProtocolString(value).trim()
-}
 
-function readNestedString(value: unknown, keys: string[]): string {
-  let cursor: unknown = value
-  for (const key of keys) {
-    const record = asRecord(cursor)
-    if (!record) return ''
-    cursor = record[key]
-  }
-  return readString(cursor)
-}
-
-function notificationThreadId(params: unknown): string {
-  return readCoreThreadId(params) || readNestedString(params, ['params', 'threadId'])
-}
-
-function notificationTurnId(params: unknown): string {
-  return readCoreTurnId(params) || readNestedString(params, ['params', 'turnId'])
-}
-
-function readServerRequestMethod(params: unknown): string {
-  return (
-    readNestedString(params, ['method']) ||
-    readNestedString(params, ['request', 'method']) ||
-    readNestedString(params, ['params', 'method'])
-  )
-}
-
-function readMaxRateLimitPercent(params: unknown): number | null {
-  const root = asRecord(params)
-  if (!root) return null
-
-  const candidates: unknown[] = []
-  const directSnapshot = asRecord(root.rateLimits)
-  if (directSnapshot) {
-    candidates.push(asRecord(directSnapshot.primary), asRecord(directSnapshot.secondary))
-  }
-
-  const codexSnapshot = asRecord(asRecord(root.rateLimitsByLimitId)?.codex)
-  if (codexSnapshot) {
-    candidates.push(asRecord(codexSnapshot.primary), asRecord(codexSnapshot.secondary))
-  }
-
-  const percents = candidates
-    .map((candidate) => readNumber(asRecord(candidate)?.usedPercent))
-    .filter((percent): percent is number => percent !== null)
-
-  return percents.length > 0 ? Math.max(...percents) : null
-}
-
-function buildSourceId(notification: RpcNotification): string {
-  const params = notification.params
-  const threadId = notificationThreadId(params)
-  const turnId = notificationTurnId(params)
-  return [notification.method, threadId, turnId, notification.atIso]
-    .filter(Boolean)
-    .join(':')
-}
-
-export function notificationFromRpcNotification(notification: RpcNotification): BrowserNotificationEvent | null {
-  const params = notification.params
-  const sourceId = buildSourceId(notification)
-  const events = normalizeCodexNotification(notification)
-  const threadId = events[0]?.threadId || notificationThreadId(params)
-  const turnId = events.find((event) => event.turnId)?.turnId || notificationTurnId(params)
-  const terminal = latestTerminalTurnEvent(events)
-  const scope = threadId ? `Thread ${threadId}` : 'Codex'
-
-  if (notification.method === 'server/request') {
-    const requestMethod = readServerRequestMethod(params)
+export function notificationFromConversationEvent(event: CodexEvent): BrowserNotificationEvent | null {
+  const turnId = event.turnId ?? ''
+  const scope = event.threadId ? `Thread ${event.threadId}` : 'Codex'
+  const sourceId = event.id
+  if (event.type === 'approval.requested' || event.type === 'question.requested') {
+    const method = typeof event.data.method === 'string' ? event.data.method : ''
     return {
-      id: `notify:${sourceId}`,
+      id: `conversation:${sourceId}`,
       kind: 'approval',
-      title: 'Approval required',
-      body: requestMethod ? `${requestMethod} is waiting for your decision.` : 'Codex is waiting for your decision.',
-      severity: 'warning',
-      createdAtIso: notification.atIso,
-      sourceId,
+      title: event.type === 'approval.requested' ? 'Approval required' : 'Answer required',
+      body: method ? `${method} is waiting for your decision.` : 'Codex is waiting for your decision.',
+      severity: 'warning', createdAtIso: event.atIso, sourceId,
     }
   }
-
-  if (terminal) {
-    if (terminal.type === 'turn.failed') {
-      return {
-        id: `notify:${sourceId}`,
-        kind: 'turn-failed',
-        title: 'Task failed',
-        body: readString(terminal.data.error) || 'Codex failed to complete the task.',
-        severity: 'danger',
-        createdAtIso: notification.atIso,
-        sourceId,
-      }
-    }
-
-    if (terminal.type === 'turn.interrupted') {
-      return {
-        id: `notify:${sourceId}`,
-        kind: 'turn-failed',
-        title: 'Task interrupted',
-        body: turnId ? `${scope} stopped turn ${turnId}.` : `${scope} stopped a turn.`,
-        severity: 'warning',
-        createdAtIso: notification.atIso,
-        sourceId,
-      }
-    }
-
-    return {
-      id: `notify:${sourceId}`,
-      kind: 'turn-completed',
-      title: 'Task completed',
-      body: turnId ? `${scope} finished turn ${turnId}.` : `${scope} finished a turn.`,
-      severity: 'success',
-      createdAtIso: notification.atIso,
-      sourceId,
-    }
+  if (event.type === 'turn.failed') return {
+    id: `conversation:${sourceId}`, kind: 'turn-failed', title: 'Task failed',
+    body: typeof event.data.error === 'string' ? event.data.error : 'Codex failed to complete the task.',
+    severity: 'danger', createdAtIso: event.atIso, sourceId,
   }
-
-  if (notification.method === 'account/rateLimits/updated') {
-    const maxPercent = readMaxRateLimitPercent(params)
-    if (maxPercent === null || maxPercent < 90) return null
-
-    return {
-      id: `notify:${sourceId}`,
-      kind: 'rate-limit',
-      title: 'Rate limit is high',
-      body: `Codex usage is at ${Math.round(maxPercent)}%.`,
-      severity: 'warning',
-      createdAtIso: notification.atIso,
-      sourceId,
-    }
+  if (event.type === 'turn.interrupted') return {
+    id: `conversation:${sourceId}`, kind: 'turn-failed', title: 'Task interrupted',
+    body: turnId ? `${scope} stopped turn ${turnId}.` : `${scope} stopped a turn.`,
+    severity: 'warning', createdAtIso: event.atIso, sourceId,
   }
-
-  if (events.some((event) => event.type === 'thread.compacted')) {
-    return {
-      id: `notify:${sourceId}`,
-      kind: 'thread-compacted',
-      title: 'Thread compacted',
-      body: threadId ? `Thread ${threadId} was compacted.` : 'A thread was compacted.',
-      severity: 'info',
-      createdAtIso: notification.atIso,
-      sourceId,
-    }
+  if (event.type === 'turn.completed') return {
+    id: `conversation:${sourceId}`, kind: 'turn-completed', title: 'Task completed',
+    body: turnId ? `${scope} finished turn ${turnId}.` : `${scope} finished a turn.`,
+    severity: 'success', createdAtIso: event.atIso, sourceId,
   }
-
+  if (event.type === 'thread.compacted') return {
+    id: `conversation:${sourceId}`, kind: 'thread-compacted', title: 'Thread compacted',
+    body: event.threadId ? `Thread ${event.threadId} was compacted.` : 'A thread was compacted.',
+    severity: 'info', createdAtIso: event.atIso, sourceId,
+  }
   return null
 }
 
@@ -243,7 +128,7 @@ export function useBrowserNotifications() {
   const lastError = ref('')
   const isSupported = computed(() => permission.value !== 'unsupported')
   const unreadCount = computed(() => events.value.filter((event) => event.severity !== 'info').length)
-  let stopCodexStream: (() => void) | null = null
+  let stopConversationStream: (() => void) | null = null
   let stopProductStream: (() => void) | null = null
 
   function setPreference(nextPreference: BrowserNotificationPreference): void {
@@ -287,11 +172,9 @@ export function useBrowserNotifications() {
     sendNativeNotification(event)
   }
 
-  function notifyRpcEvent(notification: RpcNotification): void {
-    const event = notificationFromRpcNotification(notification)
-    if (event) {
-      recordEvent(event)
-    }
+  function notifyConversationEvent(event: CodexEvent): void {
+    const notification = notificationFromConversationEvent(event)
+    if (notification) recordEvent(notification)
   }
 
   function notifyProductEvent(notification: ProductNotification): void {
@@ -306,8 +189,8 @@ export function useBrowserNotifications() {
   }
 
   function start(): void {
-    if (!stopCodexStream) {
-      stopCodexStream = subscribeRpcNotifications(notifyRpcEvent)
+    if (!stopConversationStream) {
+      stopConversationStream = subscribeConversationEvents(notifyConversationEvent)
     }
     if (!stopProductStream) {
       stopProductStream = subscribeProductNotifications(notifyProductEvent)
@@ -315,9 +198,9 @@ export function useBrowserNotifications() {
   }
 
   function stop(): void {
-    stopCodexStream?.()
+    stopConversationStream?.()
     stopProductStream?.()
-    stopCodexStream = null
+    stopConversationStream = null
     stopProductStream = null
   }
 
@@ -330,7 +213,7 @@ export function useBrowserNotifications() {
     unreadCount,
     setPreference,
     requestPermission,
-    notifyRpcEvent,
+    notifyConversationEvent,
     notifyProductEvent,
     clearEvents,
     start,

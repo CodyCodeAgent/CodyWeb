@@ -55,7 +55,7 @@ describe('codex realtime client', () => {
     expect(bridgeWebSocketUrl(fakeWindow('https:', 'codex.example.com'))).toBe('wss://codex.example.com/codex-api/ws')
   })
 
-  it('parses rpc websocket frames and ignores malformed payloads', () => {
+  it('rejects raw rpc websocket frames and ignores malformed payloads', () => {
     expect(parseBridgeWebSocketMessage(JSON.stringify({
       type: 'rpc',
       atIso: '2026-07-07T01:00:00.000Z',
@@ -63,14 +63,7 @@ describe('codex realtime client', () => {
         method: 'item/agentMessage/delta',
         params: { delta: 'hello' },
       },
-    }), () => 'fallback')).toEqual({
-      type: 'rpc',
-      notification: {
-        method: 'item/agentMessage/delta',
-        params: { delta: 'hello' },
-        atIso: '2026-07-07T01:00:00.000Z',
-      },
-    })
+    }), () => 'fallback')).toBeNull()
 
     expect(parseBridgeWebSocketMessage('{', () => 'fallback')).toBeNull()
     expect(parseBridgeWebSocketMessage(JSON.stringify({ type: 'ready' }), () => 'fallback')).toBeNull()
@@ -102,9 +95,9 @@ describe('codex realtime client', () => {
     })
   })
 
-  it('shares one websocket for rpc and product subscriptions and closes it when idle', () => {
+  it('shares one websocket for Core conversation and product subscriptions and closes it when idle', () => {
     FakeWebSocket.instances = []
-    const receivedRpc: unknown[] = []
+    const receivedConversation: unknown[] = []
     const receivedProduct: unknown[] = []
     const client = createCodexRealtimeClient({
       getWindow: () => fakeWindow(),
@@ -112,8 +105,8 @@ describe('codex realtime client', () => {
       nowIso: () => '2026-07-07T03:00:00.000Z',
     })
 
-    const unsubscribeRpc = client.subscribeRpcNotifications((notification) => {
-      receivedRpc.push(notification)
+    const unsubscribeConversation = client.subscribeConversationEvents((event) => {
+      receivedConversation.push(event)
     })
     const unsubscribeProduct = client.subscribeProductNotifications((notification) => {
       receivedProduct.push(notification)
@@ -125,8 +118,8 @@ describe('codex realtime client', () => {
 
     socket.emit('message', {
       data: JSON.stringify({
-        type: 'rpc',
-        notification: { method: 'turn/started', params: { threadId: 'thread-1' } },
+        type: 'conversation',
+        event: { id: 'started-1', type: 'turn.started', threadId: 'thread-1', atIso: '2026-07-07T03:00:00.000Z', data: {} },
       }),
     })
     socket.emit('message', {
@@ -142,17 +135,54 @@ describe('codex realtime client', () => {
       }),
     })
 
-    expect(receivedRpc).toMatchObject([
-      { method: 'turn/started', params: { threadId: 'thread-1' } },
+    expect(receivedConversation).toMatchObject([
+      { id: 'started-1', type: 'turn.started', threadId: 'thread-1' },
     ])
     expect(receivedProduct).toMatchObject([
       { id: 'n-1', title: 'Workflow done' },
     ])
 
-    unsubscribeRpc()
+    unsubscribeConversation()
     expect(socket.closeCount).toBe(0)
     unsubscribeProduct()
     expect(socket.closeCount).toBe(1)
+  })
+
+  it('subscribes only to the focused thread and restores that subscription after reconnecting', () => {
+    vi.useFakeTimers()
+    FakeWebSocket.instances = []
+    const client = createCodexRealtimeClient({
+      getWindow: () => fakeWindow(),
+      getWebSocket: () => FakeWebSocket,
+      random: () => 0.5,
+    })
+    const stop = client.subscribeConversationEvents(() => undefined)
+    client.setConversationThreadSubscriptions(['thread-a'])
+
+    const firstSocket = FakeWebSocket.instances[0]!
+    firstSocket.readyState = FakeWebSocket.OPEN
+    firstSocket.emit('open')
+    expect(firstSocket.sent.map((entry) => JSON.parse(entry))).toContainEqual({
+      type: 'conversation.subscribe',
+      threadIds: ['thread-a'],
+    })
+
+    client.setConversationThreadSubscriptions(['thread-b'])
+    expect(firstSocket.sent.map((entry) => JSON.parse(entry))).toContainEqual({
+      type: 'conversation.subscribe',
+      threadIds: ['thread-b'],
+    })
+
+    firstSocket.readyState = 3
+    firstSocket.emit('close', { code: 1006, reason: 'network changed' })
+    vi.advanceTimersByTime(500)
+    const secondSocket = FakeWebSocket.instances[1]!
+    secondSocket.readyState = FakeWebSocket.OPEN
+    secondSocket.emit('open')
+    expect(secondSocket.sent.map((entry) => JSON.parse(entry))).toEqual([
+      { type: 'conversation.subscribe', threadIds: ['thread-b'] },
+    ])
+    stop()
   })
 
   it('publishes authoritative websocket connection state and reconnect diagnostics', () => {
@@ -207,12 +237,12 @@ describe('codex realtime client', () => {
     })
 
     const stopConnection = client.subscribeConnection(() => undefined)
-    const stopRpc = client.subscribeRpcNotifications(() => undefined)
+    const stopConversation = client.subscribeConversationEvents(() => undefined)
     const stopProduct = client.subscribeProductNotifications(() => undefined)
     expect(FakeWebSocket.instances).toHaveLength(1)
 
     stopConnection()
-    stopRpc()
+    stopConversation()
     expect(FakeWebSocket.instances[0].closeCount).toBe(0)
     stopProduct()
     expect(FakeWebSocket.instances[0].closeCount).toBe(1)
@@ -240,12 +270,12 @@ describe('codex realtime client', () => {
   it('ignores delayed open, message and close callbacks from a replaced socket', () => {
     FakeWebSocket.instances = []
     const states: string[] = []
-    const receivedRpc: unknown[] = []
+    const receivedConversation: unknown[] = []
     const client = createCodexRealtimeClient({
       getWindow: () => fakeWindow(),
       getWebSocket: () => FakeWebSocket,
     })
-    const stopRpc = client.subscribeRpcNotifications((notification) => receivedRpc.push(notification))
+    const stopConversation = client.subscribeConversationEvents((event) => receivedConversation.push(event))
     const stopConnection = client.subscribeConnection((state) => states.push(state.phase))
     const firstSocket = FakeWebSocket.instances[0]!
     firstSocket.emit('open')
@@ -255,20 +285,20 @@ describe('codex realtime client', () => {
     const statesBeforeLateCallbacks = [...states]
     firstSocket.emit('open')
     firstSocket.emit('message', {
-      data: JSON.stringify({ type: 'rpc', notification: { method: 'late/notification', params: {} } }),
+      data: JSON.stringify({ type: 'conversation', event: { id: 'late-1', type: 'turn.started', threadId: 'thread-1', atIso: '2026-07-07T03:00:00.000Z', data: {} } }),
     })
     firstSocket.emit('close', { code: 1006, reason: 'late close' })
 
     expect(states).toEqual(statesBeforeLateCallbacks)
-    expect(receivedRpc).toEqual([])
+    expect(receivedConversation).toEqual([])
 
     secondSocket.emit('open')
     secondSocket.emit('message', {
-      data: JSON.stringify({ type: 'rpc', notification: { method: 'current/notification', params: {} } }),
+      data: JSON.stringify({ type: 'conversation', event: { id: 'current-1', type: 'turn.started', threadId: 'thread-1', atIso: '2026-07-07T03:00:00.000Z', data: {} } }),
     })
     expect(states.at(-1)).toBe('connected')
-    expect(receivedRpc).toEqual([expect.objectContaining({ method: 'current/notification' })])
-    stopRpc()
+    expect(receivedConversation).toEqual([expect.objectContaining({ id: 'current-1' })])
+    stopConversation()
     stopConnection()
   })
 })

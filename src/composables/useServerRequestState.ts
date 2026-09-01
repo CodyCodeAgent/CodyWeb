@@ -1,11 +1,9 @@
 import { computed, ref, type Ref } from 'vue'
-import type { RpcNotification } from '../api/codexRealtimeClient'
 import { fetchPendingServerRequests, respondServerRequest } from '../api/codexBridgeClient'
 import type { UiServerRequest, UiServerRequestReply } from '../types/codex'
 import {
   flattenServerRequests,
   normalizeServerRequest,
-  readResolvedServerRequestId,
   removeServerRequestById,
   selectServerRequestsForThread,
   upsertServerRequest,
@@ -17,19 +15,6 @@ export function useServerRequestState(selectedThreadId: Ref<string>, onError?: (
   const all = computed(() => flattenServerRequests(byThreadId.value))
   function upsert(request: UiServerRequest): void { byThreadId.value = upsertServerRequest(byThreadId.value, request) }
   function remove(requestId: number): void { byThreadId.value = removeServerRequestById(byThreadId.value, requestId) }
-  function handle(notification: RpcNotification): boolean {
-    if (notification.method === 'server/request') {
-      const request = normalizeServerRequest(notification.params)
-      if (request) upsert(request)
-      return true
-    }
-    if (notification.method === 'server/request/resolved') {
-      const id = readResolvedServerRequestId(notification.params)
-      if (id !== null) remove(id)
-      return true
-    }
-    return false
-  }
   async function load(): Promise<void> {
     try {
       for (const row of await fetchPendingServerRequests()) {
@@ -48,5 +33,5 @@ export function useServerRequestState(selectedThreadId: Ref<string>, onError?: (
       onError?.(error instanceof Error ? error.message : 'Failed to reply to server request')
     }
   }
-  return { byThreadId, selected, all, upsert, remove, handle, load, respond }
+  return { byThreadId, selected, all, upsert, remove, load, respond }
 }

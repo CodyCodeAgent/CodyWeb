@@ -27,17 +27,12 @@ import {
   setProjectHidden,
   setThreadHidden,
 } from '../api/codexCatalogClient'
-import type { RpcNotification } from '../api/codexRealtimeClient'
-import {
-  readStartedThread,
-} from './realtimeNotificationReaders'
 import { useServerRequestState } from './useServerRequestState'
 import { useDesktopComposerState } from './useDesktopComposerState'
 import { useDesktopRealtimeState } from './useDesktopRealtimeState'
 import { useDesktopThreadState } from './useDesktopThreadState'
 import type { DesktopPlanState } from './desktopPlanState'
 import { useCoreConversationRegistry } from './useCoreConversationRegistry'
-import { shouldQueueEventDrivenSyncForMethod } from './realtimeSyncPolicy'
 import { useRateLimitState } from './useRateLimitState'
 import {
   buildRollbackAuditMessage,
@@ -84,7 +79,6 @@ import type {
 
 export { buildRollbackAuditMessage } from './desktopMessageState'
 
-const EVENT_SYNC_DEBOUNCE_MS = 220
 
 export function useDesktopState() {
   const threadState = useDesktopThreadState()
@@ -110,7 +104,6 @@ export function useDesktopState() {
     rateLimitSnapshot,
     isLoadingRateLimits,
     refreshRateLimits,
-    handleRateLimitNotification,
   } = useRateLimitState()
 
   const isLoadingThreads = ref(false)
@@ -120,7 +113,6 @@ export function useDesktopState() {
   const isInterruptingTurn = ref(false)
   const error = ref('')
   const hasLoadedThreads = ref(false)
-  let eventSyncTimer: number | null = null
   let shouldAutoScrollOnNextAgentEvent = false
   const latestMessageLoadRequestIdByThreadId = new Map<string, number>()
   let nextMessageLoadRequestId = 0
@@ -407,35 +399,6 @@ export function useDesktopState() {
       atIso: new Date().toISOString(),
       data: { tool: message.tool },
     })
-  }
-
-  function applyRealtimeUpdates(notification: RpcNotification): void {
-    // Raw RPC notifications are product metadata only. Conversation lifecycle
-    // is normalized once on the server and consumed through Core above.
-    if (handleRateLimitNotification(notification)) {
-      return
-    }
-
-    const startedThread = readStartedThread(notification)
-    if (startedThread) {
-      addOptimisticThread(startedThread)
-    }
-
-    if (serverRequestState.handle(notification)) {
-      return
-    }
-
-  }
-
-  function queueEventDrivenSync(notification: RpcNotification): void {
-    if (!shouldQueueEventDrivenSyncForMethod(notification.method)) return
-    if (eventSyncTimer !== null || typeof window === 'undefined') return
-    eventSyncTimer = window.setTimeout(() => {
-      eventSyncTimer = null
-      // Realtime conversation state already arrived through Core. This refresh
-      // is only for catalog metadata (title, unread grouping, project tree).
-      void loadThreads().catch(() => undefined)
-    }, EVENT_SYNC_DEBOUNCE_MS)
   }
 
   async function loadThreads() {
@@ -950,10 +913,6 @@ export function useDesktopState() {
 
   function resetRealtimeDomainState(): void {
     latestMessageLoadRequestIdByThreadId.clear()
-    if (eventSyncTimer !== null && typeof window !== 'undefined') {
-      window.clearTimeout(eventSyncTimer)
-      eventSyncTimer = null
-    }
     shouldAutoScrollOnNextAgentEvent = false
     loadingMessagesByThreadId.value = {}
     messageLoadErrorByThreadId.value = {}
@@ -965,8 +924,6 @@ export function useDesktopState() {
     hydratePreferences: hydrateTurnPreferencesFromSettingsStore,
     loadPendingApprovals: serverRequestState.load,
     refreshRateLimits,
-    applyNotification: applyRealtimeUpdates,
-    queueNotificationSync: queueEventDrivenSync,
     resetDomainState: resetRealtimeDomainState,
   })
   const { startRealtimeSync, stopRealtimeSync } = realtimeState

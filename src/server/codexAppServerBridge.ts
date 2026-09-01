@@ -1321,11 +1321,6 @@ type BridgeWebSocketMessage =
       atIso: string
     }
   | {
-      type: 'rpc'
-      notification: unknown
-      atIso: string
-    }
-  | {
       type: 'product'
       notification: NotificationDispatchEvent
       atIso: string
@@ -1335,6 +1330,23 @@ type BridgeWebSocketMessage =
       event: CodexEvent
       atIso: string
     }
+
+/** Browser subscriptions are projection hints, never authorization grants.
+ * Keep them small so a tab cannot recreate all-thread raw-event fan-out. */
+export function normalizeConversationThreadSubscriptions(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const threadIds: string[] = []
+  const seen = new Set<string>()
+  for (const threadId of value) {
+    if (typeof threadId !== 'string') continue
+    const normalized = threadId.trim()
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    threadIds.push(normalized)
+    if (threadIds.length >= 32) break
+  }
+  return threadIds
+}
 
 type ConversationSubmitRequest = {
   threadId: string
@@ -1835,14 +1847,19 @@ export function attachCodexBridgeWebSocketServer(
   webSocketServer.on('connection', (socket) => {
     clients.add(socket)
     liveClients.set(socket, true)
+    const subscribedThreadIds = new Set<string>()
     socket.on('pong', () => {
       liveClients.set(socket, true)
     })
     socket.on('message', (data) => {
       try {
-        const message = JSON.parse(String(data)) as { type?: string }
+        const message = JSON.parse(String(data)) as { type?: string; threadIds?: unknown }
         if (message.type === 'ping' && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: 'pong', atIso: new Date().toISOString() }))
+        }
+        if (message.type === 'conversation.subscribe') {
+          subscribedThreadIds.clear()
+          for (const threadId of normalizeConversationThreadSubscriptions(message.threadIds)) subscribedThreadIds.add(threadId)
         }
       } catch {
         // Browser-to-server messages are optional transport heartbeats only.
@@ -1851,14 +1868,6 @@ export function attachCodexBridgeWebSocketServer(
     sendBridgeWebSocketMessage(socket, {
       type: 'ready',
       atIso: new Date().toISOString(),
-    })
-
-    const unsubscribeNotifications = appServer.onNotification((notification) => {
-      sendBridgeWebSocketMessage(socket, {
-        type: 'rpc',
-        notification,
-        atIso: new Date().toISOString(),
-      })
     })
 
     const unsubscribeProductEvents = productEventHub.subscribe((event) => {
@@ -1870,6 +1879,7 @@ export function attachCodexBridgeWebSocketServer(
     })
 
     const unsubscribeConversationEvents = conversations.subscribe((event) => {
+      if (!subscribedThreadIds.has(event.threadId)) return
       sendBridgeWebSocketMessage(socket, {
         type: 'conversation',
         event,
@@ -1878,7 +1888,6 @@ export function attachCodexBridgeWebSocketServer(
     })
 
     socket.on('close', () => {
-      unsubscribeNotifications()
       unsubscribeProductEvents()
       unsubscribeConversationEvents()
       clients.delete(socket)

@@ -14,6 +14,7 @@ import { attachThreadConversation, getThreadEvents, submitThreadCommand } from '
 import {
   subscribeConversationEvents,
   subscribeRealtimeConnection,
+  setConversationThreadSubscriptions,
   type RealtimeConnectionSnapshot,
 } from '../api/codexRealtimeClient'
 
@@ -122,10 +123,12 @@ export function useCoreConversationRegistry() {
 
   function focus(threadId: string): void {
     focusedThreadId = threadId.trim()
+    setConversationThreadSubscriptions(focusedThreadId ? [focusedThreadId] : [])
   }
 
   async function connect(threadId: string): Promise<void> {
     if (!threadId.trim()) return
+    if (!focusedThreadId) focus(threadId)
     await controllerFor(threadId).start()
   }
 
@@ -191,6 +194,7 @@ export function useCoreConversationRegistry() {
     stopConnection()
     transportListenersByThreadId.clear()
     eventListeners.clear()
+    setConversationThreadSubscriptions([])
     stateByThreadId.value = {}
   }
 

@@ -18,6 +18,7 @@ import {
   isAppServerAlreadyInitializedError,
   mergeMcpServerDiagnostics,
   normalizeApprovalDecisionScope,
+  normalizeConversationThreadSubscriptions,
   normalizeMcpServerInventory,
   readApprovalDecisionFromReply,
 } from './codexAppServerBridge'
@@ -42,6 +43,16 @@ describe('app-server launch contract', () => {
     expect(isAppServerAlreadyInitializedError(new Error('Already initialized'))).toBe(true)
     expect(isAppServerAlreadyInitializedError({ error: { message: 'already initialized' } })).toBe(true)
     expect(isAppServerAlreadyInitializedError(new Error('initialize failed'))).toBe(false)
+  })
+})
+
+describe('browser conversation projections', () => {
+  it('accepts only a small deduplicated thread subscription set', () => {
+    expect(normalizeConversationThreadSubscriptions([' thread-a ', 'thread-a', '', 7, 'thread-b']))
+      .toEqual(['thread-a', 'thread-b'])
+    expect(normalizeConversationThreadSubscriptions(Array.from({ length: 40 }, (_, index) => `thread-${String(index)}`)))
+      .toHaveLength(32)
+    expect(normalizeConversationThreadSubscriptions({ threadIds: ['thread-a'] })).toEqual([])
   })
 })
 
