@@ -291,7 +291,7 @@
             newThreadCwd, newThreadFolderOptions, composerThreadContextId, isSendingMessage,
             promptInsertion, availableModelIds, selectedModelId, selectedReasoningEffort, collaborationModeOptions,
             selectedCollaborationModeName, selectedPermissionMode, selectedSubmitMode, homeComposerBusyLabel, filteredMessages,
-            isLoadingMessages, selectedThread, selectedMessageLoadError, selectedThreadScrollState, liveOverlay,
+            isLoadingMessages: isSelectedMessageHistoryPending, selectedThread, selectedMessageLoadError, selectedThreadScrollState, liveOverlay,
             selectedThreadServerRequests, selectedQueuedMessages, threadComposerBusyLabel,
             isSelectedThreadInProgress, isInterruptingTurn, isCodeView, contextInsertion,
             conversationShareSelecting: isConversationShareSelecting, conversationShareSelectedMessageIds }"
@@ -601,6 +601,8 @@ const isEffectiveSidebarCollapsed = computed(() => isSidebarCollapsed.value || i
 const isCodeView = computed(() => route.name === 'thread' && route.query.view === 'code')
 const filteredMessages = computed(() => filterAppConversationMessages(messages.value))
 const liveOverlay = computed(() => selectedLiveOverlay.value)
+const isSelectedMessageHistoryPending = computed(() => isLoadingMessages.value
+  || (!hasLoadedSelectedMessages.value && !selectedMessageLoadError.value))
 const composerThreadContextId = computed(() => buildComposerThreadContextId({
   isHomeRoute: isHomeRoute.value,
   selectedThreadId: selectedThreadId.value,
