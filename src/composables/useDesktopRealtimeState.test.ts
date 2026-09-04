@@ -6,7 +6,6 @@ import { useDesktopRealtimeState } from './useDesktopRealtimeState'
 function buildInput() {
   return {
     hydratePreferences: vi.fn(async () => undefined),
-    loadPendingApprovals: vi.fn(async () => undefined),
     refreshRateLimits: vi.fn(async () => undefined),
     resetDomainState: vi.fn(),
   }
@@ -24,7 +23,6 @@ describe('useDesktopRealtimeState', () => {
 
     expect(setIntervalSpy).not.toHaveBeenCalled()
     expect(input.hydratePreferences).toHaveBeenCalledTimes(1)
-    expect(input.loadPendingApprovals).toHaveBeenCalledTimes(1)
     expect(input.refreshRateLimits).toHaveBeenCalledTimes(1)
   })
 

@@ -171,7 +171,10 @@ export function buildTurnInput(
   return buildTurnUserInput({
     text,
     skills,
-    localImages: images.map(image => ({ path: image.path })),
+    // ComposerImage is intentionally UI-neutral: browser surfaces may only
+    // have an opaque URL. The App Server local-image protocol, however,
+    // accepts filesystem paths exclusively, so omit non-local attachments.
+    localImages: images.flatMap(image => image.path?.trim() ? [{ path: image.path }] : []),
   })
 }
 
