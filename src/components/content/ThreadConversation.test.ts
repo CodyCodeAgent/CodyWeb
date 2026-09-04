@@ -212,6 +212,35 @@ describe('ThreadConversation', () => {
     expect(wrapper.find('.tool-timeline-card').exists()).toBe(false)
   })
 
+  it('collapses command execution once it reaches a terminal status, while preserving a later user expansion', async () => {
+    const command = (status: string): UiMessage => message(1, {
+      text: '',
+      tool: {
+        kind: 'command',
+        title: 'Command execution',
+        status,
+        summary: 'pnpm test',
+        details: ['cwd: /repo', `status: ${status}`],
+        output: 'test output',
+      },
+    })
+    const wrapper = mountConversation({ messages: [command('running')] })
+    const card = wrapper.get('.tool-timeline-card')
+
+    expect(card.attributes('open')).toBeDefined()
+
+    await wrapper.setProps({ messages: [command('completed')] })
+    await nextTick()
+    expect(card.attributes('open')).toBeUndefined()
+
+    await card.find('summary').trigger('click')
+    await nextTick()
+    expect(card.attributes('open')).toBeDefined()
+
+    const failed = mountConversation({ messages: [command('failed')] })
+    expect(failed.get('.tool-timeline-card').attributes('open')).toBeUndefined()
+  })
+
   it('renders worked receipts as a non-interactive two-line status divider', () => {
     const wrapper = mountConversation({
       messages: [

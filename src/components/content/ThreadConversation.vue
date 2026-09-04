@@ -656,6 +656,7 @@ const isFollowingBottom = ref(props.scrollState?.isAtBottom !== false)
 const isLiveOverlayExpanded = ref((props.liveOverlay?.reasoningText ?? '').trim().length > 0)
 const openToolMessageIds = ref<Record<string, boolean>>({})
 const expandedToolOutputIds = ref<Record<string, boolean>>({})
+const previousToolTimelineDefaults = ref<Record<string, boolean>>({})
 const selectedShareMessageIds = ref(new Set<string>(
   props.shareSelectionActive ? (props.initialShareSelectedMessageIds ?? []) : [],
 ))
@@ -716,6 +717,30 @@ const groupedFileChangeContinuationIds = computed(() => new Set(
 const visibleShareMessages = computed(() => visibleMessages.value.filter(isShareSelectableMessage))
 const allVisibleShareMessagesSelected = computed(() => visibleShareMessages.value.length > 0
   && visibleShareMessages.value.every((message) => selectedShareMessageIds.value.has(message.id)))
+
+// A command log remains open while its output is changing. Once it reaches a
+// terminal state, close it once so the conversation returns to its compact
+// shape. We retain subsequent user toggles in `openToolMessageIds`.
+watch(
+  () => displayMessages.value.flatMap((message) => message.tool
+    ? [{ id: message.id, openByDefault: defaultToolTimelineOpen(message) }]
+    : []),
+  (tools) => {
+    const previous = previousToolTimelineDefaults.value
+    const next = Object.fromEntries(tools.map((tool) => [tool.id, tool.openByDefault]))
+    const collapsedIds = tools
+      .filter((tool) => previous[tool.id] === true && tool.openByDefault === false)
+      .map((tool) => tool.id)
+    if (collapsedIds.length > 0) {
+      openToolMessageIds.value = {
+        ...openToolMessageIds.value,
+        ...Object.fromEntries(collapsedIds.map((id) => [id, false])),
+      }
+    }
+    previousToolTimelineDefaults.value = next
+  },
+  { immediate: true, flush: 'sync' },
+)
 
 function isShareSelectableMessage(message: UiMessage): boolean {
   if (message.role !== 'user' && message.role !== 'assistant') return false
@@ -1260,6 +1285,7 @@ watch(
     isLiveOverlayExpanded.value = false
     openToolMessageIds.value = {}
     expandedToolOutputIds.value = {}
+    previousToolTimelineDefaults.value = {}
     pendingEarlierScrollAnchor = null
     isRestoringEarlierMessages = false
     requestedVisibleMessageCount.value = DEFAULT_VISIBLE_MESSAGE_COUNT
