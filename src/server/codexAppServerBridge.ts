@@ -630,6 +630,71 @@ async function handleRunWorkspaceWorkflowValidationWithNotifications(
 export const CODEX_APP_SERVER_ARGS = ['app-server', '--listen', 'stdio://'] as const
 export const APP_SERVER_RPC_TIMEOUT_MS = 20_000
 export const APP_SERVER_DIAGNOSTICS_RPC_TIMEOUT_MS = 5_000
+export const APP_SERVER_THREAD_HISTORY_RPC_TIMEOUT_MS = 10 * 60_000
+const RESUMED_THREAD_SNAPSHOT_TTL_MS = 30_000
+
+export function appServerRpcTimeoutMs(method: string, requestedTimeoutMs?: number): number {
+  if (requestedTimeoutMs !== undefined) return requestedTimeoutMs
+  return method === 'thread/resume' || method === 'thread/read'
+    ? APP_SERVER_THREAD_HISTORY_RPC_TIMEOUT_MS
+    : APP_SERVER_RPC_TIMEOUT_MS
+}
+
+/**
+ * Core resumes a thread and immediately reads the same hydrated history to
+ * establish active-turn state. App Server's thread/resume response already
+ * contains that snapshot, so reuse it once instead of serializing and parsing
+ * a second potentially very large history payload.
+ */
+export function createCoreSessionHost(host: CoreAppServerHost): CoreAppServerHost {
+  const resumedSnapshots = new Map<string, { result: unknown; timer: ReturnType<typeof setTimeout> }>()
+
+  const threadIdFrom = (params: unknown): string => {
+    const value = asRecord(params)?.threadId
+    return typeof value === 'string' ? value.trim() : ''
+  }
+
+  const forgetSnapshot = (threadId: string): void => {
+    const cached = resumedSnapshots.get(threadId)
+    if (!cached) return
+    clearTimeout(cached.timer)
+    resumedSnapshots.delete(threadId)
+  }
+
+  return {
+    ensureInitialized: () => host.ensureInitialized(),
+    call: async <T>(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<T> => {
+      const threadId = threadIdFrom(params)
+      if (method === 'thread/read' && threadId && asRecord(params)?.includeTurns !== false) {
+        const cached = resumedSnapshots.get(threadId)
+        if (cached) {
+          forgetSnapshot(threadId)
+          return cached.result as T
+        }
+      }
+
+      const result = await host.call<T>(method, params, {
+        timeoutMs: appServerRpcTimeoutMs(method, options?.timeoutMs),
+      })
+      if (method === 'thread/resume' && threadId) {
+        forgetSnapshot(threadId)
+        const timer = setTimeout(() => resumedSnapshots.delete(threadId), RESUMED_THREAD_SNAPSHOT_TTL_MS)
+        timer.unref?.()
+        resumedSnapshots.set(threadId, { result, timer })
+      }
+      return result
+    },
+    subscribe: (listener) => host.subscribe(listener),
+    listPendingRequests: () => host.listPendingRequests(),
+    resolveServerRequest: (id, reply) => host.resolveServerRequest(id, reply),
+    diagnostics: () => host.diagnostics(),
+    failureReport: () => host.failureReport(),
+    dispose: async () => {
+      for (const threadId of resumedSnapshots.keys()) forgetSnapshot(threadId)
+    },
+  }
+}
+
 export function appServerRpcTimeoutMessage(method: string, timeoutMs: number): string {
   return `codex app-server RPC ${method} timed out after ${String(timeoutMs)}ms`
 }
@@ -686,16 +751,7 @@ class AppServerProcess {
    * normalized exactly once by Core for browser conversation consumers.
    */
   sessionHost(): CoreAppServerHost {
-    return {
-      ensureInitialized: () => this.host.ensureInitialized(),
-      call: (method, params, options) => this.host.call(method, params, options),
-      subscribe: (listener) => this.host.subscribe(listener),
-      listPendingRequests: () => this.host.listPendingRequests(),
-      resolveServerRequest: (id, reply) => this.host.resolveServerRequest(id, reply),
-      diagnostics: () => this.host.diagnostics(),
-      failureReport: () => this.host.failureReport(),
-      dispose: async () => undefined,
-    }
+    return createCoreSessionHost(this.host)
   }
 
   /**

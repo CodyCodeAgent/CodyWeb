@@ -17,6 +17,7 @@ function owner(overrides: Record<string, unknown> = {}) {
     submitUntilStarted: vi.fn(async (intent: { threadId: string }) => ({ threadId: intent.threadId, turnId: 'turn-new' })),
     runEphemeral: vi.fn(async () => ({ assistantText: JSON.stringify({ required_keywords: ['任务 ID'], instruction: '定位根因', reason: '字段稳定' }), terminalEvent: { type: 'turn.completed', data: {} } })),
     read: vi.fn(async () => []),
+    findActiveTurnId: vi.fn(async () => null),
     interrupt: vi.fn(async () => true),
     listSkills: vi.fn(async () => []),
     listCollaborationModes: vi.fn(async () => []),
@@ -70,6 +71,18 @@ describe('FeishuCodexGateway', () => {
       input: expect.objectContaining({ model: 'gpt-5.6-sol', effort: 'xhigh' }),
     }))
     expect(shared.listCollaborationModes).not.toHaveBeenCalled()
+  })
+
+  it('reads busy state from the owner snapshot without re-reading native history', async () => {
+    const shared = owner({ findActiveTurnId: vi.fn(async () => 'turn-active') })
+    const gateway = new FeishuCodexGateway({ owner: shared as never, readCatalog: vi.fn(async () => catalog) })
+
+    await expect(gateway.findActiveTurnId('thread-1')).resolves.toBe('turn-active')
+    await expect(gateway.isThreadBusy('thread-1')).resolves.toBe(true)
+
+    expect(shared.findActiveTurnId).toHaveBeenCalledTimes(2)
+    expect(shared.findActiveTurnId).toHaveBeenCalledWith('thread-1', { thread: {} })
+    expect(shared.read).not.toHaveBeenCalled()
   })
 
   it('keeps plan-mode model settings inside the collaboration override', async () => {

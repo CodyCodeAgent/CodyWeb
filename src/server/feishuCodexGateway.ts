@@ -5,7 +5,7 @@ import { buildTurnUserInput, type ExecutionContext, type TurnInput } from '@cody
 import type { CodyWebConversationOwner } from './conversationOwner.js'
 
 type ConversationOwner = Pick<CodyWebConversationOwner,
-  'start' | 'submitUntilStarted' | 'runEphemeral' | 'read' | 'interrupt' |
+  'start' | 'submitUntilStarted' | 'runEphemeral' | 'read' | 'findActiveTurnId' | 'interrupt' |
   'listSkills' | 'listCollaborationModes' | 'readConfig' | 'renameThread' | 'archiveThread' |
   'respondApproval' | 'respondQuestion' | 'subscribe'>
 
@@ -317,8 +317,7 @@ export class FeishuCodexGateway {
   async findActiveTurnId(threadId: string): Promise<string | null> {
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) return null
-    const events = await this.dependencies.owner.read(normalizedThreadId, this.threadContext())
-    return activeTurnId(events)
+    return this.dependencies.owner.findActiveTurnId(normalizedThreadId, this.threadContext())
   }
 
   async readTurnState(threadId: string, turnId: string): Promise<{
@@ -385,15 +384,4 @@ export class FeishuCodexGateway {
     const requestId = readString(event.data.requestId || event.data.approvalId)
     if (requestId && event.threadId) this.requestThreadIds.set(requestId, event.threadId)
   }
-}
-
-function activeTurnId(events: readonly CodexEvent[]): string | null {
-  const state = new Map<string, 'active' | 'terminal'>()
-  for (const event of events) {
-    if (!event.turnId) continue
-    if (event.type === 'turn.started') state.set(event.turnId, 'active')
-    if (event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.interrupted') state.set(event.turnId, 'terminal')
-  }
-  for (const [turnId, status] of [...state.entries()].reverse()) if (status === 'active') return turnId
-  return null
 }

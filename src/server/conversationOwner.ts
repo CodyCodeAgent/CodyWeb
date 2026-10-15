@@ -67,6 +67,13 @@ export class CodyWebConversationOwner {
     return this.manager.read(normalizedThreadId)
   }
 
+  async findActiveTurnId(threadId: string, context: ExecutionContext): Promise<string | null> {
+    const normalizedThreadId = this.threadId(threadId)
+    await this.ensureAttached(normalizedThreadId, context)
+    this.manager.setContext(normalizedThreadId, context)
+    return this.manager.snapshot(normalizedThreadId)?.activeTurnId ?? null
+  }
+
   async start(context: ExecutionContext): Promise<{ threadId: string }> {
     const binding = await this.manager.startThread(context)
     this.attachedThreadIds.add(binding.threadId)

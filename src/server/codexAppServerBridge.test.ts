@@ -9,10 +9,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   APP_SERVER_DIAGNOSTICS_RPC_TIMEOUT_MS,
   APP_SERVER_RPC_TIMEOUT_MS,
+  APP_SERVER_THREAD_HISTORY_RPC_TIMEOUT_MS,
   attachCodexBridgeWebSocketServer,
   CODEX_BRIDGE_WEBSOCKET_MAX_BUFFERED_BYTES,
   CODEX_APP_SERVER_ARGS,
   appServerRpcTimeoutMessage,
+  appServerRpcTimeoutMs,
+  createCoreSessionHost,
   createAutomaticTurnCheckpoint,
   createCodexBridgeMiddleware,
   isAppServerAlreadyInitializedError,
@@ -37,6 +40,33 @@ describe('app-server launch contract', () => {
     expect(APP_SERVER_DIAGNOSTICS_RPC_TIMEOUT_MS).toBeGreaterThan(0)
     expect(appServerRpcTimeoutMessage('thread/list', 1234))
       .toBe('codex app-server RPC thread/list timed out after 1234ms')
+    expect(appServerRpcTimeoutMs('thread/list')).toBe(APP_SERVER_RPC_TIMEOUT_MS)
+    expect(appServerRpcTimeoutMs('thread/read')).toBe(APP_SERVER_THREAD_HISTORY_RPC_TIMEOUT_MS)
+    expect(appServerRpcTimeoutMs('thread/resume')).toBe(APP_SERVER_THREAD_HISTORY_RPC_TIMEOUT_MS)
+    expect(appServerRpcTimeoutMs('thread/read', 1234)).toBe(1234)
+  })
+
+  it('reuses the resume snapshot for Core\'s immediate history read', async () => {
+    const resumeResult = { thread: { id: 'thread-large', turns: [{ id: 'turn-1' }] } }
+    const call = vi.fn(async () => resumeResult)
+    const host = createCoreSessionHost({
+      ensureInitialized: vi.fn(async () => undefined),
+      call,
+      subscribe: vi.fn(() => () => undefined),
+      listPendingRequests: vi.fn(() => []),
+      resolveServerRequest: vi.fn(async () => undefined),
+      diagnostics: vi.fn(() => ({})),
+      failureReport: vi.fn(() => null),
+      dispose: vi.fn(async () => undefined),
+    } as never)
+
+    await expect(host.call('thread/resume', { threadId: 'thread-large' })).resolves.toBe(resumeResult)
+    await expect(host.call('thread/read', { threadId: 'thread-large', includeTurns: true })).resolves.toBe(resumeResult)
+
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledWith('thread/resume', { threadId: 'thread-large' }, {
+      timeoutMs: APP_SERVER_THREAD_HISTORY_RPC_TIMEOUT_MS,
+    })
   })
 
   it('treats duplicate app-server initialization as reusable state', () => {
