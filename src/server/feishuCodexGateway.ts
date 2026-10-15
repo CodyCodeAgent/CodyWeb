@@ -260,10 +260,11 @@ export class FeishuCodexGateway {
     if (!normalizedText) throw new Error('A text message is required to start a turn')
 
     const input = buildTurnUserInput({ text: normalizedText, skills, localImages: localImagePaths.map(path => ({ path })) })
+    const modelOverrides = await this.turnModelOverrides(collaborationMode)
     const turnInput: TurnInput = {
       input,
+      ...modelOverrides,
       ...(permissionMode === 'yolo' ? { approvalPolicy: 'never' as const, sandboxPolicy: { type: 'dangerFullAccess' as const } } : {}),
-      ...(collaborationMode === 'plan' ? { collaborationMode: await this.planCollaborationMode() } : {}),
     }
     const handle = await this.dependencies.owner.submitUntilStarted({
       threadId: normalizedThreadId,
@@ -275,18 +276,28 @@ export class FeishuCodexGateway {
     return { threadId: handle.threadId, turnId: handle.turnId }
   }
 
-  private async planCollaborationMode() {
-    const [modes, config] = await Promise.all([
-      this.dependencies.owner.listCollaborationModes(),
-      this.dependencies.owner.readConfig(),
-    ])
+  private async turnModelOverrides(collaborationMode: 'default' | 'plan'): Promise<Pick<TurnInput, 'model' | 'effort' | 'collaborationMode'>> {
+    const config = await this.dependencies.owner.readConfig()
+    const configuredModel = config.config.model?.trim() || ''
+    const configuredEffort = config.config.model_reasoning_effort
+
+    if (collaborationMode === 'default') {
+      return {
+        ...(configuredModel ? { model: configuredModel } : {}),
+        ...(configuredEffort ? { effort: configuredEffort } : {}),
+      }
+    }
+
+    const modes = await this.dependencies.owner.listCollaborationModes()
     const plan = modes.find(mode => mode.mode === 'plan')
     return {
-      mode: 'plan' as const,
-      settings: {
-        model: plan?.model || config.config.model || '',
-        reasoning_effort: plan?.reasoningEffort || config.config.model_reasoning_effort || null,
-        developer_instructions: config.config.developer_instructions || null,
+      collaborationMode: {
+        mode: 'plan' as const,
+        settings: {
+          model: plan?.model || configuredModel,
+          reasoning_effort: plan?.reasoningEffort || configuredEffort || null,
+          developer_instructions: config.config.developer_instructions || null,
+        },
       },
     }
   }

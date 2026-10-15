@@ -40,7 +40,9 @@ describe('FeishuCodexGateway', () => {
   })
 
   it('submits a Feishu turn to the shared owner instead of issuing App Server RPC', async () => {
-    const shared = owner()
+    const shared = owner({
+      readConfig: vi.fn(async () => ({ config: { model: 'gpt-5.6-sol', model_reasoning_effort: 'high', developer_instructions: null } })),
+    })
     const gateway = new FeishuCodexGateway({ owner: shared as never, readCatalog: vi.fn(async () => catalog) })
     await expect(gateway.startSession('/repo')).resolves.toMatchObject({ id: 'thread-new', cwd: '/repo' })
     await expect(gateway.startTurn('thread-new', 'Ship it', ['/private/one.png'], 'default', 'yolo', [{ name: 'alert-triage', path: '/repo/SKILL.md' }]))
@@ -48,8 +50,43 @@ describe('FeishuCodexGateway', () => {
     expect(shared.start).toHaveBeenCalledWith({ thread: { cwd: '/repo' } })
     expect(shared.submitUntilStarted).toHaveBeenCalledWith(expect.objectContaining({
       threadId: 'thread-new', mode: 'queue', input: expect.objectContaining({
+        model: 'gpt-5.6-sol', effort: 'high',
         approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' },
         input: [{ type: 'skill', name: 'alert-triage', path: '/repo/SKILL.md' }, { type: 'text', text: 'Ship it', text_elements: [] }, { type: 'localImage', path: '/private/one.png' }],
+      }),
+    }))
+  })
+
+  it('overrides a resumed default-mode thread with the current configured model', async () => {
+    const shared = owner({
+      readConfig: vi.fn(async () => ({ config: { model: 'gpt-5.6-sol', model_reasoning_effort: 'xhigh', developer_instructions: null } })),
+    })
+    const gateway = new FeishuCodexGateway({ owner: shared as never, readCatalog: vi.fn(async () => catalog) })
+
+    await gateway.startTurn('legacy-gpt-5.5-thread', 'Use the supported model')
+
+    expect(shared.submitUntilStarted).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'legacy-gpt-5.5-thread',
+      input: expect.objectContaining({ model: 'gpt-5.6-sol', effort: 'xhigh' }),
+    }))
+    expect(shared.listCollaborationModes).not.toHaveBeenCalled()
+  })
+
+  it('keeps plan-mode model settings inside the collaboration override', async () => {
+    const shared = owner({
+      readConfig: vi.fn(async () => ({ config: { model: 'gpt-5.6-sol', model_reasoning_effort: 'high', developer_instructions: 'Plan carefully.' } })),
+      listCollaborationModes: vi.fn(async () => [{ name: 'Plan', mode: 'plan', model: 'gpt-6-astra', reasoningEffort: 'medium' }]),
+    })
+    const gateway = new FeishuCodexGateway({ owner: shared as never, readCatalog: vi.fn(async () => catalog) })
+
+    await gateway.startTurn('thread-plan', 'Make a plan', [], 'plan')
+
+    expect(shared.submitUntilStarted).toHaveBeenCalledWith(expect.objectContaining({
+      input: expect.objectContaining({
+        collaborationMode: {
+          mode: 'plan',
+          settings: { model: 'gpt-6-astra', reasoning_effort: 'medium', developer_instructions: 'Plan carefully.' },
+        },
       }),
     }))
   })
